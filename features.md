@@ -21,18 +21,18 @@ This document describes the currently implemented product behavior. DSH remains 
 | Markdown | `available` | Renders headings, lists, quotes, tables, links, inline code, and fenced code with raw HTML disabled. |
 | Reasoning and Tool activity | `partial` | Groups reasoning, context injections, and paired Tool calls/results into collapsible Turn process rows; Tool presentation is generic. |
 | Turn usage and timing | `available` | Shows DSH-Web-style Usage and Run-time pills plus the Turn end clock. |
-| Stop | `available` | Calls DSH `session.cancel`, cancelling the active Turn while retaining pending inbox work. |
+| Stop | `available` | Calls DSH `session.cancel`, cancelling the active Turn or manual compaction while retaining pending inbox work. |
 | Tab restore | `available` | Restores the same DSH session, draft, scroll position, and disclosure state after the editor tab is reconstructed. |
 | History | `available` | Opens a bounded `session/follow` tail, includes the next older human prompt, and automatically prepends DSH `session/page` history near the upper edge. |
 | Connection recovery | `partial` | Reconnects when the editor is reconstructed; continuous transport retry and cursor-based gap repair are not implemented. |
 | Development connection | `development only` | Connects to a compatible DSH Web instance on loopback port 3081. |
-| Provider/model selection | `not available` | The selected DSH route is displayed while running, but the editor has no model picker. |
+| Provider/model selection | `available` | Selects DSH catalog models and model-specific reasoning effort from the composer; DSH owns validation, persistence, and defaults. |
 | Approvals and questions | `not available` | No VS Code answerer exists yet for Tool approvals or `ask_user_question`. |
 | Queue display | `partial` | Shows local submissions and the authoritative DSH control-stream queue separately from the transcript; edit, remove, and steering controls are not available. |
 | Session browser | `not available` | There is no list, search, rename, archive, fork, or reopen UI for closed tabs. |
 | Session Changes | `not available` | Native SCM projection, persistent Edit Ledger, Dirty-buffer protection, review, and guarded revert remain planned. |
 | Native terminals | `not available` | No VS Code-backed DSH `TerminalBackend` exists yet. |
-| Context meter | `not available` | Context pressure and capacity are intentionally reserved for a separate display. |
+| Context meter | `available` | Shows DSH-projected next-request pressure and route capacity in a composer ring, with manual DSH compaction when the Session provides `/compact`. |
 | Monetary cost | `not available` | DSH currently persists token usage but no provider-neutral monetary accounting. |
 
 ## Chat and session behavior
@@ -44,6 +44,10 @@ The tab-local state contains the Session id, unsent draft, scroll position, and 
 History remains a contiguous DSH-owned event window. Initial loading extends the bounded Follow snapshot through at least the next older human prompt when one exists. Approaching the upper edge loads additional `session/page` records through the next older human prompt and preserves the visible scroll position while prepending them.
 
 Submitted prompts remain in a dedicated queue area until DSH commits the matching `user/message`. Companion correlates the local submission and durable message by request id, removes the queue row, and renders the canonical message at its DSH Turn with the DSH event time. The queue baseline and replacements come from `session/control`; queued prompts are not optimistic transcript entries.
+
+The composer model picker searches the provider-grouped `session/modelCatalog` and follows the Session's durable `modelSelection` projection. Models expose only the reasoning efforts and display metadata reported by their DSH adapter; selecting another model lets DSH resolve that model's default instead of carrying effort across routes. Selection is unavailable during a running Turn. With the current DSH operation, a Session selection also becomes the default for future Sessions.
+
+The context ring appears only when DSH's `contextPressure` projection provides both pressure and route capacity. It prefers projected next-request tokens over the latest provider sample, caps only the visual ring at 100 percent, and exposes the approximate size and limit on hover, focus, or click. The Compact action appears only when the Session command catalog provides `/compact`; it executes that DSH command while the Agent is idle and displays its canonical result without changing context state optimistically. Durable `compaction/*` events produce a running and settled transcript activity row. While compaction runs, the prompt and model controls are locked and Stop remains available through `session.cancel`.
 
 ## Transcript presentation
 
@@ -59,7 +63,7 @@ The timing panel shows Turn wall time and, when the event sequence provides them
 
 ## Stop semantics
 
-Stop targets only the current session's active Turn. It cancels the model request and cancellable in-flight Tool work through DSH `session.cancel`; pending inbox entries remain. It does not clear the queue or globally stop independently owned jobs, terminals, schedules, or other sessions.
+Stop targets only the current session's active Turn or Agent maintenance. It cancels the model request, cancellable in-flight Tool work, or manual compaction through DSH `session.cancel`; pending inbox entries remain. It does not clear the queue or globally stop independently owned jobs, terminals, schedules, or other sessions.
 
 ## Development connection
 

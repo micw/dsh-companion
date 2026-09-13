@@ -5,8 +5,12 @@ import test from 'node:test';
 import {
   DSH_ORIGIN,
   TurnStats,
+  advanceContextPressure,
+  advanceModelSelection,
   collectPreviousPromptBatch,
   exchangeLaunchUrl,
+  parseCompactionEvent,
+  parseModelCatalog,
   parseQueueItems,
 } from '../vscode/out/dshClient.js';
 
@@ -19,6 +23,16 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('queue'\)/);
   assert.match(script, /getElementById\('composer'\)/);
   assert.match(script, /getElementById\('prompt'\)/);
+  assert.match(script, /getElementById\('model-trigger'\)/);
+  assert.match(script, /getElementById\('context-trigger'\)/);
+  assert.match(script, /function renderModelPicker/);
+  assert.match(script, /function renderEffortMenu/);
+  assert.match(script, /function renderContextMeter/);
+  assert.match(script, /function applyCompactionEvent/);
+  assert.match(script, /prompt\.disabled = compacting/);
+  assert.match(script, /running \|\| compacting/);
+  assert.match(script, /function positionContextPanel/);
+  assert.match(script, /window\.innerWidth - width - margin/);
   assert.match(script, /getElementById\('send'\)/);
   assert.match(script, /getElementById\('stop'\)/);
   assert.match(script, /vscode\.getState\(\)/);
@@ -49,7 +63,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /output\.getBoundingClientRect\(\)/);
   assert.match(script, /stickyPromptTarget\.scrollIntoView/);
   assert.match(script, /message\.type === 'userCommitted'/);
-  assert.match(script, /event\.key === 'Escape'/);
+  assert.match(script, /event\.key !== 'Escape'/);
   assert.match(script, /Usage \$\{compactTokens\(total\)\} tok/);
   assert.match(script, /Number\(usage\.reasoningTokens\) > 0/);
   assert.match(style, /grid-template-rows: minmax\(0, 1fr\) auto auto auto/);
@@ -64,9 +78,14 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.stat-trigger \{[\s\S]*background: transparent/);
   assert.match(style, /\.stat-icon \{[\s\S]*width: 14px/);
   assert.match(style, /#prompt \{[\s\S]*max-height: 200px/);
+  assert.match(style, /#model-picker \{/);
+  assert.match(style, /#effort-menu \{/);
+  assert.match(style, /#context-panel \{/);
+  assert.match(style, /\.compaction-activity/);
   assert.match(style, /#status\[data-running='true'\]::before/);
   assert.match(extension, /rows="1"/);
   assert.match(extension, /Ask DSH Companion… \(Enter sends, Shift\+Enter = newline\)/);
+  assert.match(extension, /isSelectModelMessage/);
 });
 
 test('the development connection is fixed to the running DSH origin', () => {
@@ -186,6 +205,96 @@ test('history paging rejects a page that does not move its cursor backwards', as
   );
 });
 
+test('the DSH model catalog preserves provider-owned effort metadata and order', () => {
+  const catalog = parseModelCatalog({
+    default: { provider: 'alpha', model: 'reasoner', reasoningEffort: 'high' },
+    routableProviders: ['alpha'],
+    groups: [{
+      id: 'alpha',
+      name: 'Alpha Provider',
+      models: [{
+        id: 'reasoner',
+        name: 'Reasoner',
+        description: 'Complex work',
+        reasoning: {
+          efforts: [
+            { id: 'off', name: 'Off' },
+            { id: 'high', name: 'High', description: 'More reasoning' },
+          ],
+          defaultEffort: 'high',
+        },
+      }],
+    }],
+    failures: [{ id: 'broken', name: 'Broken Provider', message: 'Unavailable' }],
+  });
+
+  assert.deepEqual(catalog.groups[0].models[0].reasoning, {
+    efforts: [
+      { id: 'off', name: 'Off' },
+      { id: 'high', name: 'High', description: 'More reasoning' },
+    ],
+    defaultEffort: 'high',
+  });
+  assert.deepEqual(catalog.failures, [{ id: 'broken', name: 'Broken Provider', message: 'Unavailable' }]);
+});
+
+test('model selection restores from DSH projections and rejects stale cross-stream baselines', () => {
+  const fallback = { provider: 'alpha', model: 'default' };
+  const restored = advanceModelSelection({ watermark: -1, current: fallback }, {
+    lastUsed: { provider: 'alpha', model: 'reasoner', reasoningEffort: 'high' },
+    next: { provider: 'alpha', model: 'reasoner', reasoningEffort: 'max' },
+  }, 12, fallback);
+  assert.deepEqual(restored, {
+    watermark: 12,
+    current: { provider: 'alpha', model: 'reasoner', reasoningEffort: 'max' },
+  });
+
+  const stale = advanceModelSelection(restored, {
+    lastUsed: { provider: 'alpha', model: 'old' },
+    next: null,
+  }, 11, fallback);
+  assert.equal(stale, restored);
+});
+
+test('an empty DSH model projection uses the catalog default', () => {
+  const fallback = { provider: 'alpha', model: 'default', reasoningEffort: 'provider-choice' };
+  assert.deepEqual(
+    advanceModelSelection({ watermark: -1, current: fallback }, { lastUsed: null, next: null }, 0, fallback),
+    { watermark: 0, current: fallback },
+  );
+});
+
+test('context pressure restores from DSH and ignores stale live-stream projections', () => {
+  const restored = advanceContextPressure({ watermark: -1 }, {
+    pressureTokens: 40_000,
+    projectedTokens: 44_000,
+    contextWindow: 128_000,
+  }, 20);
+  assert.deepEqual(restored, {
+    watermark: 20,
+    current: { pressureTokens: 40_000, projectedTokens: 44_000, contextWindow: 128_000 },
+  });
+  assert.equal(advanceContextPressure(restored, { pressureTokens: 1, contextWindow: 2 }, 19), restored);
+});
+
+test('context pressure rejects invented zero capacities and negative token counts', () => {
+  assert.throws(() => advanceContextPressure({ watermark: -1 }, { contextWindow: 0 }, 0), /contextWindow/);
+  assert.throws(() => advanceContextPressure({ watermark: -1 }, { pressureTokens: -1 }, 0), /pressureTokens/);
+});
+
+test('durable compaction events project running, summary, and completed session activity', () => {
+  assert.deepEqual(parseCompactionEvent({
+    type: 'compaction/start', time: 100, data: { compactionId: 'compact-1', turn: null },
+  }), { type: 'start', id: 'compact-1', time: 100 });
+  assert.deepEqual(parseCompactionEvent({
+    type: 'compaction/summary', time: 200,
+    data: { compactionId: 'compact-1', shadowedSeqs: [1, 2, 3], shadowedTokenCount: 42_000 },
+  }), { type: 'summary', id: 'compact-1', itemCount: 3, tokenCount: 42_000 });
+  assert.deepEqual(parseCompactionEvent({
+    type: 'compaction/end', time: 300, data: { compactionId: 'compact-1', turn: null },
+  }), { type: 'end', id: 'compact-1', time: 300 });
+});
+
 test('tabs restore through the serializer and Stop uses DSH session cancellation', async () => {
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
   const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
@@ -197,6 +306,12 @@ test('tabs restore through the serializer and Stop uses DSH session cancellation
   assert.match(client, /'session\/modelCatalog'/);
   assert.match(client, /endpoint: 'session\/control'/);
   assert.match(client, /'session\/page'/);
+  assert.match(client, /'session\/selectModel'/);
+  assert.match(client, /'commands\/list'/);
+  assert.match(client, /'commands\/execute'/);
+  assert.match(client, /submittedAttachments: \[\]/);
+  assert.match(client, /frame\.key === 'modelSelection'/);
+  assert.match(client, /frame\.key === 'contextPressure'/);
   assert.match(client, /collectPreviousPromptBatch/);
   assert.match(client, /function parseQueueItems/);
   assert.match(client, /function modelLabelMap/);

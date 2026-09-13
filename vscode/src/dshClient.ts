@@ -66,11 +66,68 @@ export interface DshQueuedPrompt {
   readonly placement: 'queued' | 'steering' | 'context';
 }
 
+export interface DshModelSelection {
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+export interface DshModelCatalog {
+  readonly default: DshModelSelection;
+  readonly routableProviders: readonly string[];
+  readonly groups: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly models: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly description?: string;
+      readonly reasoning?: {
+        readonly efforts: readonly { readonly id: string; readonly name: string; readonly description?: string }[];
+        readonly defaultEffort?: string;
+      };
+    }[];
+  }[];
+  readonly failures: readonly { readonly id: string; readonly name: string; readonly message: string }[];
+}
+
+export interface DshModelSelectionState {
+  readonly watermark: number;
+  readonly current: DshModelSelection;
+}
+
+export interface DshContextPressure {
+  readonly pressureTokens?: number;
+  readonly projectedTokens?: number;
+  readonly contextWindow?: number;
+}
+
+export interface DshContextPressureState {
+  readonly watermark: number;
+  readonly current?: DshContextPressure;
+}
+
+export interface DshCompactResult {
+  readonly kind: 'success' | 'error';
+  readonly text?: string;
+}
+
+export type DshCompactionEvent =
+  | { readonly type: 'start'; readonly id: string; readonly time: number }
+  | { readonly type: 'summary'; readonly id: string; readonly itemCount: number; readonly tokenCount: number }
+  | { readonly type: 'end'; readonly id: string; readonly time: number; readonly error?: string };
+
 export interface DshOutputSink {
   history(role: 'user' | 'assistant' | 'error', text: string, time?: number): void;
   historyPrependStart(): void;
   historyPrependEnd(): void;
   historyState(hasMore: boolean): void;
+  modelCatalog(catalog: DshModelCatalog): void;
+  modelSelection(selection: DshModelSelection): void;
+  contextPressure(pressure: DshContextPressure | undefined): void;
+  compactAvailable(value: boolean): void;
+  compaction(event: DshCompactionEvent): void;
+  compacting(value: boolean): void;
   assistantStart(): void;
   assistantDelta(text: string): void;
   assistantTime(time: number): void;
@@ -115,6 +172,102 @@ interface DshHistoryPage {
 export interface PreviousPromptBatch {
   readonly records: readonly unknown[];
   readonly hasMore: boolean;
+}
+
+/** Validates one DSH model catalog and returns detached display data. */
+export function parseModelCatalog(value: unknown): DshModelCatalog {
+  if (!isRecord(value) || !Array.isArray(value.routableProviders)
+    || !Array.isArray(value.groups) || !Array.isArray(value.failures)) {
+    throw new Error('DSH returned an invalid model catalog');
+  }
+  const groups = value.groups.map((group) => {
+    if (!isRecord(group) || typeof group.id !== 'string' || typeof group.name !== 'string'
+      || !Array.isArray(group.models)) throw new Error('DSH returned an invalid model provider group');
+    return { id: group.id, name: group.name, models: group.models.map(parseCatalogModel) };
+  });
+  const failures = value.failures.map((failure) => {
+    if (!isRecord(failure) || typeof failure.id !== 'string' || typeof failure.name !== 'string'
+      || typeof failure.message !== 'string') throw new Error('DSH returned an invalid model catalog failure');
+    return { id: failure.id, name: failure.name, message: failure.message };
+  });
+  return {
+    default: parseModelSelection(value.default),
+    routableProviders: value.routableProviders.map(requireString),
+    groups,
+    failures,
+  };
+}
+
+/** Applies a durable model-selection projection unless its watermark is stale. */
+export function advanceModelSelection(
+  state: DshModelSelectionState,
+  projection: unknown,
+  watermark: number,
+  fallback: DshModelSelection,
+): DshModelSelectionState {
+  if (!Number.isSafeInteger(watermark) || watermark < -1) {
+    throw new Error('DSH returned an invalid model-selection watermark');
+  }
+  if (watermark < state.watermark) return state;
+  if (projection === undefined) return { watermark, current: { ...fallback } };
+  if (!isRecord(projection) || !Object.hasOwn(projection, 'lastUsed') || !Object.hasOwn(projection, 'next')) {
+    throw new Error('DSH returned an invalid model-selection projection');
+  }
+  const lastUsed = projection.lastUsed === null ? null : parseModelSelection(projection.lastUsed);
+  const next = projection.next === null ? null : parseModelSelection(projection.next);
+  return { watermark, current: { ...(next ?? lastUsed ?? fallback) } };
+}
+
+/** Applies a validated context-pressure projection unless its watermark is stale. */
+export function advanceContextPressure(
+  state: DshContextPressureState,
+  projection: unknown,
+  watermark: number,
+): DshContextPressureState {
+  if (!Number.isSafeInteger(watermark) || watermark < -1) {
+    throw new Error('DSH returned an invalid context-pressure watermark');
+  }
+  if (watermark < state.watermark) return state;
+  if (projection === undefined) return { watermark };
+  if (!isRecord(projection)) throw new Error('DSH returned an invalid context-pressure projection');
+  const pressureTokens = optionalCount(projection.pressureTokens, 'pressureTokens');
+  const projectedTokens = optionalCount(projection.projectedTokens, 'projectedTokens');
+  const contextWindow = optionalCount(projection.contextWindow, 'contextWindow', true);
+  return {
+    watermark,
+    current: {
+      ...(pressureTokens === undefined ? {} : { pressureTokens }),
+      ...(projectedTokens === undefined ? {} : { projectedTokens }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+    },
+  };
+}
+
+/** Projects one durable DSH compaction lifecycle event for transcript presentation. */
+export function parseCompactionEvent(value: unknown): DshCompactionEvent | undefined {
+  if (!isRecord(value) || !isRecord(value.data) || typeof value.data.compactionId !== 'string') return undefined;
+  if (value.type === 'compaction/start' && typeof value.time === 'number') {
+    return { type: 'start', id: value.data.compactionId, time: value.time };
+  }
+  if (value.type === 'compaction/summary' && Array.isArray(value.data.shadowedSeqs)
+    && isCount(value.data.shadowedTokenCount)) {
+    return {
+      type: 'summary',
+      id: value.data.compactionId,
+      itemCount: value.data.shadowedSeqs.length,
+      tokenCount: value.data.shadowedTokenCount,
+    };
+  }
+  if (value.type === 'compaction/end' && typeof value.time === 'number'
+    && (value.data.error === undefined || typeof value.data.error === 'string')) {
+    return {
+      type: 'end',
+      id: value.data.compactionId,
+      time: value.time,
+      ...(value.data.error === undefined ? {} : { error: value.data.error }),
+    };
+  }
+  return undefined;
 }
 
 /** Reads a contiguous older batch that starts at the nearest available human-prompt Turn. */
@@ -221,6 +374,11 @@ export class DshClient {
   private historyHasMore = false;
   private loadingOlder: Promise<void> | undefined;
   private receiveQueue = Promise.resolve();
+  private readonly modelLabels: ReadonlyMap<string, string>;
+  private modelSelectionState: DshModelSelectionState;
+  private contextPressureState: DshContextPressureState = { watermark: -1 };
+  private readonly activeCompactions = new Set<string>();
+  private readonly activeCompactionCommands = new Set<string>();
   private streamReadyResolve: (() => void) | undefined;
   private streamReadyReject: ((error: Error) => void) | undefined;
 
@@ -228,9 +386,11 @@ export class DshClient {
     private readonly cookie: string,
     sessionId: string,
     private readonly sink: DshOutputSink,
-    private readonly modelLabels: ReadonlyMap<string, string>,
+    private readonly modelCatalogValue: DshModelCatalog,
   ) {
     this.sessionId = sessionId;
+    this.modelLabels = modelLabelMap(modelCatalogValue);
+    this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
     const websocketUrl = new URL('/api/remote.mux', DSH_ORIGIN);
     websocketUrl.protocol = 'ws:';
     this.socket = new WebSocket(websocketUrl, {
@@ -265,11 +425,18 @@ export class DshClient {
   ): Promise<DshClient> {
     sink.status('Connecting to DSH…');
     await rpc(cookie, 'session/list', { _request: {} });
-    const modelCatalog = await rpc(cookie, 'session/modelCatalog', {});
+    const modelCatalog = parseModelCatalog(await rpc(cookie, 'session/modelCatalog', {}));
     const sessionId = restoredSessionId ?? (await rpc<{ sessionId: string }>(cookie, 'session/create', {
         request: cwd === undefined ? {} : { cwd },
       })).sessionId;
-    const client = new DshClient(cookie, sessionId, sink, modelLabelMap(modelCatalog));
+    const commands: unknown = await rpc(cookie, 'commands/list', { agentId: sessionId });
+    if (!Array.isArray(commands) || !commands.every((command) => (
+      isRecord(command) && typeof command.name === 'string'
+    ))) throw new Error('DSH returned an invalid command catalog');
+    const client = new DshClient(cookie, sessionId, sink, modelCatalog);
+    sink.modelCatalog(modelCatalog);
+    sink.modelSelection(modelCatalog.default);
+    sink.compactAvailable(commands.some((command) => command.name === 'compact'));
     await client.open();
     sink.status('Connected');
     return client;
@@ -292,6 +459,35 @@ export class DshClient {
   /** Cancels the active turn while retaining pending DSH inbox work. */
   async cancel(): Promise<void> {
     await rpc(this.cookie, 'session/cancel', { request: { sessionId: this.sessionId } });
+  }
+
+  /** Selects one DSH provider, model, and optional reasoning effort for this Session. */
+  async selectModel(selection: DshModelSelection): Promise<void> {
+    const value: unknown = await rpc(this.cookie, 'session/selectModel', {
+      request: { sessionId: this.sessionId, ...selection },
+    });
+    if (!isRecord(value) || !isRecord(value.selected)) {
+      throw new Error('DSH returned an invalid model-selection response');
+    }
+    parseModelSelection(value.selected);
+  }
+
+  /** Runs DSH's canonical argument-free `/compact` command for this Session. */
+  async compact(): Promise<DshCompactResult> {
+    const value: unknown = await rpc(this.cookie, 'commands/execute', {
+      agentId: this.sessionId,
+      line: '/compact',
+      submittedAttachments: [],
+    });
+    if (!isRecord(value) || typeof value.commandId !== 'string' || !isRecord(value.result)
+      || !['success', 'error'].includes(String(value.result.kind))
+      || (value.result.text !== undefined && typeof value.result.text !== 'string')) {
+      throw new Error('DSH returned an invalid compact command response');
+    }
+    return {
+      kind: value.result.kind as DshCompactResult['kind'],
+      ...(value.result.text === undefined ? {} : { text: value.result.text }),
+    };
   }
 
   /** Loads enough older DSH history to expose the next human prompt above the current window. */
@@ -369,13 +565,48 @@ export class DshClient {
   }
 
   private receiveControlFrame(frame: Record<string, unknown>): void {
-    if (frame.type === 'baseline' && isRecord(frame.value) && isRecord(frame.value.queues)) {
+    if (frame.type === 'baseline' && isRecord(frame.value) && isRecord(frame.value.queues)
+      && isRecord(frame.value.projections)) {
       this.sink.queue(parseQueueItems(frame.value.queues[this.sessionId]));
+      const projection = frame.value.projections[this.sessionId];
+      if (projection !== undefined) this.receiveProjectionBlock(projection);
       return;
     }
     if (frame.type === 'queue' && frame.sessionId === this.sessionId) {
       this.sink.queue(parseQueueItems(frame.items));
+      return;
     }
+    if (frame.type === 'projection' && frame.sessionId === this.sessionId && typeof frame.seq === 'number') {
+      if (frame.key === 'modelSelection') this.acceptModelSelection(frame.value, frame.seq);
+      if (frame.key === 'contextPressure') this.acceptContextPressure(frame.value, frame.seq);
+    }
+  }
+
+  private receiveProjectionBlock(value: unknown): void {
+    if (!isRecord(value) || !Number.isSafeInteger(value.asOfSeq) || !isRecord(value.values)) {
+      throw new Error('DSH returned an invalid Session projection baseline');
+    }
+    this.acceptModelSelection(value.values.modelSelection, value.asOfSeq as number);
+    this.acceptContextPressure(value.values.contextPressure, value.asOfSeq as number);
+  }
+
+  private acceptModelSelection(projection: unknown, watermark: number): void {
+    const next = advanceModelSelection(
+      this.modelSelectionState,
+      projection,
+      watermark,
+      this.modelCatalogValue.default,
+    );
+    if (next === this.modelSelectionState) return;
+    this.modelSelectionState = next;
+    this.sink.modelSelection(next.current);
+  }
+
+  private acceptContextPressure(projection: unknown, watermark: number): void {
+    const next = advanceContextPressure(this.contextPressureState, projection, watermark);
+    if (next === this.contextPressureState) return;
+    this.contextPressureState = next;
+    this.sink.contextPressure(next.current);
   }
 
   private resolveStreamReady(): void {
@@ -395,9 +626,10 @@ export class DshClient {
   private async receiveFollowFrame(frame: Record<string, unknown>): Promise<void> {
     if (frame.type === 'snapshot' && Array.isArray(frame.records)) {
       if (!Number.isSafeInteger(frame.cursor) || (frame.cursor as number) < -1
-        || typeof frame.hasMore !== 'boolean') {
+        || typeof frame.hasMore !== 'boolean' || !isRecord(frame.projections)) {
         throw new Error('DSH returned an invalid Session history snapshot');
       }
+      this.receiveProjectionBlock(frame.projections);
       const records = validHistoryRecords(frame.records);
       const lastRecord = records.at(-1);
       this.historyThroughSeq = typeof frame.cursor === 'number'
@@ -413,6 +645,7 @@ export class DshClient {
         if (older.records[0] !== undefined) this.historyBaseSeq = historyRecordSeq(older.records[0]);
       }
       for (const record of openingRecords) this.receiveHistoryRecord(record, true);
+      this.sink.compacting(this.compactionActive());
       if (isRecord(frame.assistantStream) && isRecord(frame.assistantStream.activeAttempt)
         && Array.isArray(frame.assistantStream.activeAttempt.stream)) {
         if (typeof frame.assistantStream.activeAttempt.turn === 'number') {
@@ -570,8 +803,31 @@ export class DshClient {
       return;
     }
 
+    const compaction = parseCompactionEvent(event);
+    if (compaction !== undefined) {
+      if (!older && compaction.type === 'start') {
+        this.activeCompactions.add(compaction.id);
+        if (typeof event.data.sourceCommandId === 'string') {
+          this.activeCompactionCommands.add(event.data.sourceCommandId);
+        }
+      }
+      if (!older && compaction.type === 'end') this.activeCompactions.delete(compaction.id);
+      this.sink.compaction(compaction);
+      if (!older && !fromSnapshot && compaction.type !== 'summary') {
+        this.sink.compacting(this.compactionActive());
+      }
+      return;
+    }
+
+    if (event.type === 'command/done' && typeof event.data.commandId === 'string'
+      && !older && this.activeCompactionCommands.delete(event.data.commandId)) {
+      if (!fromSnapshot) this.sink.compacting(this.compactionActive());
+      return;
+    }
+
     if (event.type === 'user/message') {
       if (isRecord(event.data.source) && event.data.source.kind !== 'user') {
+        if (event.data.source.kind === 'plugin' && event.data.source.plugin === 'compact') return;
         this.sink.process({
           type: 'context',
           id: `turn:${String(this.currentTurn)}:context:${String(event.seq)}`,
@@ -679,6 +935,10 @@ export class DshClient {
     }
   }
 
+  private compactionActive(): boolean {
+    return this.activeCompactions.size > 0 || this.activeCompactionCommands.size > 0;
+  }
+
   private receiveFinish(chunk: Record<string, unknown>): void {
     if (chunk.type !== 'finish' || !isRecord(chunk.reason) || !isRecord(chunk.reason.failure)
       || typeof chunk.reason.failure.message !== 'string') return;
@@ -739,15 +999,74 @@ async function rpc<T = unknown>(cookie: string, endpoint: string, args: object):
   return result.value;
 }
 
-function modelLabelMap(value: unknown): ReadonlyMap<string, string> {
+function parseModelSelection(value: unknown): DshModelSelection {
+  if (!isRecord(value) || typeof value.provider !== 'string' || value.provider.length === 0
+    || typeof value.model !== 'string' || value.model.length === 0
+    || (value.reasoningEffort !== undefined
+      && (typeof value.reasoningEffort !== 'string' || value.reasoningEffort.length === 0))) {
+    throw new Error('DSH returned an invalid model selection');
+  }
+  return {
+    provider: value.provider,
+    model: value.model,
+    ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+  };
+}
+
+function parseCatalogModel(value: unknown): DshModelCatalog['groups'][number]['models'][number] {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.name !== 'string'
+    || (value.description !== undefined && typeof value.description !== 'string')) {
+    throw new Error('DSH returned an invalid model catalog entry');
+  }
+  let reasoning: DshModelCatalog['groups'][number]['models'][number]['reasoning'];
+  if (value.reasoning !== undefined) {
+    if (!isRecord(value.reasoning) || !Array.isArray(value.reasoning.efforts)
+      || (value.reasoning.defaultEffort !== undefined && typeof value.reasoning.defaultEffort !== 'string')) {
+      throw new Error('DSH returned invalid model reasoning metadata');
+    }
+    reasoning = {
+      efforts: value.reasoning.efforts.map((effort) => {
+        if (!isRecord(effort) || typeof effort.id !== 'string' || typeof effort.name !== 'string'
+          || (effort.description !== undefined && typeof effort.description !== 'string')) {
+          throw new Error('DSH returned an invalid model reasoning effort');
+        }
+        return {
+          id: effort.id,
+          name: effort.name,
+          ...(effort.description === undefined ? {} : { description: effort.description }),
+        };
+      }),
+      ...(value.reasoning.defaultEffort === undefined
+        ? {}
+        : { defaultEffort: value.reasoning.defaultEffort }),
+    };
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    ...(value.description === undefined ? {} : { description: value.description }),
+    ...(reasoning === undefined ? {} : { reasoning }),
+  };
+}
+
+function requireString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error('DSH returned an invalid string');
+  return value;
+}
+
+function optionalCount(value: unknown, name: string, positive = false): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (positive ? Number(value) <= 0 : Number(value) < 0)) {
+    throw new Error(`DSH returned an invalid context-pressure ${name}`);
+  }
+  return value as number;
+}
+
+function modelLabelMap(value: DshModelCatalog): ReadonlyMap<string, string> {
   const labels = new Map<string, string>();
-  if (!isRecord(value) || !Array.isArray(value.groups)) return labels;
   for (const group of value.groups) {
-    if (!isRecord(group) || typeof group.id !== 'string' || typeof group.name !== 'string'
-      || !Array.isArray(group.models)) continue;
     const providerName = group.name.replace(/ Wrapper \(OpenAI API\)$/u, '');
     for (const model of group.models) {
-      if (!isRecord(model) || typeof model.id !== 'string' || typeof model.name !== 'string') continue;
       labels.set(`${group.id}\0${model.id}`, `${providerName}/${model.name}`);
     }
   }
