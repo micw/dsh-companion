@@ -22,6 +22,17 @@ interface LoadOlderMessage {
   readonly type: 'loadOlder';
 }
 
+interface SelectModelMessage {
+  readonly type: 'selectModel';
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+interface CompactMessage {
+  readonly type: 'compact';
+}
+
 interface OpenLinkMessage {
   readonly type: 'openLink';
   readonly href: string;
@@ -104,6 +115,8 @@ function configureChatEditor(
     if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
     if (isStopMessage(message)) void stop(panel, ready);
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
+    if (isSelectModelMessage(message)) void selectModel(panel, ready, message);
+    if (isCompactMessage(message)) void compact(panel, ready);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
   });
   panel.onDidDispose(() => {
@@ -131,6 +144,16 @@ async function connect(
     historyPrependStart: () => post(panel, { type: 'historyPrependStart' }),
     historyPrependEnd: () => post(panel, { type: 'historyPrependEnd' }),
     historyState: (hasMore: boolean) => post(panel, { type: 'historyState', hasMore }),
+    modelCatalog: (catalog: import('./dshClient').DshModelCatalog) => post(panel, { type: 'modelCatalog', catalog }),
+    modelSelection: (selection: import('./dshClient').DshModelSelection) => post(panel, {
+      type: 'modelSelection', selection,
+    }),
+    contextPressure: (pressure: import('./dshClient').DshContextPressure | undefined) => post(panel, {
+      type: 'contextPressure', pressure,
+    }),
+    compactAvailable: (value: boolean) => post(panel, { type: 'compactAvailable', value }),
+    compaction: (event: import('./dshClient').DshCompactionEvent) => post(panel, { type: 'compaction', event }),
+    compacting: (value: boolean) => post(panel, { type: 'compacting', value }),
     assistantStart: () => {
       streamingAssistant = '';
       post(panel, { type: 'assistantStart' });
@@ -263,6 +286,44 @@ async function loadOlder(panel: vscode.WebviewPanel, ready: Promise<DshClient>):
   }
 }
 
+async function selectModel(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: SelectModelMessage,
+): Promise<void> {
+  post(panel, { type: 'modelSelecting', value: true });
+  try {
+    await (await ready).selectModel({
+      provider: message.provider,
+      model: message.model,
+      ...(message.reasoningEffort === undefined ? {} : { reasoningEffort: message.reasoningEffort }),
+    });
+  } catch (error) {
+    post(panel, {
+      type: 'modelSelectionFailed',
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'modelSelecting', value: false });
+  }
+}
+
+async function compact(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
+  post(panel, { type: 'compacting', value: true });
+  try {
+    const result = await (await ready).compact();
+    post(panel, { type: 'compactResult', kind: result.kind, text: result.text });
+  } catch (error) {
+    post(panel, {
+      type: 'compactResult',
+      kind: 'error',
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'compacting', value: false });
+  }
+}
+
 function post(panel: vscode.WebviewPanel, message: object): void {
   void panel.webview.postMessage(message);
 }
@@ -282,6 +343,22 @@ function isStopMessage(value: unknown): value is StopMessage {
 
 function isLoadOlderMessage(value: unknown): value is LoadOlderMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'loadOlder';
+}
+
+function isSelectModelMessage(value: unknown): value is SelectModelMessage {
+  return typeof value === 'object' && value !== null
+    && Reflect.get(value, 'type') === 'selectModel'
+    && typeof Reflect.get(value, 'provider') === 'string'
+    && Reflect.get(value, 'provider').length > 0
+    && typeof Reflect.get(value, 'model') === 'string'
+    && Reflect.get(value, 'model').length > 0
+    && (Reflect.get(value, 'reasoningEffort') === undefined
+      || (typeof Reflect.get(value, 'reasoningEffort') === 'string'
+        && Reflect.get(value, 'reasoningEffort').length > 0));
+}
+
+function isCompactMessage(value: unknown): value is CompactMessage {
+  return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'compact';
 }
 
 function isOpenLinkMessage(value: unknown): value is OpenLinkMessage {
@@ -326,10 +403,36 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
   <div id="status" role="status">Connecting…</div>
   <form id="composer">
     <textarea id="prompt" rows="1" aria-label="Message" placeholder="Ask DSH Companion… (Enter sends, Shift+Enter = newline)"></textarea>
-    <button id="stop" type="button" aria-label="Stop" title="Stop">
-      <span aria-hidden="true"></span>
-    </button>
-    <button id="send" type="submit">Send</button>
+    <div id="composer-toolbar">
+      <div id="model-controls">
+        <button id="model-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" disabled>Loading models…</button>
+        <div id="model-picker" role="dialog" aria-label="Choose model and reasoning effort" hidden>
+          <input id="model-search" type="search" aria-label="Search models" placeholder="Search models…">
+          <div id="model-list"></div>
+          <div id="effort-menu" role="menu" aria-label="Choose reasoning effort" hidden></div>
+        </div>
+      </div>
+      <div id="context-meter" hidden>
+        <button id="context-trigger" type="button" aria-haspopup="dialog" aria-expanded="false">
+          <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+            <circle class="context-track" cx="7" cy="7" r="5.5"></circle>
+            <circle class="context-fill" cx="7" cy="7" r="5.5" transform="rotate(-90 7 7)"></circle>
+          </svg>
+        </button>
+        <div id="context-panel" role="dialog" aria-label="Context usage" hidden>
+          <div id="context-reading"></div>
+          <div id="context-figures"></div>
+          <button id="compact" type="button" hidden>Compact</button>
+          <div id="compact-result" role="status" hidden></div>
+        </div>
+      </div>
+      <div id="composer-actions">
+        <button id="stop" type="button" aria-label="Stop" title="Stop">
+          <span aria-hidden="true"></span>
+        </button>
+        <button id="send" type="submit">Send</button>
+      </div>
+    </div>
   </form>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

@@ -7,6 +7,20 @@ const stickyPromptTime = document.getElementById('sticky-prompt-time');
 const queue = document.getElementById('queue');
 const composer = document.getElementById('composer');
 const prompt = document.getElementById('prompt');
+const modelControls = document.getElementById('model-controls');
+const modelTrigger = document.getElementById('model-trigger');
+const modelPicker = document.getElementById('model-picker');
+const modelSearch = document.getElementById('model-search');
+const modelList = document.getElementById('model-list');
+const effortMenu = document.getElementById('effort-menu');
+const contextMeter = document.getElementById('context-meter');
+const contextTrigger = document.getElementById('context-trigger');
+const contextFill = contextMeter.querySelector('.context-fill');
+const contextPanel = document.getElementById('context-panel');
+const contextReading = document.getElementById('context-reading');
+const contextFigures = document.getElementById('context-figures');
+const compactButton = document.getElementById('compact');
+const compactResult = document.getElementById('compact-result');
 const send = document.getElementById('send');
 const stop = document.getElementById('stop');
 const status = document.getElementById('status');
@@ -28,6 +42,7 @@ const state = {
 };
 let turns = new Map();
 let tools = new Map();
+let compactions = new Map();
 const pendingSubmissions = new Map();
 const committedRequestIds = new Set();
 let hostQueue = [];
@@ -41,6 +56,17 @@ let renderTarget = output;
 let prependState;
 let historyHasMore = false;
 let historyLoading = false;
+let modelCatalog;
+let modelSelection;
+let modelSelecting = false;
+let openEffortRoute;
+let contextPressure;
+let compactAvailable = false;
+let compacting = false;
+let contextPinned = false;
+let sessionReady = false;
+let sending = false;
+let stopping = false;
 
 prompt.value = state.draft;
 requestAnimationFrame(autoGrowPrompt);
@@ -75,7 +101,35 @@ prompt.addEventListener('keydown', (event) => {
 });
 
 stop.addEventListener('click', () => {
-  if (running) vscode.postMessage({ type: 'stop' });
+  if (running || compacting) vscode.postMessage({ type: 'stop' });
+});
+
+modelTrigger.addEventListener('click', () => {
+  if (modelTrigger.disabled) return;
+  if (modelPicker.hidden) openModelPicker();
+  else closeModelPicker(true);
+});
+
+modelSearch.addEventListener('input', renderModelPicker);
+
+contextMeter.addEventListener('pointerenter', () => setContextOpen(true));
+contextMeter.addEventListener('pointerleave', () => {
+  if (!contextPinned) setContextOpen(false);
+});
+contextMeter.addEventListener('focusin', () => setContextOpen(true));
+contextMeter.addEventListener('focusout', (event) => {
+  if (!contextPinned && !contextMeter.contains(event.relatedTarget)) setContextOpen(false);
+});
+contextTrigger.addEventListener('click', () => {
+  contextPinned = !contextPinned;
+  setContextOpen(contextPinned || !contextPanel.hidden);
+});
+compactButton.addEventListener('click', () => {
+  if (running || compacting || !compactAvailable) return;
+  compactResult.hidden = true;
+  closeContextPanel();
+  setCompacting(true);
+  vscode.postMessage({ type: 'compact' });
 });
 
 stickyPromptJump.addEventListener('click', () => {
@@ -90,7 +144,10 @@ output.addEventListener('scroll', () => {
   requestOlderHistory();
 }, { passive: true });
 
-window.addEventListener('resize', scheduleStickyPrompt);
+window.addEventListener('resize', () => {
+  scheduleStickyPrompt();
+  positionContextPanel();
+});
 
 output.addEventListener('click', (event) => {
   const anchor = event.target.closest?.('a[href]');
@@ -104,17 +161,27 @@ output.addEventListener('click', (event) => {
 document.addEventListener('pointerdown', (event) => {
   const targetControl = event.target.closest?.('.stat-control');
   closeStatControls(targetControl);
+  if (!modelControls.contains(event.target)) closeModelPicker();
+  if (!contextMeter.contains(event.target)) closeContextPanel();
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeStatControls();
+  if (event.key !== 'Escape') return;
+  if (!effortMenu.hidden) {
+    closeEffortMenu(true);
+    return;
+  }
+  if (!modelPicker.hidden) closeModelPicker(true);
+  if (!contextPanel.hidden) closeContextPanel(true);
+  closeStatControls();
 });
 
 window.addEventListener('message', (event) => {
   const message = event.data;
   if (message.type === 'session') {
     state.sessionId = message.sessionId;
-    send.disabled = false;
+    sessionReady = true;
+    updateInputAvailability();
     if (message.sessionId === restoredSessionId) {
       requestAnimationFrame(() => {
         output.scrollTop = restoredScrollTop;
@@ -148,6 +215,57 @@ window.addEventListener('message', (event) => {
   if (message.type === 'historyLoadFailed') {
     historyLoading = false;
     status.textContent = typeof message.text === 'string' ? message.text : 'Could not load earlier history';
+    return;
+  }
+  if (message.type === 'modelCatalog') {
+    if (!isModelCatalog(message.catalog)) return;
+    modelCatalog = message.catalog;
+    renderModelTrigger();
+    if (!modelPicker.hidden) renderModelPicker();
+    return;
+  }
+  if (message.type === 'modelSelection') {
+    if (!isModelSelection(message.selection)) return;
+    modelSelection = message.selection;
+    renderModelTrigger();
+    if (!modelPicker.hidden) renderModelPicker();
+    return;
+  }
+  if (message.type === 'modelSelecting') {
+    modelSelecting = message.value === true;
+    renderModelTrigger();
+    return;
+  }
+  if (message.type === 'modelSelectionFailed') {
+    status.textContent = typeof message.text === 'string' ? message.text : 'Could not select model';
+    return;
+  }
+  if (message.type === 'contextPressure') {
+    if (message.pressure !== undefined && !isContextPressure(message.pressure)) return;
+    contextPressure = message.pressure;
+    renderContextMeter();
+    return;
+  }
+  if (message.type === 'compactAvailable') {
+    compactAvailable = message.value === true;
+    renderContextMeter();
+    return;
+  }
+  if (message.type === 'compacting') {
+    setCompacting(message.value === true);
+    return;
+  }
+  if (message.type === 'compaction') {
+    if (!isCompactionEvent(message.event)) return;
+    applyCompactionEvent(message.event);
+    return;
+  }
+  if (message.type === 'compactResult') {
+    if (!['success', 'error'].includes(message.kind)
+      || (message.text !== undefined && typeof message.text !== 'string')) return;
+    compactResult.hidden = message.text === undefined;
+    compactResult.dataset.kind = message.kind;
+    compactResult.textContent = message.text ?? '';
     return;
   }
   if (message.type === 'assistantStart') {
@@ -197,11 +315,13 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (message.type === 'sending') {
-    send.disabled = message.value;
+    sending = message.value === true;
+    updateInputAvailability();
     return;
   }
   if (message.type === 'stopping') {
-    stop.disabled = message.value;
+    stopping = message.value === true;
+    updateInputAvailability();
     return;
   }
   if (message.type === 'error') appendMessage('error', message.text);
@@ -264,6 +384,42 @@ function queueLabel(placement) {
   if (placement === 'steering') return 'Steering';
   if (placement === 'context') return 'Next step';
   return 'Queued';
+}
+
+function applyCompactionEvent(event) {
+  let item = compactions.get(event.id);
+  if (item === undefined) {
+    const root = document.createElement('div');
+    root.className = 'compaction-activity';
+    root.dataset.compactionId = event.id;
+    const indicator = document.createElement('span');
+    indicator.className = 'compaction-indicator';
+    indicator.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'compaction-label';
+    root.append(indicator, label);
+    renderTarget.append(root);
+    item = { root, label };
+    compactions.set(event.id, item);
+  }
+  if (event.type === 'start') {
+    item.root.dataset.state = 'running';
+    item.label.textContent = 'Compacting context…';
+  } else if (event.type === 'summary') {
+    item.itemCount = event.itemCount;
+    item.tokenCount = event.tokenCount;
+    item.label.textContent = `Compacting ${String(event.itemCount)} history ${event.itemCount === 1 ? 'item' : 'items'}…`;
+  } else {
+    item.root.dataset.state = event.error === undefined ? 'completed' : 'error';
+    if (event.error !== undefined) {
+      item.label.textContent = `Context compaction failed: ${event.error}`;
+    } else if (item.itemCount !== undefined && item.tokenCount !== undefined) {
+      item.label.textContent = `Context compacted · ${String(item.itemCount)} history ${item.itemCount === 1 ? 'item' : 'items'} · ~${compactTokens(item.tokenCount)} tokens`;
+    } else {
+      item.label.textContent = 'Context compaction completed';
+    }
+  }
+  followOutput();
 }
 
 function renderAssistant(html) {
@@ -628,13 +784,309 @@ function exactTokens(value) {
   return Number.isFinite(Number(value)) ? Math.round(Number(value)).toLocaleString() : '—';
 }
 
+function findCatalogModel(providerId, modelId) {
+  for (const group of modelCatalog?.groups ?? []) {
+    if (group.id !== providerId) continue;
+    const model = group.models.find((candidate) => candidate.id === modelId);
+    if (model !== undefined) return { group, model };
+  }
+  return undefined;
+}
+
+function effortLabel(model, effort) {
+  if (!isRecord(model?.reasoning)) return undefined;
+  const effective = effort ?? model.reasoning.defaultEffort;
+  if (effective === undefined) return 'Provider default';
+  return model.reasoning.efforts.find((candidate) => candidate.id === effective)?.name ?? effective;
+}
+
+function renderModelTrigger() {
+  const found = modelSelection === undefined
+    ? undefined
+    : findCatalogModel(modelSelection.provider, modelSelection.model);
+  const modelName = found?.model.name
+    ?? (modelSelection === undefined ? 'Loading models…' : `${modelSelection.provider}/${modelSelection.model}`);
+  const selectedEffort = found === undefined ? undefined : effortLabel(found.model, modelSelection?.reasoningEffort);
+  modelTrigger.replaceChildren();
+  const name = document.createElement('span');
+  name.className = 'model-trigger-name';
+  name.textContent = modelName;
+  modelTrigger.append(name);
+  if (selectedEffort !== undefined) {
+    const effort = document.createElement('span');
+    effort.className = 'model-trigger-effort';
+    effort.textContent = `· ${selectedEffort}`;
+    modelTrigger.append(effort);
+  }
+  const label = selectedEffort === undefined ? modelName : `${modelName} · ${selectedEffort}`;
+  modelTrigger.title = running || compacting
+    ? 'Model and effort can be changed after the current activity finishes.'
+    : label;
+  modelTrigger.setAttribute('aria-label', `Select model, current ${label}`);
+  modelTrigger.disabled = running || compacting || modelSelecting
+    || modelCatalog === undefined || modelSelection === undefined;
+}
+
+function openModelPicker() {
+  closeStatControls();
+  closeContextPanel();
+  modelSearch.value = '';
+  modelPicker.hidden = false;
+  modelTrigger.setAttribute('aria-expanded', 'true');
+  renderModelPicker();
+  modelSearch.focus();
+}
+
+function closeModelPicker(restoreFocus = false) {
+  if (modelPicker.hidden) return;
+  closeEffortMenu();
+  modelPicker.hidden = true;
+  modelTrigger.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) modelTrigger.focus();
+}
+
+function renderModelPicker() {
+  closeEffortMenu();
+  modelList.replaceChildren();
+  if (modelCatalog === undefined) return;
+  const query = modelSearch.value.trim().toLocaleLowerCase();
+  let visible = 0;
+  for (const group of modelCatalog.groups) {
+    const models = group.models.filter((model) => !query || [
+      group.id, group.name, model.id, model.name, model.description,
+    ].filter(Boolean).join('\n').toLocaleLowerCase().includes(query));
+    if (models.length === 0) continue;
+    const section = document.createElement('section');
+    section.className = 'model-group';
+    const heading = document.createElement('div');
+    heading.className = 'model-group-title';
+    heading.textContent = group.name;
+    section.append(heading);
+    for (const model of models) section.append(modelRow(group, model));
+    modelList.append(section);
+    visible += models.length;
+  }
+  for (const failure of modelCatalog.failures) {
+    const warning = document.createElement('div');
+    warning.className = 'model-warning';
+    warning.textContent = `${failure.name}: ${failure.message}`;
+    modelList.append(warning);
+  }
+  if (visible === 0 && modelCatalog.failures.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'model-empty';
+    empty.textContent = query ? 'No models match this search.' : 'No models available.';
+    modelList.append(empty);
+  }
+}
+
+function modelRow(group, model) {
+  const row = document.createElement('div');
+  row.className = 'model-row';
+  const selected = modelSelection?.provider === group.id && modelSelection.model === model.id;
+  const mark = document.createElement('span');
+  mark.className = selected ? 'model-current' : 'model-current-placeholder';
+  mark.setAttribute('aria-hidden', 'true');
+  const choose = document.createElement('button');
+  choose.type = 'button';
+  choose.className = 'model-choice';
+  choose.disabled = modelSelecting;
+  choose.setAttribute('aria-pressed', String(selected));
+  choose.title = `${group.id}/${model.id}`;
+  const name = document.createElement('span');
+  name.className = 'model-name';
+  name.textContent = model.name;
+  choose.append(name);
+  if (typeof model.description === 'string') {
+    const description = document.createElement('span');
+    description.className = 'model-description';
+    description.textContent = model.description;
+    choose.append(description);
+  }
+  choose.addEventListener('click', () => submitModelSelection(group.id, model.id));
+  row.append(mark, choose);
+  if (isRecord(model.reasoning)) {
+    const effort = document.createElement('button');
+    effort.type = 'button';
+    effort.className = 'model-effort';
+    effort.disabled = modelSelecting;
+    effort.textContent = effortLabel(model, selected ? modelSelection.reasoningEffort : undefined);
+    effort.title = `Choose reasoning effort for ${model.name}`;
+    effort.setAttribute('aria-haspopup', 'menu');
+    effort.addEventListener('click', () => renderEffortMenu(group, model, effort));
+    row.append(effort);
+  }
+  return row;
+}
+
+function renderEffortMenu(group, model, anchor) {
+  closeEffortMenu();
+  const title = document.createElement('div');
+  title.className = 'effort-menu-title';
+  title.textContent = model.name;
+  effortMenu.append(title);
+  const efforts = [
+    ...(model.reasoning.defaultEffort === undefined
+      ? [{ id: undefined, name: 'Provider default' }]
+      : []),
+    ...model.reasoning.efforts,
+  ];
+  const selectedRoute = modelSelection?.provider === group.id && modelSelection.model === model.id;
+  const selectedEffort = selectedRoute
+    ? modelSelection.reasoningEffort ?? model.reasoning.defaultEffort
+    : undefined;
+  if (selectedEffort !== undefined && !efforts.some((candidate) => candidate.id === selectedEffort)) {
+    efforts.unshift({ id: selectedEffort, name: selectedEffort, unavailable: true });
+  }
+  for (const candidate of efforts) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'effort-choice';
+    button.disabled = candidate.unavailable === true;
+    if (candidate.unavailable === true) button.title = 'This saved effort is no longer offered by the model';
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', String(selectedRoute && selectedEffort === candidate.id));
+    const mark = document.createElement('span');
+    mark.className = selectedRoute && selectedEffort === candidate.id
+      ? 'model-current'
+      : 'model-current-placeholder';
+    mark.setAttribute('aria-hidden', 'true');
+    const copy = document.createElement('span');
+    copy.className = 'effort-copy';
+    const name = document.createElement('span');
+    name.textContent = candidate.name;
+    copy.append(name);
+    if (typeof candidate.description === 'string') {
+      const description = document.createElement('span');
+      description.className = 'model-description';
+      description.textContent = candidate.description;
+      copy.append(description);
+    }
+    button.append(mark, copy);
+    button.addEventListener('click', () => submitModelSelection(group.id, model.id, candidate.id));
+    effortMenu.append(button);
+  }
+  openEffortRoute = { anchor };
+  effortMenu.hidden = false;
+  const pickerRect = modelPicker.getBoundingClientRect();
+  const anchorRect = anchor.getBoundingClientRect();
+  const top = Math.min(
+    Math.max(8, anchorRect.top - pickerRect.top),
+    Math.max(8, pickerRect.height - effortMenu.offsetHeight - 8),
+  );
+  effortMenu.style.top = `${String(top)}px`;
+  effortMenu.style.right = '8px';
+  effortMenu.querySelector('button:not(:disabled)')?.focus();
+}
+
+function closeEffortMenu(restoreFocus = false) {
+  if (effortMenu.hidden) return;
+  const anchor = openEffortRoute?.anchor;
+  effortMenu.hidden = true;
+  effortMenu.replaceChildren();
+  openEffortRoute = undefined;
+  if (restoreFocus && anchor?.isConnected) anchor.focus();
+}
+
+function submitModelSelection(provider, model, reasoningEffort) {
+  if (modelSelecting || running) return;
+  modelSelecting = true;
+  renderModelTrigger();
+  closeModelPicker();
+  vscode.postMessage({
+    type: 'selectModel',
+    provider,
+    model,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  });
+}
+
+function renderContextMeter() {
+  const usedTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
+  const contextWindow = contextPressure?.contextWindow;
+  const available = Number.isSafeInteger(usedTokens) && Number.isSafeInteger(contextWindow) && contextWindow > 0;
+  contextMeter.hidden = !available;
+  if (!available) {
+    closeContextPanel();
+    return;
+  }
+  const percent = Math.min(100, Math.round(usedTokens / contextWindow * 100));
+  const circumference = 2 * Math.PI * 5.5;
+  contextFill.setAttribute('stroke-dasharray', `${String(circumference * percent / 100)} ${String(circumference)}`);
+  const label = `${String(percent)}% of context used`;
+  contextTrigger.setAttribute('aria-label', label);
+  contextTrigger.title = `${label} · ~${compactTokens(usedTokens)} / ${compactTokens(contextWindow)}`;
+  contextReading.textContent = label;
+  contextFigures.textContent = `~${compactTokens(usedTokens)} / ${compactTokens(contextWindow)}`;
+  compactButton.hidden = !compactAvailable;
+  compactButton.disabled = running || compacting;
+  compactButton.textContent = compacting ? 'Compacting…' : 'Compact';
+}
+
+function setContextOpen(open) {
+  if (open && contextMeter.hidden) return;
+  if (open) {
+    closeStatControls();
+    closeModelPicker();
+  }
+  contextPanel.hidden = !open;
+  contextTrigger.setAttribute('aria-expanded', String(open));
+  if (open) positionContextPanel();
+}
+
+function positionContextPanel() {
+  if (contextPanel.hidden) return;
+  const margin = 12;
+  const gap = 8;
+  const triggerRect = contextTrigger.getBoundingClientRect();
+  const width = contextPanel.offsetWidth;
+  const height = contextPanel.offsetHeight;
+  const centered = triggerRect.left + triggerRect.width / 2 - width / 2;
+  const left = Math.min(Math.max(centered, margin), Math.max(margin, window.innerWidth - width - margin));
+  const above = triggerRect.top - gap - height;
+  const top = above >= margin
+    ? above
+    : Math.min(triggerRect.bottom + gap, Math.max(margin, window.innerHeight - height - margin));
+  contextPanel.style.left = `${String(left)}px`;
+  contextPanel.style.top = `${String(top)}px`;
+}
+
+function closeContextPanel(restoreFocus = false) {
+  contextPinned = false;
+  setContextOpen(false);
+  if (restoreFocus && !contextMeter.hidden) contextTrigger.focus();
+}
+
 function setRunning(value) {
   running = value;
-  stop.hidden = !value;
-  stop.disabled = false;
-  composer.dataset.running = value ? 'true' : 'false';
-  status.dataset.running = value ? 'true' : 'false';
-  status.textContent = value ? 'Running…' : 'Connected';
+  if (value) closeModelPicker();
+  updateInputAvailability();
+  renderActivityStatus();
+  renderModelTrigger();
+  renderContextMeter();
+}
+
+function setCompacting(value) {
+  compacting = value;
+  if (value) closeModelPicker();
+  updateInputAvailability();
+  renderActivityStatus();
+  renderModelTrigger();
+  renderContextMeter();
+}
+
+function updateInputAvailability() {
+  prompt.disabled = compacting;
+  send.disabled = !sessionReady || sending || compacting;
+  stop.hidden = !running && !compacting;
+  stop.disabled = stopping;
+  composer.dataset.running = running || compacting ? 'true' : 'false';
+}
+
+function renderActivityStatus() {
+  const active = running || compacting;
+  status.dataset.running = active ? 'true' : 'false';
+  status.textContent = compacting ? 'Compacting context…' : running ? 'Running…' : 'Connected';
 }
 
 function saveState() {
@@ -660,6 +1112,7 @@ function beginHistoryPrepend() {
   prependState = {
     turns,
     tools,
+    compactions,
     activeAssistant,
     activeAssistantMessage,
     activeTurn,
@@ -669,6 +1122,7 @@ function beginHistoryPrepend() {
   renderTarget = document.createDocumentFragment();
   turns = new Map();
   tools = new Map();
+  compactions = new Map();
   activeAssistant = undefined;
   activeAssistantMessage = undefined;
   activeTurn = undefined;
@@ -679,11 +1133,13 @@ function endHistoryPrepend() {
   const previous = prependState;
   const prependedTurns = turns;
   const prependedTools = tools;
+  const prependedCompactions = compactions;
   const fragment = renderTarget;
   renderTarget = output;
   output.prepend(fragment);
   turns = new Map([...prependedTurns, ...previous.turns]);
   tools = new Map([...prependedTools, ...previous.tools]);
+  compactions = new Map([...prependedCompactions, ...previous.compactions]);
   activeAssistant = previous.activeAssistant;
   activeAssistantMessage = previous.activeAssistantMessage;
   activeTurn = previous.activeTurn;
@@ -785,10 +1241,63 @@ function titleCase(value) {
   return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
 }
 
+function isModelSelection(value) {
+  return isRecord(value) && typeof value.provider === 'string' && value.provider.length > 0
+    && typeof value.model === 'string' && value.model.length > 0
+    && (value.reasoningEffort === undefined
+      || (typeof value.reasoningEffort === 'string' && value.reasoningEffort.length > 0));
+}
+
+function isContextPressure(value) {
+  return isRecord(value)
+    && isOptionalCount(value.pressureTokens)
+    && isOptionalCount(value.projectedTokens)
+    && (value.contextWindow === undefined
+      || (Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0));
+}
+
+function isOptionalCount(value) {
+  return value === undefined || (Number.isSafeInteger(value) && value >= 0);
+}
+
+function isCompactionEvent(value) {
+  if (!isRecord(value) || typeof value.id !== 'string' || value.id.length === 0) return false;
+  if (value.type === 'start') return Number.isFinite(value.time);
+  if (value.type === 'summary') return isOptionalCount(value.itemCount) && value.itemCount !== undefined
+    && isOptionalCount(value.tokenCount) && value.tokenCount !== undefined;
+  return value.type === 'end' && Number.isFinite(value.time)
+    && (value.error === undefined || typeof value.error === 'string');
+}
+
+function isModelCatalog(value) {
+  return isRecord(value) && isModelSelection(value.default)
+    && Array.isArray(value.routableProviders) && value.routableProviders.every((item) => typeof item === 'string')
+    && Array.isArray(value.failures) && value.failures.every((failure) => (
+      isRecord(failure) && typeof failure.id === 'string' && typeof failure.name === 'string'
+      && typeof failure.message === 'string'
+    ))
+    && Array.isArray(value.groups) && value.groups.every((group) => (
+      isRecord(group) && typeof group.id === 'string' && typeof group.name === 'string'
+      && Array.isArray(group.models) && group.models.every((model) => (
+        isRecord(model) && typeof model.id === 'string' && typeof model.name === 'string'
+        && (model.description === undefined || typeof model.description === 'string')
+        && (model.reasoning === undefined || (
+          isRecord(model.reasoning) && Array.isArray(model.reasoning.efforts)
+          && (model.reasoning.defaultEffort === undefined || typeof model.reasoning.defaultEffort === 'string')
+          && model.reasoning.efforts.every((effort) => (
+            isRecord(effort) && typeof effort.id === 'string' && typeof effort.name === 'string'
+            && (effort.description === undefined || typeof effort.description === 'string')
+          ))
+        ))
+      ))
+    ));
+}
+
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-stop.hidden = true;
-send.disabled = true;
+updateInputAvailability();
+renderModelTrigger();
+renderContextMeter();
 saveState();
