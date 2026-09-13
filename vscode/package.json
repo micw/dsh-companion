@@ -1,0 +1,54 @@
+{
+  "name": "dsh-companion-vscode",
+  "displayName": "DSH Companion",
+  "description": "An independent VS Code companion built on DeepSeek Harness.",
+  "version": "0.0.0",
+  "license": "MIT",
+  "publisher": "dsh-companion",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "deepseek",
+    "deepseek harness",
+    "dsh",
+    "coding agent",
+    "ai"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:dshCompanion.newChatEditor",
+    "onWebviewPanel:dshCompanion.chatEditor"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "dshCompanion.newChatEditor",
+        "title": "DSH: New Chat Editor"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc --watch -p ./"
+  },
+  "dependencies": {
+    "markdown-it": "^14.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.93.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.4.0"
+  }
+}

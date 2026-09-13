@@ -1,0 +1,17 @@
+{
+  "name": "dsh-companion-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm --filter dsh-companion-vscode compile",
+    "watch": "pnpm --filter dsh-companion-vscode watch",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
+    "version:resolve": "node scripts/version.mjs",
+    "vscode:package": "node scripts/package-vscode.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
