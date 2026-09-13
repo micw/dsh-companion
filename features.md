@@ -1,0 +1,66 @@
+# DSH Companion Features
+
+This document describes the currently implemented product behavior. DSH remains the authority for agents, sessions, model calls, tools, and durable history; Companion owns VS Code presentation and tab-local interaction state.
+
+## Status legend
+
+| Status | Meaning |
+|---|---|
+| `available` | Implemented and covered by the current build or tests |
+| `partial` | Usable for the proof of concept, with listed limits |
+| `development only` | Local F5 support, not a distributable product contract |
+| `not available` | Intended scope with no current implementation |
+
+## Overview
+
+| Feature | Status | Current behavior |
+|---|---|---|
+| Native chat editor | `available` | **DSH: New Chat Editor** creates one DSH session in a VS Code editor tab. |
+| Prompt composer | `available` | Starts at one line, grows to 200 pixels, retains drafts, sends with Enter, and inserts newlines with Shift+Enter. |
+| Text streaming | `available` | Streams Assistant text from `session/follow` and reconciles it with the durable message. |
+| Markdown | `available` | Renders headings, lists, quotes, tables, links, inline code, and fenced code with raw HTML disabled. |
+| Reasoning and Tool activity | `partial` | Groups reasoning, context injections, and paired Tool calls/results into collapsible Turn process rows; Tool presentation is generic. |
+| Turn usage and timing | `available` | Shows DSH-Web-style Usage and Run-time pills plus the Turn end clock. |
+| Stop | `available` | Calls DSH `session.cancel`, cancelling the active Turn while retaining pending inbox work. |
+| Tab restore | `available` | Restores the same DSH session, draft, scroll position, and disclosure state after the editor tab is reconstructed. |
+| History | `available` | Opens a bounded `session/follow` tail, includes the next older human prompt, and automatically prepends DSH `session/page` history near the upper edge. |
+| Connection recovery | `partial` | Reconnects when the editor is reconstructed; continuous transport retry and cursor-based gap repair are not implemented. |
+| Development connection | `development only` | Connects to a compatible DSH Web instance on loopback port 3081. |
+| Provider/model selection | `not available` | The selected DSH route is displayed while running, but the editor has no model picker. |
+| Approvals and questions | `not available` | No VS Code answerer exists yet for Tool approvals or `ask_user_question`. |
+| Queue display | `partial` | Shows local submissions and the authoritative DSH control-stream queue separately from the transcript; edit, remove, and steering controls are not available. |
+| Session browser | `not available` | There is no list, search, rename, archive, fork, or reopen UI for closed tabs. |
+| Session Changes | `not available` | Native SCM projection, persistent Edit Ledger, Dirty-buffer protection, review, and guarded revert remain planned. |
+| Native terminals | `not available` | No VS Code-backed DSH `TerminalBackend` exists yet. |
+| Context meter | `not available` | Context pressure and capacity are intentionally reserved for a separate display. |
+| Monetary cost | `not available` | DSH currently persists token usage but no provider-neutral monetary accounting. |
+
+## Chat and session behavior
+
+**DSH: New Chat Editor** always creates a new session rooted at the first VS Code workspace folder. Restoring an existing editor tab reuses its saved Session id and reloads transcript content from DSH; Companion does not persist a second transcript. Closing a tab only closes its client stream and does not delete the DSH session.
+
+The tab-local state contains the Session id, unsent draft, scroll position, and disclosure choices. Stable keys identify Turn, reasoning, Tool, context, Usage, and timing disclosures, so each row can retain its open state independently. This state is presentation-only and never enters the DSH session log.
+
+History remains a contiguous DSH-owned event window. Initial loading extends the bounded Follow snapshot through at least the next older human prompt when one exists. Approaching the upper edge loads additional `session/page` records through the next older human prompt and preserves the visible scroll position while prepending them.
+
+Submitted prompts remain in a dedicated queue area until DSH commits the matching `user/message`. Companion correlates the local submission and durable message by request id, removes the queue row, and renders the canonical message at its DSH Turn with the DSH event time. The queue baseline and replacements come from `session/control`; queued prompts are not optimistic transcript entries.
+
+## Transcript presentation
+
+User prompts use a compact VS Code-themed card. When no prompt is visible, the nearest prompt fully above the viewport is pinned at the top; if any later prompt remains visible, the earlier prompt stays unpinned until that later prompt has scrolled away. A jump button returns to the original prompt. Assistant text uses `markdown-it`; raw model HTML is escaped, unsafe links are rejected, and HTTP or HTTPS links open through VS Code. Reasoning, context injections, Tool calls, and Tool results appear inside a Turn process disclosure inspired by DSH Web. Its title summarizes the represented Reasoning, Tool Calls, and Context Injections, while a Turn without process rows shows its measured `Thought for …` duration as a non-interactive row instead of an empty disclosure.
+
+Tool rows currently show a generic summary, raw arguments, and text result. Specialized file previews, code-copy controls, syntax highlighting, Mermaid, native file/line links, approvals, and presenter-specific cards are not available.
+
+## Turn information
+
+Companion derives one completed-Turn summary from DSH's durable Turn, Step, request, Assistant, and usage events. Usage aggregates recorded attempts and displays exact total, uncached input, optional cached input and cache write, output, provider/model routes, and cache-hit percentage. Reasoning is displayed only when its aggregate is greater than zero. Context occupancy is deliberately excluded.
+
+The timing panel shows Turn wall time and, when the event sequence provides them, first-Step time to first token and aggregate decode throughput. The clock uses `turn/end.time`. Usage and timing panels preserve their open state with the tab, while opening another panel, clicking outside, or pressing Escape closes the active transient panel.
+
+## Stop semantics
+
+Stop targets only the current session's active Turn. It cancels the model request and cancellable in-flight Tool work through DSH `session.cancel`; pending inbox entries remain. It does not clear the queue or globally stop independently owned jobs, terminals, schedules, or other sessions.
+
+## Development connection
+
+The current connection is fixed to `http://127.0.0.1:3081`. The extension exchanges a DSH launch URL for an authority-bound cookie and retains that cookie in VS Code Secret Storage. This is development support, not the future Companion Managed Runtime; runtime installation, independent credential setup, version handshake, process supervision, updates, and External DSH mode remain unimplemented.
