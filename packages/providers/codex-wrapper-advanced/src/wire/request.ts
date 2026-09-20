@@ -30,8 +30,8 @@ export interface CodexWireRequestOptions {
 }
 
 /**
- * Serialize one DSH call without adding model-visible content. Unsupported DSH
- * controls fail instead of being silently discarded by the wrapper protocol.
+ * Serialize one DSH call. Assistant-only blocks embedded in User input become
+ * labeled inert text; unsupported controls fail instead of being discarded.
  */
 export async function serializeCodexWireRequest(
   request: GenerateOptions,
@@ -49,6 +49,7 @@ export async function serializeCodexWireRequest(
   }
   const tools = (request.tools ?? []).map(tool => ({
     type: 'function',
+    strict: false,
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
@@ -192,6 +193,15 @@ function appendAssistant(
   flushText()
 }
 
+function embeddedAssistantText(block: Extract<ContentBlock, { type: 'reasoning' | 'tool-call' }>): string {
+  switch (block.type) {
+    case 'reasoning':
+      return `[Embedded reasoning]\n${block.text}`
+    case 'tool-call':
+      return `[Embedded tool call: ${block.name}]\n${block.arguments}`
+  }
+}
+
 async function inputContent(
   blocks: readonly ContentBlock[],
   imageUrl: CodexWireRequestOptions['imageUrl'],
@@ -205,6 +215,10 @@ async function inputContent(
         break
       case 'image':
         content.push({ type: 'input_image', image_url: await imageUrl((block as ImageBlock).attachment, signal) })
+        break
+      case 'reasoning':
+      case 'tool-call':
+        content.push({ type: 'input_text', text: embeddedAssistantText(block) })
         break
       default:
         throw new LlmError(

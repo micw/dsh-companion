@@ -12,7 +12,7 @@ const base = {
 
 const imageUrl = async attachment => `data:${attachment.mediaType};base64,${attachment.id}`
 
-test('serializes instructions, multimodal user input, tools, and stable session routing', async () => {
+test('serializes instructions, multimodal user input, non-strict tools, and stable session routing', async () => {
   const request = await serializeCodexWireRequest({
     ...base,
     messages: [
@@ -35,7 +35,13 @@ test('serializes instructions, multimodal user input, tools, and stable session 
       ],
     }],
     instructions: 'System instructions.',
-    tools: [{ type: 'function', name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } }],
+    tools: [{
+      type: 'function',
+      strict: false,
+      name: 'read_file',
+      description: 'Read a file.',
+      parameters: { type: 'object' },
+    }],
     effort: 'high',
     parallel_tool_calls: true,
     store: false,
@@ -102,6 +108,27 @@ test('drops unusable replay metadata instead of sending unvalidated opaque data'
   ])
 })
 
+test('preserves assistant blocks embedded in synthetic user input as inert text', async () => {
+  const request = await serializeCodexWireRequest({
+    ...base,
+    messages: [message('user', [
+      { type: 'text', text: 'Its closing message:' },
+      { type: 'reasoning', text: 'Inspecting the package.' },
+      { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '{"path":"package.json"}' },
+    ], { kind: 'subagent-settled', form: 'notice', summary: 'The child stopped.' })],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+
+  assert.deepEqual(request.input, [{
+    type: 'message',
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'Its closing message:' },
+      { type: 'input_text', text: '[Embedded reasoning]\nInspecting the package.' },
+      { type: 'input_text', text: '[Embedded tool call: read_file]\n{"path":"package.json"}' },
+    ],
+  }])
+})
+
 test('rejects unsupported controls and unverified mid-history system changes', async () => {
   await assert.rejects(
     serializeCodexWireRequest({ ...base, temperature: 0, messages: [] }, { wireModel: 'model', imageUrl }),
@@ -116,6 +143,13 @@ test('rejects unsupported controls and unverified mid-history system changes', a
       ],
     }, { wireModel: 'model', imageUrl }),
     error => error.code === 'UNSUPPORTED_CONTENT' && /mid-history/u.test(error.message),
+  )
+  await assert.rejects(
+    serializeCodexWireRequest({
+      ...base,
+      messages: [message('user', [{ type: 'future-content' }], { kind: 'user' })],
+    }, { wireModel: 'model', imageUrl }),
+    error => error.code === 'UNSUPPORTED_CONTENT' && /future-content/u.test(error.message),
   )
 })
 

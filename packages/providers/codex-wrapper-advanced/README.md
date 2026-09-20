@@ -17,11 +17,11 @@ Local development links the pinned DSH source checkout in the sibling `deepseek-
 
 ## Model Experience
 
-The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. It does not add instructions or tools of its own.
+The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. DSH tool schemas are explicitly non-strict so the Responses endpoint preserves their optional parameters. Reasoning and tool-call blocks embedded by DSH in synthetic User input are retained as labeled inert text because the Responses User-content vocabulary cannot represent their original channels. The adapter does not add instructions or tools of its own.
 
 ### Token effect
 
-The adapter adds no model-visible text. Wire serialization preserves the DSH request content.
+Wire serialization preserves DSH request content. Synthetic User messages containing embedded Assistant reasoning or tool calls gain short labels that retain their meaning without presenting the tool call as executable provider input.
 
 ### KV Cache effect
 
