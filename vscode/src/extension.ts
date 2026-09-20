@@ -142,6 +142,11 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand('dshCompanion.sessions.focus');
       sessionTree.focusSearch();
     }),
+    vscode.commands.registerCommand('dshCompanion.openProviderSettings', () => {
+      const panel = activeCompanionPanel() ?? openChatEditor(context, runtimeControl, sessionTree);
+      panel.reveal(panel.viewColumn, false);
+      post(panel, { type: 'openProviderSettings' });
+    }),
     vscode.commands.registerCommand('dshCompanion.stopManagedRuntime', async () => {
       const selected = await vscode.window.showWarningMessage(
         'Stopping the managed DSH runtime can interrupt active agents, jobs, terminals, and schedules.',
@@ -191,11 +196,11 @@ function openChatEditor(
   runtimeControl: Promise<RuntimeControl | undefined>,
   sessionTree: SessionSidebarProvider,
   sessionId?: string,
-): void {
+): vscode.WebviewPanel {
   const existing = sessionId === undefined ? undefined : panelsBySessionId.get(sessionId);
   if (existing !== undefined) {
     existing.reveal(existing.viewColumn, false);
-    return;
+    return existing;
   }
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   const panel = vscode.window.createWebviewPanel(
@@ -209,6 +214,14 @@ function openChatEditor(
     },
   );
   configureChatEditor(context, runtimeControl, sessionTree, panel, sessionId);
+  return panel;
+}
+
+function activeCompanionPanel(): vscode.WebviewPanel | undefined {
+  for (const panel of panelsBySessionId.values()) {
+    if (panel.active) return panel;
+  }
+  return panelsBySessionId.values().next().value;
 }
 
 function configureChatEditor(

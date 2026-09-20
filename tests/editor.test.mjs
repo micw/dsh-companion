@@ -44,10 +44,12 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function renderEffortMenu/);
   assert.match(script, /getElementById\('provider-settings-trigger'\)/);
   assert.match(script, /function openProviderSettings/);
+  assert.match(script, /message\.type === 'openProviderSettings'[\s\S]*openProviderSettings\(\)/);
   assert.match(script, /function renderProviderSettings/);
   assert.match(script, /type: 'saveProviderSettings'/);
   assert.match(script, /testsConnection \? 'Save & Test' : 'Save'/);
   assert.match(script, /Connection verified · \$\{String\(message\.modelCount\)\} models loaded/);
+  assert.match(script, /`\$\{found\.group\.name\} \/ \$\{found\.model\.name\}`/);
   assert.match(script, /type: 'setProviderModelEnabled'/);
   assert.match(script, /type: 'setProviderModelsEnabled'/);
   assert.match(script, /getElementById\('provider-settings-search'\)/);
@@ -236,6 +238,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.doesNotMatch(extension, /copySessionId[\s\S]{0,200}message\.sessionId/);
   assert.match(extension, /runtime\.clientModule/);
   assert.match(extension, /registerWebviewViewProvider\('dshCompanion\.sessions'/);
+  assert.match(extension, /registerCommand\('dshCompanion\.openProviderSettings'/);
+  assert.match(extension, /post\(panel, \{ type: 'openProviderSettings' \}\)/);
   assert.match(extension, /panelsBySessionId\.get\(sessionId\)/);
   assert.match(extension, /DshSessionBrowser\.connect/);
   assert.match(sessionTree, /placeholder="Search questions and answers…"/);
