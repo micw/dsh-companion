@@ -204,6 +204,9 @@ async function startSupervisor(
     args: [...manifest.launch.args, '--port', new URL(PACKAGED_DSH_ORIGIN).port],
     cwd: globalStorage,
     origin: PACKAGED_DSH_ORIGIN,
+    backendVersion: `${manifest.dsh.upstreamVersion} (${manifest.dsh.upstreamCommit.slice(0, 8)}${
+      manifest.dsh.modified ? ` + patches ${manifest.dsh.patchSetSha256.slice(0, 8)}` : ''
+    })`,
     environment: {
       DSH_HOME: dataHome,
       DSH_TELEMETRY_DISABLED: '1',

@@ -71,6 +71,16 @@ export class RuntimeControl implements vscode.Disposable {
     return this.state.runtime.runtimeId;
   }
 
+  /** Reads the version string published for the supervised DSH backend. */
+  async backendVersion(): Promise<string> {
+    const value = await this.request('/v1/backend-version', {}, true);
+    if (value === undefined) return 'Unavailable';
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error('Invalid DSH backend version response');
+    }
+    return value;
+  }
+
   /** Returns a process-memory launch URL without persisting the launch token in runtime state. */
   async bootstrapUrl(): Promise<string> {
     const value = await this.request('/v1/bootstrap');
@@ -101,7 +111,7 @@ export class RuntimeControl implements vscode.Disposable {
     if (!isLease(value)) throw new Error('Invalid DSH runtime lease response');
   }
 
-  private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+  private async request(path: string, init: RequestInit = {}, allowNotFound = false): Promise<unknown> {
     const response = await fetch(new URL(path, this.state.controlOrigin), {
       ...init,
       headers: {
@@ -109,6 +119,7 @@ export class RuntimeControl implements vscode.Disposable {
         authorization: `Bearer ${this.state.controlToken}`,
       },
     });
+    if (allowNotFound && response.status === 404) return undefined;
     if (!response.ok) {
       throw new Error(`DSH runtime supervisor request failed with HTTP ${String(response.status)}`);
     }

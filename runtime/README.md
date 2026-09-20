@@ -40,7 +40,7 @@ ${XDG_DATA_HOME:-~/.local/share}/dsh-companion/dsh-home/
 ${XDG_DATA_HOME:-~/.local/share}/dsh-companion/runtime-owner/
 ```
 
-Installed version directories are immutable. The release build health-checks the completed payload with an isolated DSH home. Activation copies and verifies a new version in staging, stops the previous runtime owner, starts the new supervisor, waits for readiness, and only then publishes the active record. A failed activation restores and restarts the rollback version. Cleanup retains the active and rollback versions and removes only unreferenced runtime and staging directories; it never removes the separate product-data home.
+Installed version directories are immutable. The release build health-checks the completed payload with an isolated DSH home. The private authenticated supervisor exposes a compact DSH backend build identity from the verified payload manifest: upstream version and commit plus the patch-set digest when modified. A version-1 supervisor config without this newer field remains valid and reports the identity as unavailable. Activation copies and verifies a new version in staging, stops the previous runtime owner, starts the new supervisor, waits for readiness, and only then publishes the active record. A failed activation restores and restarts the rollback version. Cleanup retains the active and rollback versions and removes only unreferenced runtime and staging directories; it never removes the separate product-data home.
 
 F5 source development runs DSH directly from the configured checkout. It still participates in the same exclusive runtime ownership protocol before using the shared Companion DSH home.
 

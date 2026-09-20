@@ -21,6 +21,7 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'web-runtime-session-title-dependency',
     'sea-compatible-preset-directory-scan',
     'model-capabilities-and-selection-intent',
+    'provider-neutral-model-cost-accounting',
   ]);
 });
 
@@ -58,6 +59,29 @@ test('the SEA compatibility patch retains directory validation for preset candid
   assert.match(text, /packages\/preset\/agent-presets\/src\/discovery\.ts/);
   assert.match(text, /await isDirectory\(directory\)/);
   assert.doesNotMatch(text, /packages\/(?:core\/agent|core\/agent-loop|core\/session)\/src/);
+});
+
+test('the model cost patch persists validated accounting and projects coverage', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[4];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /interface ModelCallAccounting/);
+  assert.match(text, /type: 'accounting'/);
+  assert.match(text, /accounting\?: ModelCallAccounting/);
+  assert.match(text, /key: 'modelCost'/);
+  assert.match(text, /unaccountedTurns/);
+  assert.match(text, /accounting disagrees with its embedded stream/);
+  assert.equal(patch.upstreamDiscussion, null);
+  assert.deepEqual(patch.affectedModules, [
+    '@deepseek-ai/dsh-headless',
+    '@deepseek-ai/dsh-agent-loop',
+    '@deepseek-ai/dsh-session',
+    '@deepseek-ai/dsh-llm',
+    '@deepseek-ai/dsh-token-meter',
+    '@deepseek-ai/dsh-session-persistence-jsonl',
+    '@deepseek-ai/dsh-tool-cordis',
+  ]);
 });
 
 test('the model capabilities patch projects catalog fields without core ownership', async () => {

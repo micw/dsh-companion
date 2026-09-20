@@ -22,6 +22,21 @@ const contextReading = document.getElementById('context-reading');
 const contextFigures = document.getElementById('context-figures');
 const compactButton = document.getElementById('compact');
 const compactResult = document.getElementById('compact-result');
+const providerUsage = document.getElementById('provider-usage');
+const providerUsageTrigger = document.getElementById('provider-usage-trigger');
+const providerUsagePanel = document.getElementById('provider-usage-panel');
+const sessionInfo = document.getElementById('session-info');
+const sessionInfoTrigger = document.getElementById('session-info-trigger');
+const sessionInfoPanel = document.getElementById('session-info-panel');
+const sessionInfoId = document.getElementById('session-info-id');
+const sessionInfoCopy = document.getElementById('session-info-copy');
+const sessionInfoCompanionVersion = document.getElementById('session-info-companion-version');
+const sessionInfoBackendVersion = document.getElementById('session-info-backend-version');
+const sessionCostRow = document.getElementById('session-cost-row');
+const sessionCostControl = document.getElementById('session-cost-control');
+const sessionCostSummary = document.getElementById('session-cost-summary');
+const sessionCostBreakdown = document.getElementById('session-cost-breakdown');
+const sessionInfoStatus = document.getElementById('session-info-status');
 const send = document.getElementById('send');
 const stop = document.getElementById('stop');
 const status = document.getElementById('status');
@@ -71,6 +86,15 @@ let contextPressure;
 let compactAvailable = false;
 let compacting = false;
 let contextPinned = false;
+let providerUsagePinned = false;
+let providerUsageRendering = false;
+let providerAccounts = [];
+let sessionInformation;
+let sessionCost;
+let sessionInfoPinned = false;
+let sessionInfoStatusTimer;
+const providerUsageErrors = new Map();
+const providerUsageRefreshing = new Set();
 let sessionReady = false;
 let sending = false;
 let stopping = false;
@@ -130,7 +154,44 @@ contextMeter.addEventListener('focusout', (event) => {
 });
 contextTrigger.addEventListener('click', () => {
   contextPinned = !contextPinned;
-  setContextOpen(contextPinned || !contextPanel.hidden);
+  setContextOpen(contextPinned);
+});
+providerUsage.addEventListener('pointerenter', () => setProviderUsageOpen(true));
+providerUsage.addEventListener('pointerleave', () => {
+  if (!providerUsagePinned) setProviderUsageOpen(false);
+});
+providerUsage.addEventListener('focusin', () => setProviderUsageOpen(true));
+providerUsage.addEventListener('focusout', (event) => {
+  if (!providerUsageRendering && !providerUsagePinned && !providerUsage.contains(event.relatedTarget)) {
+    setProviderUsageOpen(false);
+  }
+});
+providerUsageTrigger.addEventListener('click', () => {
+  providerUsagePinned = !providerUsagePinned;
+  setProviderUsageOpen(providerUsagePinned);
+});
+sessionInfo.addEventListener('pointerenter', () => setSessionInfoOpen(true));
+sessionInfo.addEventListener('pointerleave', () => {
+  if (!sessionInfoPinned) setSessionInfoOpen(false);
+});
+sessionInfo.addEventListener('focusin', () => setSessionInfoOpen(true));
+sessionInfo.addEventListener('focusout', (event) => {
+  if (!sessionInfoPinned && !sessionInfo.contains(event.relatedTarget)) setSessionInfoOpen(false);
+});
+sessionInfoTrigger.addEventListener('click', () => {
+  sessionInfoPinned = !sessionInfoPinned;
+  setSessionInfoOpen(sessionInfoPinned);
+});
+sessionInfoCopy.addEventListener('click', (event) => {
+  event.stopPropagation();
+  sessionInfoCopy.disabled = true;
+  vscode.postMessage({ type: 'copySessionId' });
+});
+sessionCostControl.open = disclosureState('session:cost', false);
+sessionCostControl.addEventListener('toggle', () => {
+  state.disclosures['session:cost'] = sessionCostControl.open;
+  saveState();
+  if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
 });
 compactButton.addEventListener('click', () => {
   if (running || compacting || !compactAvailable) return;
@@ -179,6 +240,8 @@ output.addEventListener('touchmove', markUserScrollIntent, { passive: true });
 window.addEventListener('resize', () => {
   scheduleStickyPrompt();
   positionContextPanel();
+  positionProviderUsagePanel();
+  positionSessionInfoPanel();
   positionScrollButton();
 });
 
@@ -200,6 +263,8 @@ document.addEventListener('pointerdown', (event) => {
   closeStatControls(targetControl);
   if (!modelControls.contains(event.target)) closeModelPicker();
   if (!contextMeter.contains(event.target)) closeContextPanel();
+  if (!providerUsage.contains(event.target)) closeProviderUsagePanel();
+  if (!sessionInfo.contains(event.target)) closeSessionInfoPanel();
 });
 
 document.addEventListener('pointerup', finishPointerInteraction);
@@ -217,6 +282,8 @@ document.addEventListener('keydown', (event) => {
   }
   if (!modelPicker.hidden) closeModelPicker(true);
   if (!contextPanel.hidden) closeContextPanel(true);
+  if (!providerUsagePanel.hidden) closeProviderUsagePanel(true);
+  if (!sessionInfoPanel.hidden) closeSessionInfoPanel(true);
   closeStatControls();
 });
 
@@ -234,6 +301,27 @@ window.addEventListener('message', (event) => {
       requestAnimationFrame(setOutputFollow);
     }
     saveState();
+    return;
+  }
+  if (message.type === 'sessionInformation') {
+    if (!isSessionInformation(message)) return;
+    sessionInformation = {
+      sessionId: message.sessionId,
+      companionVersion: message.companionVersion,
+      backendVersion: message.backendVersion,
+    };
+    renderSessionInformation();
+    return;
+  }
+  if (message.type === 'sessionIdCopied') {
+    showSessionInfoStatus('Copied');
+    sessionInfoCopy.disabled = false;
+    return;
+  }
+  if (message.type === 'sessionIdCopyFailed') {
+    if (typeof message.text !== 'string') return;
+    showSessionInfoStatus(message.text, true);
+    sessionInfoCopy.disabled = false;
     return;
   }
   if (message.type === 'message') {
@@ -271,6 +359,7 @@ window.addEventListener('message', (event) => {
     if (!isModelSelection(message.selection)) return;
     modelSelection = message.selection;
     renderModelTrigger();
+    renderProviderUsage();
     if (!modelPicker.hidden) renderModelPicker();
     return;
   }
@@ -287,6 +376,34 @@ window.addEventListener('message', (event) => {
     if (message.pressure !== undefined && !isContextPressure(message.pressure)) return;
     contextPressure = message.pressure;
     renderContextMeter();
+    return;
+  }
+  if (message.type === 'sessionCost') {
+    if (message.cost !== undefined && !isCostSummary(message.cost)) return;
+    sessionCost = message.cost;
+    renderSessionCost();
+    return;
+  }
+  if (message.type === 'providerAccounts') {
+    if (!Array.isArray(message.snapshots) || !message.snapshots.every(isProviderAccountSnapshot)) return;
+    providerAccounts = message.snapshots;
+    for (const snapshot of providerAccounts) {
+      if (snapshot.error === undefined) providerUsageErrors.delete(snapshot.provider);
+    }
+    renderProviderUsage();
+    return;
+  }
+  if (message.type === 'providerUsageRefreshing') {
+    if (typeof message.provider !== 'string') return;
+    if (message.value === true) providerUsageRefreshing.add(message.provider);
+    else providerUsageRefreshing.delete(message.provider);
+    renderProviderUsage();
+    return;
+  }
+  if (message.type === 'providerUsageFailed') {
+    if (typeof message.provider !== 'string' || typeof message.text !== 'string') return;
+    providerUsageErrors.set(message.provider, message.text);
+    renderProviderUsage();
     return;
   }
   if (message.type === 'compactAvailable') {
@@ -701,6 +818,7 @@ function appendTurnSummary(turn, summary) {
   const footer = document.createElement('div');
   footer.className = 'turn-footer';
   if (isRecord(summary.usage)) footer.append(usageControl(turn, summary.usage));
+  if (isCostSummary(summary.cost)) footer.append(costControl(turn, summary.cost));
   footer.append(timingControl(turn, summary));
   const previousTime = activeAssistantMessage?.querySelector('.message-time');
   previousTime?.remove();
@@ -743,6 +861,90 @@ function usageControl(turn, usage) {
   }
   appendStatRows(details.panel, rows);
   return details.root;
+}
+
+function costControl(turn, cost) {
+  const label = compactCostSummary(cost);
+  const details = statControl(
+    `turn:${String(turn)}:cost`,
+    'cost',
+    label,
+    'Turn cost',
+    label,
+  );
+  appendCostBreakdown(details.panel, cost);
+  return details.root;
+}
+
+function appendCostBreakdown(panel, cost) {
+  const rows = [];
+  for (const total of cost.totals) rows.push([`Total (${total.currency})`, formatMoney(total)]);
+  if (isRecord(cost.coverage)) {
+    rows.push(['Accounted turns', String(cost.coverage.accountedTurns)]);
+    if (cost.coverage.unaccountedTurns > 0) {
+      rows.push(['Unaccounted turns', String(cost.coverage.unaccountedTurns)]);
+    }
+  }
+  for (const bucket of cost.breakdown) {
+    rows.push([
+      `${titleCase(bucket.kind)} · ${String(bucket.calls)} call${bucket.calls === 1 ? '' : 's'}`,
+      formatMoney(bucket),
+    ]);
+  }
+  for (const detail of cost.details ?? []) {
+    rows.push([`${titleCase(detail.kind)} detail`, formatMoney(detail)]);
+    if (Array.isArray(detail.routes) && detail.routes.length > 0) {
+      rows.push(['Provider / model', detail.routes.join(', ')]);
+    }
+    if (Array.isArray(detail.sources) && detail.sources.length > 0) {
+      rows.push(['Source', detail.sources.join(', ')]);
+    }
+    if (Array.isArray(detail.tariffVersions) && detail.tariffVersions.length > 0) {
+      rows.push(['Tariff', detail.tariffVersions.join(', ')]);
+    }
+    if (isRecord(detail.components)) {
+      for (const [key, title] of [
+        ['inputNanos', 'Input'],
+        ['outputNanos', 'Output'],
+        ['cacheReadNanos', 'Cache read'],
+        ['cacheWriteNanos', 'Cache write'],
+      ]) {
+        if (Number.isSafeInteger(detail.components[key])) {
+          rows.push([title, formatMoney({ currency: detail.currency, nanos: detail.components[key] })]);
+        }
+      }
+    }
+  }
+  appendStatRows(panel, rows);
+}
+
+function compactCostSummary(cost) {
+  if (cost.totals.length !== 1) {
+    const suffix = cost.coverage?.unaccountedTurns > 0 ? ' · known subtotal' : '';
+    return `${String(cost.totals.length)} currencies${suffix}`;
+  }
+  const amount = formatMoney(cost.totals[0]);
+  if (cost.coverage?.unaccountedTurns > 0) return `≥${amount} known`;
+  const kinds = new Set(cost.breakdown.map((bucket) => bucket.kind));
+  if (kinds.size > 1) return `Σ ${amount}`;
+  if (kinds.has('estimated')) return `~${amount}`;
+  if (kinds.has('virtual')) return `${amount} equivalent`;
+  return amount;
+}
+
+function formatMoney(amount) {
+  const value = amount.nanos / 1_000_000_000;
+  const digits = value > 0 && value < 0.000001 ? 9 : value < 0.01 ? 6 : 4;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: amount.currency,
+      minimumFractionDigits: value === 0 ? 2 : value < 0.01 ? Math.min(4, digits) : 2,
+      maximumFractionDigits: digits,
+    }).format(value);
+  } catch {
+    return `${value.toFixed(digits)} ${amount.currency}`;
+  }
 }
 
 function timingControl(turn, summary) {
@@ -807,6 +1009,14 @@ function statIcon(kind) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', 'M2.5 3.5C2.5 2.1 4.9 1 8 1s5.5 1.1 5.5 2.5v9C13.5 13.9 11.1 15 8 15s-5.5-1.1-5.5-2.5v-9Zm1 0C3.5 4.2 5.3 5 8 5s4.5-.8 4.5-1.5S10.7 2 8 2s-4.5.8-4.5 1.5Zm0 3v2C3.5 9.2 5.3 10 8 10s4.5-.8 4.5-1.5v-2C11.5 7.2 9.9 8 8 8s-3.5-.8-4.5-1.5Zm9 4C11.5 11.2 9.9 12 8 12s-3.5-.8-4.5-1.5v2C3.5 13.2 5.3 14 8 14s4.5-.8 4.5-1.5v-2Z');
     svg.append(path);
+  } else if (kind === 'cost') {
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', '8');
+    text.setAttribute('y', '12');
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('font-size', '12');
+    text.textContent = '$';
+    svg.append(text);
   } else {
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('cx', '8');
@@ -894,6 +1104,8 @@ function renderModelTrigger() {
 function openModelPicker() {
   closeStatControls();
   closeContextPanel();
+  closeProviderUsagePanel();
+  closeSessionInfoPanel();
   modelSearch.value = '';
   modelPicker.hidden = false;
   modelTrigger.setAttribute('aria-expanded', 'true');
@@ -1061,6 +1273,307 @@ function submitModelSelection(provider, model, reasoningEffort) {
   });
 }
 
+function renderSessionInformation() {
+  const available = sessionInformation !== undefined;
+  sessionInfo.hidden = !available;
+  if (!available) {
+    closeSessionInfoPanel();
+    return;
+  }
+  sessionInfoId.textContent = sessionInformation.sessionId;
+  sessionInfoId.title = sessionInformation.sessionId;
+  sessionInfoCompanionVersion.textContent = sessionInformation.companionVersion;
+  sessionInfoBackendVersion.textContent = sessionInformation.backendVersion;
+  renderSessionCost();
+  if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
+}
+
+function renderSessionCost() {
+  const available = isCostSummary(sessionCost) && sessionCost.totals.length > 0;
+  sessionCostRow.hidden = !available;
+  if (!available) {
+    sessionCostSummary.textContent = '';
+    sessionCostBreakdown.replaceChildren();
+    if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
+    return;
+  }
+  sessionCostSummary.textContent = compactCostSummary(sessionCost);
+  sessionCostBreakdown.replaceChildren();
+  appendCostBreakdown(sessionCostBreakdown, sessionCost);
+  if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
+}
+
+function showSessionInfoStatus(text, error = false) {
+  if (sessionInfoStatusTimer !== undefined) clearTimeout(sessionInfoStatusTimer);
+  sessionInfoStatus.hidden = false;
+  sessionInfoStatus.dataset.error = error ? 'true' : 'false';
+  sessionInfoStatus.textContent = text;
+  sessionInfoCopy.textContent = error ? 'Retry' : 'Copied';
+  sessionInfoStatusTimer = setTimeout(() => {
+    sessionInfoStatus.hidden = true;
+    sessionInfoStatus.textContent = '';
+    sessionInfoCopy.textContent = 'Copy';
+    sessionInfoStatusTimer = undefined;
+  }, 1800);
+}
+
+function setSessionInfoOpen(open) {
+  if (open && sessionInfo.hidden) return;
+  if (open) {
+    closeStatControls();
+    closeModelPicker();
+    closeContextPanel();
+    closeProviderUsagePanel();
+  }
+  sessionInfoPanel.hidden = !open;
+  sessionInfoTrigger.setAttribute('aria-expanded', String(open));
+  if (open) positionSessionInfoPanel();
+}
+
+function positionSessionInfoPanel() {
+  if (sessionInfoPanel.hidden) return;
+  positionComposerPanel(sessionInfoTrigger, sessionInfoPanel);
+}
+
+function closeSessionInfoPanel(restoreFocus = false) {
+  sessionInfoPinned = false;
+  setSessionInfoOpen(false);
+  if (restoreFocus && !sessionInfo.hidden) sessionInfoTrigger.focus();
+}
+
+function currentProviderAccount() {
+  if (typeof modelSelection?.provider !== 'string') return undefined;
+  return providerAccounts.find((snapshot) => snapshot.provider === modelSelection.provider);
+}
+
+function selectedAllowance(snapshot) {
+  const groups = snapshot?.value?.allowances ?? [];
+  return groups.find((group) => group.id === snapshot.value.activeAllowance)
+    ?? groups.find((group) => group.primary !== undefined || group.secondary !== undefined)
+    ?? groups[0];
+}
+
+function firstAllowanceWindow(group) {
+  return group?.primary ?? group?.secondary;
+}
+
+function allowanceResetSeconds(window, observedAt, now = Date.now()) {
+  if (Number.isSafeInteger(window?.resetsAt)) return Math.max(0, window.resetsAt - Math.floor(now / 1000));
+  if (Number.isSafeInteger(window?.resetsInSeconds)) {
+    const elapsed = Number.isSafeInteger(observedAt) ? Math.max(0, Math.floor((now - observedAt) / 1000)) : 0;
+    return Math.max(0, window.resetsInSeconds - elapsed);
+  }
+  return undefined;
+}
+
+function allowanceTimeMarkerPercent(window, observedAt, now = Date.now()) {
+  const remaining = allowanceResetSeconds(window, observedAt, now);
+  if (!Number.isSafeInteger(window?.windowSeconds) || window.windowSeconds <= 0 || remaining === undefined) {
+    return undefined;
+  }
+  return Math.max(0, Math.min(100, (window.windowSeconds - remaining) / window.windowSeconds * 100));
+}
+
+function formatAllowanceDuration(seconds) {
+  if (!Number.isFinite(seconds)) return '';
+  const value = Math.max(0, Math.floor(seconds));
+  if (value < 60) return `${String(value)}s`;
+  const minutes = Math.floor(value / 60);
+  if (minutes < 60) return `${String(minutes)}m`;
+  const hours = Math.round(value / 3600);
+  if (hours < 24) return `${String(Math.max(1, hours))}h`;
+  const days = Math.floor(hours / 24);
+  const remainder = hours % 24;
+  return remainder === 0 ? `${String(days)}d` : `${String(days)}d ${String(remainder)}h`;
+}
+
+function formatAllowanceWindow(seconds) {
+  if (!Number.isSafeInteger(seconds)) return '';
+  if (seconds % 86400 === 0) return `${String(seconds / 86400)}d`;
+  if (seconds % 3600 === 0) return `${String(seconds / 3600)}h`;
+  if (seconds % 60 === 0) return `${String(seconds / 60)}m`;
+  return `${String(seconds)}s`;
+}
+
+function formatAllowancePercent(value) {
+  if (!Number.isFinite(value)) return 'unknown';
+  return `${Number.isInteger(value) ? String(value) : value.toFixed(1)}%`;
+}
+
+function providerUsageSummary(snapshot) {
+  const group = selectedAllowance(snapshot);
+  const window = firstAllowanceWindow(group);
+  if (group?.reached === true) {
+    const reset = formatAllowanceDuration(allowanceResetSeconds(window, snapshot?.observedAt));
+    return { label: `Limit reached${reset === '' ? '' : ` · ${reset}`}`, tone: 'danger' };
+  }
+  if (window === undefined) {
+    return { label: snapshot?.refreshing ? 'Usage…' : 'Usage', tone: snapshot?.status === 'stale' ? 'warning' : 'normal' };
+  }
+  const reset = formatAllowanceDuration(allowanceResetSeconds(window, snapshot?.observedAt));
+  const label = `${formatAllowancePercent(window.usedPercent)} used${reset === '' ? '' : ` · ${reset}`}`;
+  const tone = window.usedPercent >= 95 ? 'danger'
+    : window.usedPercent >= 80 || snapshot.status === 'stale' ? 'warning' : 'normal';
+  return { label, tone };
+}
+
+function renderProviderUsage() {
+  const snapshot = currentProviderAccount();
+  providerUsage.hidden = snapshot === undefined;
+  if (snapshot === undefined) {
+    closeProviderUsagePanel();
+    return;
+  }
+  const summary = providerUsageSummary(snapshot);
+  providerUsageTrigger.textContent = providerUsageRefreshing.has(snapshot.provider) ? 'Usage…' : summary.label;
+  providerUsageTrigger.classList.toggle('warning', summary.tone === 'warning');
+  providerUsageTrigger.classList.toggle('danger', summary.tone === 'danger');
+  providerUsageTrigger.title = summary.label;
+  if (!providerUsagePanel.hidden) {
+    renderProviderUsagePanel(snapshot);
+    positionProviderUsagePanel();
+  }
+}
+
+function renderProviderUsagePanel(snapshot) {
+  const restoreRefreshFocus = document.activeElement === providerUsagePanel.querySelector('.provider-usage-refresh');
+  providerUsageRendering = true;
+  providerUsagePanel.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'provider-usage-head';
+  const title = document.createElement('strong');
+  const plan = snapshot.value?.plan;
+  title.textContent = plan === undefined ? 'Provider usage' : `Plan: ${plan.name ?? plan.id}`;
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'provider-usage-refresh';
+  refresh.textContent = providerUsageRefreshing.has(snapshot.provider) || snapshot.refreshing ? 'Refreshing…' : 'Refresh';
+  refresh.disabled = providerUsageRefreshing.has(snapshot.provider) || snapshot.refreshing;
+  refresh.addEventListener('click', (event) => {
+    event.stopPropagation();
+    providerUsageErrors.delete(snapshot.provider);
+    providerUsageRefreshing.add(snapshot.provider);
+    renderProviderUsage();
+    vscode.postMessage({ type: 'refreshProviderUsage', provider: snapshot.provider });
+  });
+  head.append(title, refresh);
+  providerUsagePanel.append(head);
+
+  if (snapshot.value?.accountStatus === 'authentication-required') {
+    appendProviderUsageMeta('Authentication required', 'provider-usage-error');
+  }
+  const credits = snapshot.value?.credits;
+  if (credits?.unlimited === true) appendProviderUsageMeta('Credits: unlimited');
+  else if (typeof credits?.balance === 'string') appendProviderUsageMeta(`Credit balance: ${credits.balance}`);
+  if (credits?.overageLimitReached === true) appendProviderUsageMeta('Overage limit reached', 'provider-usage-error');
+
+  const groups = snapshot.value?.allowances ?? [];
+  for (const group of groups) {
+    const section = document.createElement('section');
+    section.className = 'provider-usage-group';
+    const groupHead = document.createElement('div');
+    groupHead.className = 'provider-usage-group-head';
+    const groupName = document.createElement('strong');
+    groupName.textContent = group.name ?? group.id;
+    const groupState = document.createElement('span');
+    groupState.textContent = group.reached === true
+      ? 'Limit reached'
+      : group.id === snapshot.value?.activeAllowance ? 'Active' : '';
+    groupHead.append(groupName, groupState);
+    section.append(groupHead);
+    if (group.primary !== undefined) {
+      section.append(providerUsageWindow('Primary', group.primary, group.reached === true, snapshot.observedAt));
+    }
+    if (group.secondary !== undefined) {
+      section.append(providerUsageWindow('Secondary', group.secondary, group.reached === true, snapshot.observedAt));
+    }
+    providerUsagePanel.append(section);
+  }
+  if (groups.length === 0) appendProviderUsageMeta('No allowance data available yet.');
+  if (snapshot.observedAt !== undefined && groups.length > 0) {
+    const age = formatAllowanceDuration((Date.now() - snapshot.observedAt) / 1000);
+    appendProviderUsageMeta(`Updated ${age} ago${snapshot.status === 'stale' ? ' · stale' : ''}`);
+  }
+  const error = providerUsageErrors.get(snapshot.provider) ?? snapshot.error;
+  if (typeof error === 'string' && error !== '') appendProviderUsageMeta(error, 'provider-usage-error');
+  if (restoreRefreshFocus) refresh.focus();
+  providerUsageRendering = false;
+}
+
+function providerUsageWindow(label, window, reached, observedAt) {
+  const block = document.createElement('div');
+  block.className = 'provider-usage-window';
+  const head = document.createElement('div');
+  head.className = 'provider-usage-window-head';
+  const duration = formatAllowanceWindow(window.windowSeconds);
+  const name = document.createElement('span');
+  name.textContent = `${label}${duration === '' ? '' : ` (${duration})`}`;
+  const value = document.createElement('span');
+  value.textContent = formatAllowancePercent(window.usedPercent);
+  head.append(name, value);
+  const progress = document.createElement('div');
+  progress.className = 'provider-usage-progress';
+  progress.setAttribute('role', 'progressbar');
+  progress.setAttribute('aria-valuemin', '0');
+  progress.setAttribute('aria-valuemax', '100');
+  const width = Math.max(0, Math.min(100, window.usedPercent));
+  progress.setAttribute('aria-valuenow', String(width));
+  progress.setAttribute('aria-valuetext', `${formatAllowancePercent(window.usedPercent)} used`);
+  const fill = document.createElement('span');
+  fill.className = 'provider-usage-fill';
+  fill.style.width = `${String(width)}%`;
+  if (reached || width >= 95) fill.classList.add('danger');
+  else if (width >= 80) fill.classList.add('warning');
+  progress.append(fill);
+  const elapsed = allowanceTimeMarkerPercent(window, observedAt);
+  if (elapsed !== undefined) {
+    const marker = document.createElement('span');
+    marker.className = 'provider-usage-time-marker';
+    marker.style.left = `${String(Math.max(1.5, Math.min(98.5, elapsed)))}%`;
+    marker.title = `${String(Math.round(elapsed))}% of the allowance window elapsed`;
+    progress.append(marker);
+  }
+  const reset = document.createElement('div');
+  reset.className = 'provider-usage-reset';
+  const remaining = formatAllowanceDuration(allowanceResetSeconds(window, observedAt));
+  reset.textContent = remaining === '' ? 'Reset unknown' : `Resets in ${remaining}`;
+  block.append(head, progress, reset);
+  return block;
+}
+
+function appendProviderUsageMeta(text, className = 'provider-usage-meta') {
+  const row = document.createElement('div');
+  row.className = className;
+  row.textContent = text;
+  providerUsagePanel.append(row);
+}
+
+function setProviderUsageOpen(open) {
+  if (open && providerUsage.hidden) return;
+  if (open) {
+    closeStatControls();
+    closeModelPicker();
+    closeContextPanel();
+    closeSessionInfoPanel();
+    const snapshot = currentProviderAccount();
+    if (snapshot !== undefined) renderProviderUsagePanel(snapshot);
+  }
+  providerUsagePanel.hidden = !open;
+  providerUsageTrigger.setAttribute('aria-expanded', String(open));
+  if (open) positionProviderUsagePanel();
+}
+
+function positionProviderUsagePanel() {
+  if (providerUsagePanel.hidden) return;
+  positionComposerPanel(providerUsageTrigger, providerUsagePanel);
+}
+
+function closeProviderUsagePanel(restoreFocus = false) {
+  providerUsagePinned = false;
+  setProviderUsageOpen(false);
+  if (restoreFocus && !providerUsage.hidden) providerUsageTrigger.focus();
+}
+
 function renderContextMeter() {
   const usedTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
   const contextWindow = contextPressure?.contextWindow;
@@ -1088,6 +1601,8 @@ function setContextOpen(open) {
   if (open) {
     closeStatControls();
     closeModelPicker();
+    closeProviderUsagePanel();
+    closeSessionInfoPanel();
   }
   contextPanel.hidden = !open;
   contextTrigger.setAttribute('aria-expanded', String(open));
@@ -1096,19 +1611,23 @@ function setContextOpen(open) {
 
 function positionContextPanel() {
   if (contextPanel.hidden) return;
+  positionComposerPanel(contextTrigger, contextPanel);
+}
+
+function positionComposerPanel(trigger, panel) {
   const margin = 12;
   const gap = 8;
-  const triggerRect = contextTrigger.getBoundingClientRect();
-  const width = contextPanel.offsetWidth;
-  const height = contextPanel.offsetHeight;
+  const triggerRect = trigger.getBoundingClientRect();
+  const width = panel.offsetWidth;
+  const height = panel.offsetHeight;
   const centered = triggerRect.left + triggerRect.width / 2 - width / 2;
   const left = Math.min(Math.max(centered, margin), Math.max(margin, window.innerWidth - width - margin));
   const above = triggerRect.top - gap - height;
   const top = above >= margin
     ? above
     : Math.min(triggerRect.bottom + gap, Math.max(margin, window.innerHeight - height - margin));
-  contextPanel.style.left = `${String(left)}px`;
-  contextPanel.style.top = `${String(top)}px`;
+  panel.style.left = `${String(left)}px`;
+  panel.style.top = `${String(top)}px`;
 }
 
 function closeContextPanel(restoreFocus = false) {
@@ -1399,6 +1918,88 @@ function titleCase(value) {
   return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
 }
 
+function isCostSummary(value) {
+  if (!isRecord(value) || Object.keys(value).some((key) => (
+    !['totals', 'breakdown', 'details', 'coverage'].includes(key)
+  )) || (value.coverage !== undefined && (!isRecord(value.coverage)
+    || Object.keys(value.coverage).length !== 2
+    || !isCount(value.coverage.accountedTurns) || Object.is(value.coverage.accountedTurns, -0)
+    || !isCount(value.coverage.unaccountedTurns) || Object.is(value.coverage.unaccountedTurns, -0)))
+    || !Array.isArray(value.totals) || !value.totals.every(isMonetaryAmount)
+    || !Array.isArray(value.breakdown)) return false;
+  const totals = new Map();
+  for (const total of value.totals) {
+    if (totals.has(total.currency)) return false;
+    totals.set(total.currency, total.nanos);
+  }
+  const buckets = new Set();
+  const sums = new Map();
+  for (const bucket of value.breakdown) {
+    if (!isRecord(bucket) || Object.keys(bucket).length !== 4
+      || !['reported', 'estimated', 'virtual'].includes(bucket.kind)
+      || typeof bucket.currency !== 'string' || !/^[A-Z]{3,12}$/u.test(bucket.currency)
+      || !isCount(bucket.nanos) || Object.is(bucket.nanos, -0)
+      || !Number.isSafeInteger(bucket.calls) || bucket.calls <= 0
+      || (bucket.routes !== undefined
+        && (!Array.isArray(bucket.routes) || !bucket.routes.every((item) => typeof item === 'string')))
+      || (bucket.sources !== undefined
+        && (!Array.isArray(bucket.sources) || !bucket.sources.every((item) => typeof item === 'string')))
+      || (bucket.tariffVersions !== undefined
+        && (!Array.isArray(bucket.tariffVersions)
+          || !bucket.tariffVersions.every((item) => typeof item === 'string')))
+      || (bucket.components !== undefined && (!isRecord(bucket.components)
+        || !['inputNanos', 'outputNanos', 'cacheReadNanos', 'cacheWriteNanos']
+          .every((key) => bucket.components[key] === undefined || isCount(bucket.components[key]))))) return false;
+    const key = `${bucket.currency}\0${bucket.kind}`;
+    if (buckets.has(key)) return false;
+    buckets.add(key);
+    const sum = (sums.get(bucket.currency) ?? 0) + bucket.nanos;
+    if (!Number.isSafeInteger(sum)) return false;
+    sums.set(bucket.currency, sum);
+  }
+  if (totals.size !== sums.size) return false;
+  for (const [currency, nanos] of sums) if (totals.get(currency) !== nanos) return false;
+  return value.details === undefined || (Array.isArray(value.details) && value.details.every(isCostDetail));
+}
+
+function isCostDetail(detail) {
+  return isRecord(detail) && Object.keys(detail).every((key) => (
+    ['kind', 'currency', 'nanos', 'calls', 'routes', 'sources', 'tariffVersions', 'components'].includes(key)
+  )) && ['reported', 'estimated', 'virtual'].includes(detail.kind)
+    && typeof detail.currency === 'string' && /^[A-Z]{3,12}$/u.test(detail.currency)
+    && isCount(detail.nanos) && !Object.is(detail.nanos, -0) && Number.isSafeInteger(detail.calls) && detail.calls > 0
+    && (detail.routes === undefined
+      || (Array.isArray(detail.routes) && detail.routes.every((item) => typeof item === 'string')))
+    && (detail.sources === undefined
+      || (Array.isArray(detail.sources) && detail.sources.every((item) => typeof item === 'string')))
+    && (detail.tariffVersions === undefined
+      || (Array.isArray(detail.tariffVersions)
+        && detail.tariffVersions.every((item) => typeof item === 'string')))
+    && (detail.components === undefined || (isRecord(detail.components)
+      && Object.keys(detail.components).length > 0
+      && Object.keys(detail.components).every((key) => (
+        ['inputNanos', 'outputNanos', 'cacheReadNanos', 'cacheWriteNanos'].includes(key)
+      )) && ['inputNanos', 'outputNanos', 'cacheReadNanos', 'cacheWriteNanos']
+        .every((key) => detail.components[key] === undefined
+          || (isCount(detail.components[key]) && !Object.is(detail.components[key], -0)))));
+}
+
+function isMonetaryAmount(value) {
+  return isRecord(value) && Object.keys(value).length === 2
+    && typeof value.currency === 'string' && /^[A-Z]{3,12}$/u.test(value.currency)
+    && isCount(value.nanos) && !Object.is(value.nanos, -0);
+}
+
+function isCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSessionInformation(value) {
+  return isRecord(value) && typeof value.sessionId === 'string' && value.sessionId.length > 0
+    && typeof value.companionVersion === 'string' && value.companionVersion.length > 0
+    && typeof value.backendVersion === 'string' && value.backendVersion.length > 0;
+}
+
 function isModelSelection(value) {
   return isRecord(value) && typeof value.provider === 'string' && value.provider.length > 0
     && typeof value.model === 'string' && value.model.length > 0
@@ -1412,6 +2013,44 @@ function isContextPressure(value) {
     && isOptionalCount(value.projectedTokens)
     && (value.contextWindow === undefined
       || (Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0));
+}
+
+function isProviderAccountSnapshot(value) {
+  if (!isRecord(value) || typeof value.provider !== 'string'
+    || !['ready', 'stale', 'unavailable'].includes(value.status)
+    || typeof value.refreshing !== 'boolean' || !isOptionalCount(value.observedAt)
+    || (value.error !== undefined && typeof value.error !== 'string')) return false;
+  if (value.value === undefined) return true;
+  if (!isRecord(value.value) || !['ready', 'authentication-required'].includes(value.value.accountStatus)
+    || (value.value.activeAllowance !== undefined && typeof value.value.activeAllowance !== 'string')
+    || !Array.isArray(value.value.allowances) || !value.value.allowances.every(isAllowanceGroup)) return false;
+  const plan = value.value.plan;
+  if (plan !== undefined && (!isRecord(plan) || typeof plan.id !== 'string'
+    || (plan.name !== undefined && typeof plan.name !== 'string'))) return false;
+  const credits = value.value.credits;
+  return credits === undefined || (isRecord(credits)
+    && (credits.hasCredits === undefined || typeof credits.hasCredits === 'boolean')
+    && (credits.unlimited === undefined || typeof credits.unlimited === 'boolean')
+    && (credits.balance === undefined || typeof credits.balance === 'string')
+    && (credits.overageLimitReached === undefined || typeof credits.overageLimitReached === 'boolean'));
+}
+
+function isAllowanceGroup(value) {
+  return isRecord(value) && typeof value.id === 'string'
+    && (value.name === undefined || typeof value.name === 'string')
+    && (value.reached === undefined || typeof value.reached === 'boolean')
+    && (value.primary === undefined || isAllowanceWindow(value.primary))
+    && (value.secondary === undefined || isAllowanceWindow(value.secondary));
+}
+
+function isAllowanceWindow(value) {
+  return isRecord(value) && typeof value.usedPercent === 'number' && Number.isFinite(value.usedPercent)
+    && value.usedPercent >= 0 && isOptionalCount(value.windowSeconds)
+    && isOptionalInteger(value.resetsAt) && isOptionalInteger(value.resetsInSeconds);
+}
+
+function isOptionalInteger(value) {
+  return value === undefined || Number.isSafeInteger(value);
 }
 
 function isOptionalCount(value) {
@@ -1457,6 +2096,8 @@ function isRecord(value) {
 
 updateInputAvailability();
 renderModelTrigger();
+renderProviderUsage();
+renderSessionInformation();
 renderContextMeter();
 updateScrollButton();
 saveState();

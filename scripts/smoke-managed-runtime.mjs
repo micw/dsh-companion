@@ -60,6 +60,8 @@ try {
     modelCatalog: () => {},
     modelSelection: () => {},
     contextPressure: () => {},
+    sessionCost: () => {},
+    providerAccounts: () => {},
     compactAvailable: () => {},
     compaction: () => {},
     compacting: () => {},

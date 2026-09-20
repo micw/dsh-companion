@@ -50,6 +50,22 @@
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-tool-cordis"
       ]
+    },
+    {
+      "id": "provider-neutral-model-cost-accounting",
+      "file": "patches/0005-add-provider-neutral-model-cost-accounting.patch",
+      "sha256": "2df15f112cfd8843fde4cfaa297c46f08ce0844fc1d10f4d122c27190ffeaa59",
+      "assessment": "patches/provider-neutral-model-cost-accounting.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-headless",
+        "@deepseek-ai/dsh-agent-loop",
+        "@deepseek-ai/dsh-session",
+        "@deepseek-ai/dsh-llm",
+        "@deepseek-ai/dsh-token-meter",
+        "@deepseek-ai/dsh-session-persistence-jsonl",
+        "@deepseek-ai/dsh-tool-cordis"
+      ]
     }
   ]
 }

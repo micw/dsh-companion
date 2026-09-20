@@ -165,6 +165,10 @@ export class RuntimeSupervisor {
       response.end(`${JSON.stringify(this.snapshot())}\n`);
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/v1/backend-version') {
+      response.end(`${JSON.stringify(this.#config.backendVersion)}\n`);
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/v1/bootstrap') {
       if (this.#bootstrapUrl === undefined) {
         response.statusCode = 409;
@@ -262,7 +266,9 @@ export function parseConfig(value) {
   if (!isRecord(value) || value.version !== 1 || typeof value.stateFile !== 'string'
     || typeof value.command !== 'string' || !Array.isArray(value.args)
     || value.args.some((item) => typeof item !== 'string') || typeof value.cwd !== 'string'
-    || typeof value.origin !== 'string') {
+    || typeof value.origin !== 'string'
+    || (value.backendVersion !== undefined
+      && (typeof value.backendVersion !== 'string' || value.backendVersion.length === 0))) {
     throw new Error('Invalid DSH Companion runtime supervisor configuration');
   }
   const origin = new URL(value.origin);
@@ -295,6 +301,7 @@ export function parseConfig(value) {
     args: [...value.args],
     cwd: resolve(value.cwd),
     origin: origin.origin,
+    backendVersion: value.backendVersion ?? 'Unavailable',
     environment: { ...(value.environment ?? {}) },
     environmentFile: value.environmentFile === undefined ? undefined : resolve(value.environmentFile),
     clientModule: value.clientModule === undefined ? undefined : resolve(value.clientModule),
