@@ -69,6 +69,23 @@ try {
     || envelope.result?.ok !== true || !Array.isArray(envelope.result.value?.items)) {
     throw new Error('Managed DSH Session-list smoke returned an invalid response');
   }
+  const searchRpcId = randomUUID();
+  const searchResponse = await fetch(new URL('/api/session/search', control.origin), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: searchRpcId,
+      method: 'session/search',
+      payload: { args: { request: { query: 'managed-runtime-search-smoke' } } },
+    }),
+  });
+  const searchEnvelope = await searchResponse.json();
+  if (!searchResponse.ok || searchEnvelope?.type !== 'server-response' || searchEnvelope.rpcId !== searchRpcId
+    || searchEnvelope.result?.ok !== true || !Array.isArray(searchEnvelope.result.value?.items)
+    || typeof searchEnvelope.result.value?.hasMore !== 'boolean') {
+    throw new Error(`Managed DSH Session-search smoke returned an invalid response: ${JSON.stringify(searchEnvelope)}`);
+  }
   const active = JSON.parse(await readFile(join(storage, 'runtime', 'active.json'), 'utf8'));
   if (active.directory !== join(storage, 'runtime', 'versions', `${manifest.companionVersion}-linux-x64`)) {
     throw new Error('Managed DSH activation record does not select the installed payload');

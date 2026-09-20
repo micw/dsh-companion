@@ -52,6 +52,7 @@ test('the Companion bundle exposes only its system preset roster', async () => {
   assert.match(patch, /includeShippedRoot: false/u);
   assert.match(patch, /includeUserRoot: false/u);
   assert.match(patch, /- id: llm-deepseek\n\s+config:\n\s+enabled: false/u);
+  assert.match(patch, /- id: session-query-sqlite\n\s+config:\n\s+path: !!js dshHomePath\('session-search\.sqlite'\)\n\s+openAt: first-search/u);
   assert.doesNotMatch(patch, /default: (?:standard|ptc|cordis)/u);
   assert.ok(packageJson.files.includes('presets/**/*.yml'));
 });

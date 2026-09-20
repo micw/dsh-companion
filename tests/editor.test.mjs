@@ -15,6 +15,7 @@ import {
   parseModelCatalog,
   parsePermissionSelection,
   parseProviderAccountSnapshot,
+  parseSessionListSnapshot,
   parseSettingsDescribe,
   reconcileSettlementAccounting,
 } from '../vscode/out/dshClient.js';
@@ -24,6 +25,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
   const dshClient = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
+  const sessionTree = await readFile(new URL('../vscode/src/sessionTree.ts', import.meta.url), 'utf8');
+  const sessionsScript = await readFile(new URL('../vscode/media/sessions.js', import.meta.url), 'utf8');
+  const sessionsStyle = await readFile(new URL('../vscode/media/sessions.css', import.meta.url), 'utf8');
   assert.match(script, /getElementById\('output'\)/);
   assert.match(script, /getElementById\('sticky-prompt'\)/);
   assert.match(script, /getElementById\('queue'\)/);
@@ -231,6 +235,28 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /Object\.keys\(value\)\.length === 1[\s\S]*copySessionId/);
   assert.doesNotMatch(extension, /copySessionId[\s\S]{0,200}message\.sessionId/);
   assert.match(extension, /runtime\.clientModule/);
+  assert.match(extension, /registerWebviewViewProvider\('dshCompanion\.sessions'/);
+  assert.match(extension, /panelsBySessionId\.get\(sessionId\)/);
+  assert.match(extension, /DshSessionBrowser\.connect/);
+  assert.match(sessionTree, /placeholder="Search questions and answers…"/);
+  assert.match(sessionTree, /class SessionSidebarProvider/);
+  assert.match(sessionTree, /parseSidebarMessage/);
+  assert.match(sessionsScript, /search\.addEventListener\('input'/);
+  assert.match(sessionsScript, /setTimeout\(\(\) => vscode\.postMessage\(\{ type: 'search', query \}\), 200\)/);
+  assert.match(sessionsScript, /Connecting to DSH…/);
+  assert.match(sessionsScript, /row\.title = \[item\.title, item\.cwd, new Date\(item\.updatedAt\)\.toLocaleString\(\), item\.sessionId\]/);
+  assert.match(sessionsStyle, /#status\[hidden\] \{ display: none; \}/);
+  assert.doesNotMatch(sessionsStyle, /session-spin/);
+  assert.match(dshClient, /graph\.sessions\.search\(normalized, signal\)/);
+  assert.match(sessionTree, /withProgress\(\{ location: \{ viewId: 'dshCompanion\.sessions' \} \}/);
+  assert.match(sessionTree, /session\.title\.toLocaleLowerCase\(\)\.includes\(normalized\)/);
+  assert.doesNotMatch(sessionTree, /if \(this\.query\.length > 0\) await this\.search/);
+  assert.match(sessionsScript, /function updateActiveRows\(\)/);
+  assert.match(sessionsScript, /searchResults\?\.query === search\.value\.trim\(\)/);
+  assert.match(extension, /panelsBySessionId\.set\(connected\.client\.sessionId, panel\);[\s\S]*sessionTree\.requestRefresh\(\)/);
+  assert.match(extension, /running: \(value: boolean\)[\s\S]*onSessionListChange\?\.\(\)/);
+  assert.match(sessionTree, /requestRefresh\(\): void/);
+  assert.match(sessionTree, /this\.browser \?\? this\.browserPromise/);
   assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context\)/);
   assert.match(extension, /Managed DSH runtime is unavailable/);
   assert.match(extension, /runtime\.origin !== DSH_ORIGIN && runtime\.origin !== PACKAGED_DSH_ORIGIN/);
@@ -261,6 +287,53 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(dshClient, /!older && !fromSnapshot[\s\S]*this\.publishProviderAccounts\(\)/);
   assert.match(dshClient, /connection\.state\.subscribe/);
   assert.doesNotMatch(dshClient, /remote\.mux|new WebSocket|Handwritten DSH/);
+});
+
+test('the canonical Session list retains root order and excludes subagent rows', () => {
+  const snapshot = parseSessionListSnapshot({
+    phase: 'ready',
+    ids: ['session-b', 'child', 'session-a'],
+    byId: {
+      'session-a': {
+        id: 'session-a', displayTitle: 'Alpha', running: false, completed: false,
+        blank: false, updatedAt: 100, cwd: '/workspace/a',
+      },
+      'session-b': {
+        id: 'session-b', displayTitle: 'Beta', running: true, completed: false,
+        blank: false, updatedAt: 200,
+      },
+      child: {
+        id: 'child', displayTitle: 'Child', running: false, completed: true,
+        blank: false, updatedAt: 150, origin: 'subagent',
+      },
+    },
+  });
+  assert.deepEqual(snapshot, {
+    phase: 'ready',
+    sessions: [
+      {
+        sessionId: 'session-b', title: 'Beta', running: true, completed: false,
+        blank: false, updatedAt: 200,
+      },
+      {
+        sessionId: 'session-a', title: 'Alpha', running: false, completed: false,
+        blank: false, updatedAt: 100, cwd: '/workspace/a',
+      },
+    ],
+  });
+});
+
+test('the canonical Session list rejects duplicate and malformed identities', () => {
+  assert.throws(() => parseSessionListSnapshot({
+    phase: 'ready',
+    ids: ['same', 'same'],
+    byId: { same: { id: 'same', displayTitle: 'Same', running: false, blank: false, updatedAt: 1 } },
+  }), /invalid Session list entry/);
+  assert.throws(() => parseSessionListSnapshot({
+    phase: 'ready',
+    ids: ['expected'],
+    byId: { expected: { id: 'other', displayTitle: 'Other', running: false, blank: false, updatedAt: 1 } },
+  }), /invalid Session list entry/);
 });
 
 test('provider settings descriptions retain only redacted namespace values', () => {

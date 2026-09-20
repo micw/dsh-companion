@@ -33,14 +33,31 @@
   "activationEvents": [
     "onCommand:dshCompanion.newChatEditor",
     "onCommand:dshCompanion.openDevelopmentWebUi",
+    "onCommand:dshCompanion.searchSessions",
     "onCommand:dshCompanion.stopManagedRuntime",
+    "onView:dshCompanion.sessions",
     "onWebviewPanel:dshCompanion.chatEditor"
   ],
   "contributes": {
     "commands": [
       {
         "command": "dshCompanion.newChatEditor",
-        "title": "DSH: New Chat Editor"
+        "title": "DSH: New Chat Editor",
+        "icon": "$(add)"
+      },
+      {
+        "command": "dshCompanion.openSession",
+        "title": "DSH: Open Session"
+      },
+      {
+        "command": "dshCompanion.refreshSessions",
+        "title": "DSH: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dshCompanion.searchSessions",
+        "title": "DSH: Search Sessions",
+        "icon": "$(search)"
       },
       {
         "command": "dshCompanion.openDevelopmentWebUi",
@@ -50,7 +67,45 @@
         "command": "dshCompanion.stopManagedRuntime",
         "title": "DSH: Stop Managed Runtime"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dshCompanion",
+          "title": "DSH Companion",
+          "icon": "media/dsh-companion.svg"
+        }
+      ]
+    },
+    "views": {
+      "dshCompanion": [
+        {
+          "id": "dshCompanion.sessions",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "dshCompanion.newChatEditor",
+          "when": "view == dshCompanion.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dshCompanion.refreshSessions",
+          "when": "view == dshCompanion.sessions",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "dshCompanion.openSession",
+          "when": "false"
+        }
+      ]
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
