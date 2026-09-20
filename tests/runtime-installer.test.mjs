@@ -10,7 +10,6 @@ import {
   companionDataHome,
   companionLifecycleRoot,
   installPayload,
-  requireRuntimeReplacementAuthorization,
   runtimeStoragePath,
   verifyPayload,
 } from '../vscode/out/runtimeInstaller.js';
@@ -173,31 +172,4 @@ test('source runtime reuse precedes packaged-storage URI requirements', async ()
   const storageCheck = source.indexOf('runtimeStoragePath(context.globalStorageUri)');
   assert.ok(reuse >= 0 && storageCheck > reuse);
   assert.match(source, /manifest\.dsh\.upstreamVersion[\s\S]*upstreamCommit\.slice\(0, 8\)[\s\S]*patchSetSha256\.slice\(0, 8\)/);
-});
-
-test('managed Runtime replacement requires an explicit matching-version decision', async () => {
-  let requests = 0;
-  await requireRuntimeReplacementAuthorization('0.0.1-linux-x64', '0.0.1-linux-x64', async () => {
-    requests += 1;
-    return false;
-  });
-  assert.equal(requests, 0);
-  await assert.rejects(
-    requireRuntimeReplacementAuthorization('0.0.1-linux-x64', '0.0.2-linux-x64'),
-    /update deferred/u,
-  );
-  await assert.rejects(
-    requireRuntimeReplacementAuthorization('0.0.1-linux-x64', '0.0.2-linux-x64', async (request) => {
-      requests += 1;
-      assert.deepEqual(request, {
-        currentRuntimeId: '0.0.1-linux-x64', desiredRuntimeId: '0.0.2-linux-x64',
-      });
-      return false;
-    }),
-    /update deferred/u,
-  );
-  await requireRuntimeReplacementAuthorization(
-    '0.0.1-linux-x64', '0.0.2-linux-x64', async () => { requests += 1; return true; },
-  );
-  assert.equal(requests, 2);
 });

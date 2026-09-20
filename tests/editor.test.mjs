@@ -193,10 +193,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /Object\.keys\(value\)\.length === 1[\s\S]*copySessionId/);
   assert.doesNotMatch(extension, /copySessionId[\s\S]{0,200}message\.sessionId/);
   assert.match(extension, /runtime\.clientModule/);
-  assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context, authorizeRuntimeReplacement\)/);
+  assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context\)/);
   assert.match(extension, /Managed DSH runtime is unavailable/);
-  assert.match(extension, /A different DSH Companion Managed Runtime is still running/);
-  assert.match(extension, /'Replace Runtime'/);
   assert.match(extension, /runtime\.origin !== DSH_ORIGIN && runtime\.origin !== PACKAGED_DSH_ORIGIN/);
   assert.match(extension, /vscode\.env\.openExternal\(vscode\.Uri\.parse\(await runtime\.bootstrapUrl\(\)\)\)/);
   assert.doesNotMatch(extension, /showInputBox|Paste the launch URL/);

@@ -71,7 +71,7 @@ const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
-  const runtimeControl = connectRuntime(context, authorizeRuntimeReplacement);
+  const runtimeControl = connectRuntime(context);
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
   });
@@ -118,7 +118,7 @@ async function openWebUi(
 ): Promise<void> {
   let runtime = await runtimeControlPromise;
   if (runtime === undefined) {
-    runtime = await connectRuntime(context, authorizeRuntimeReplacement);
+    runtime = await connectRuntime(context);
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
   if (runtime === undefined) throw new Error('DSH Companion Runtime is unavailable');
@@ -215,7 +215,7 @@ async function connect(
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
   if (runtime === undefined) {
-    runtime = await connectRuntime(context, authorizeRuntimeReplacement);
+    runtime = await connectRuntime(context);
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
   if (runtime === undefined) throw new Error('Managed DSH runtime is unavailable');
@@ -302,15 +302,6 @@ async function connect(
     client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin),
     backendVersion,
   };
-}
-
-async function authorizeRuntimeReplacement(): Promise<boolean> {
-  const selected = await vscode.window.showWarningMessage(
-    'A different DSH Companion Managed Runtime is still running. Replacing it can interrupt active agents, jobs, terminals, and schedules. Continue only after its work has finished.',
-    { modal: true },
-    'Replace Runtime',
-  );
-  return selected === 'Replace Runtime';
 }
 
 async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {

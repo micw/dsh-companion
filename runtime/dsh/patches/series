@@ -7,3 +7,4 @@
 0007-add-explicit-manual-compaction-route.patch
 0008-add-agent-preset-fallbacks.patch
 0009-resolve-client-bundles-through-sea-module-proxies.patch
+0010-add-native-deepseek-enablement.patch

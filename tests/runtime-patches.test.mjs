@@ -26,6 +26,22 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'explicit-manual-compaction-route',
     'agent-preset-fallbacks',
     'sea-client-module-proxies',
+    'native-deepseek-enablement',
+  ]);
+});
+
+test('the native DeepSeek patch hot-switches its route and exposes Web settings enablement', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[9];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /enabled: z\.boolean\(\)\.default\(true\)/u);
+  assert.match(text, /registration\.replace\(enabled \? \[PROVIDER\] : \[\]\)/u);
+  assert.match(text, /providerEnabled: 'Provider enabled'/u);
+  assert.match(text, /hot-registers and removes the provider route from settings enablement/u);
+  assert.deepEqual(patch.affectedModules, [
+    '@deepseek-ai/dsh-llm-deepseek',
+    '@deepseek-ai/dsh-client-ui-settings-models',
   ]);
 });
 
