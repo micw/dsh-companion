@@ -66,6 +66,34 @@
         "@deepseek-ai/dsh-session-persistence-jsonl",
         "@deepseek-ai/dsh-tool-cordis"
       ]
+    },
+    {
+      "id": "turn-cost-snapshots-and-model-status",
+      "file": "patches/0006-add-turn-cost-snapshots-and-model-status.patch",
+      "sha256": "4c359de10886183c684751fb71369fb376d026ba0a2a7e9b676b9ed0009cf77c",
+      "assessment": "patches/turn-cost-snapshots-and-model-status.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-headless",
+        "@deepseek-ai/dsh-agent-loop",
+        "@deepseek-ai/dsh-session",
+        "@deepseek-ai/dsh-llm",
+        "@deepseek-ai/dsh-token-meter",
+        "@deepseek-ai/dsh-session-persistence-jsonl"
+      ]
+    },
+    {
+      "id": "explicit-manual-compaction-route",
+      "file": "patches/0007-add-explicit-manual-compaction-route.patch",
+      "sha256": "075eb1e20a95790a2b0461c6142d85d935e7552179c15e83d4234f60d2ece2e5",
+      "assessment": "patches/explicit-manual-compaction-route.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-compaction",
+        "@deepseek-ai/dsh-compaction-basic",
+        "@deepseek-ai/dsh-command-compact",
+        "@deepseek-ai/dsh-tool-cordis"
+      ]
     }
   ]
 }

@@ -11,7 +11,7 @@ import { en } from '../lib/types/client/locales.js'
 const require = createRequire(import.meta.url)
 
 test('registers under the provider settings namespace and reads both Host authorities', async () => {
-  let registered
+  const registrations = []
   const provider = 'codex-wrapper-advanced'
   const catalog = catalogSnapshot(provider)
   const account = accountSnapshot(provider)
@@ -23,7 +23,7 @@ test('registers under the provider settings namespace and reads both Host author
     slots: {
       inject(_name, register) { return register() },
       register(options, component) {
-        registered = { options, component }
+        registrations.push({ options, component })
         return () => {}
       },
     },
@@ -43,8 +43,12 @@ test('registers under the provider settings namespace and reads both Host author
     },
   }
   apply(ctx)
+  assert.deepEqual(registrations.map(item => item.options.key), [
+    'dsh-companion-codex-wrapper-advanced',
+    'dsh-companion-claude-wrapper-advanced',
+  ])
+  const registered = registrations[0]
   assert.equal(registered.options.name, 'settings.models.provider-card')
-  assert.equal(registered.options.key, 'dsh-companion-codex-wrapper-advanced')
   assert.equal(registered.options.locale, 'dsh-companion.provider-settings')
   assert.equal(typeof registered.component, 'function')
   const operations = registered.options.inject()

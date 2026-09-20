@@ -10,6 +10,7 @@ import {
   companionDataHome,
   companionLifecycleRoot,
   installPayload,
+  runtimeStoragePath,
   verifyPayload,
 } from '../vscode/out/runtimeInstaller.js';
 
@@ -130,10 +131,23 @@ test('runtime data and lifecycle ownership use one stable XDG product root', () 
   assert.throws(() => companionDataHome({ XDG_DATA_HOME: 'relative' }), /must be absolute/);
 });
 
+test('native runtime installation accepts VS Code local user-data storage', () => {
+  assert.equal(runtimeStoragePath({ scheme: 'file', fsPath: '/tmp/file-storage' }), '/tmp/file-storage');
+  assert.equal(
+    runtimeStoragePath({ scheme: 'vscode-userdata', fsPath: '/tmp/user-data-storage' }),
+    '/tmp/user-data-storage',
+  );
+  assert.equal(runtimeStoragePath({ scheme: 'vscode-remote', fsPath: '/tmp/remote-storage' }), undefined);
+  assert.throws(
+    () => runtimeStoragePath({ scheme: 'vscode-userdata', fsPath: 'relative' }),
+    /must be absolute/,
+  );
+});
+
 test('source runtime reuse precedes packaged-storage URI requirements', async () => {
   const source = await readFile(new URL('../vscode/src/runtimeInstaller.ts', import.meta.url), 'utf8');
   const reuse = source.indexOf("if (shared?.runtimeId === 'source') return shared;");
-  const storageCheck = source.indexOf("context.globalStorageUri.scheme !== 'file'");
+  const storageCheck = source.indexOf('runtimeStoragePath(context.globalStorageUri)');
   assert.ok(reuse >= 0 && storageCheck > reuse);
   assert.match(source, /manifest\.dsh\.upstreamVersion[\s\S]*upstreamCommit\.slice\(0, 8\)[\s\S]*patchSetSha256\.slice\(0, 8\)/);
 });

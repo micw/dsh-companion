@@ -32,9 +32,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 const NS = 'dsh-companion.provider-settings'
-const SETTINGS_NAMESPACE = 'dsh-companion-codex-wrapper-advanced'
 const POLICY_NAMESPACE = 'dsh-companion-model-policy'
-const DEFAULT_API_KEY_REF = 'CODEX_WRAPPER_ADVANCED_API_KEY'
+const PROVIDERS = [
+  {
+    settingsNamespace: 'dsh-companion-codex-wrapper-advanced',
+    defaultApiKeyRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
+  },
+  {
+    settingsNamespace: 'dsh-companion-claude-wrapper-advanced',
+    defaultApiKeyRef: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
+  },
+] as const
 
 /** Services required by the provider settings card. */
 export const inject = [
@@ -42,49 +50,52 @@ export const inject = [
   'remote.credentials', 'settingsScope',
 ]
 
-/** Register the Codex Wrapper Advanced provider-card details contribution. */
+/** Register provider-card details for every Companion-managed wrapper route. */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-companion provider settings: dictionaries')
-  const providerSettings = ctx.settingsScope.bind<ProviderConnectionSettings>({ namespace: SETTINGS_NAMESPACE })
   const modelPolicy = ctx.settingsScope.bind<ModelPolicySettings>({ namespace: POLICY_NAMESPACE })
-  const operations: ProviderDetailsInjected = {
-    hooks: { providerSettings, modelPolicy },
-    load: provider => loadProvider(ctx, provider),
-    refresh: async (provider) => {
-      const [catalog, account] = await Promise.all([
-        ctx.remote.companionProviderCatalog.refresh(provider),
-        ctx.remote.companionProviderAccounts.refresh(provider),
-      ])
-      return joinResults(catalog, account)
-    },
-    saveProvider: async (enabled, baseURL, apiKey, revision) => {
-      const ops: SettingsPathOpView[] = [
-        { op: 'set', path: ['enabled'], value: enabled },
-        baseURL === ''
-          ? { op: 'unset', path: ['baseURL'] }
-          : { op: 'set', path: ['baseURL'], value: baseURL },
-      ]
-      await providerSettings.mutate(ops, revision)
-      const key = apiKey.trim()
-      if (key === '') return
-      const ref = providerSettings.getSnapshot().value?.apiKeyEnv ?? DEFAULT_API_KEY_REF
-      const stored = await ctx.remote.credentials.set(ref, key)
-      if (!stored.ok) throw stored.error
-    },
-    setModelEnabled: async (provider, model, enabled, revision) => {
-      await modelPolicy.mutate([{
-        op: 'set',
-        path: ['providers', provider, 'models', model],
-        value: enabled ? 'enabled' : 'disabled',
-      }], revision)
-    },
+  for (const provider of PROVIDERS) {
+    const providerSettings = ctx.settingsScope.bind<ProviderConnectionSettings>({
+      namespace: provider.settingsNamespace,
+    })
+    const operations: ProviderDetailsInjected = {
+      hooks: { providerSettings, modelPolicy },
+      load: providerId => loadProvider(ctx, providerId),
+      refresh: async (providerId) => {
+        const [catalog, account] = await Promise.all([
+          ctx.remote.companionProviderCatalog.refresh(providerId),
+          ctx.remote.companionProviderAccounts.refresh(providerId),
+        ])
+        return joinResults(catalog, account)
+      },
+      saveProvider: async (enabled, baseURL, apiKey, revision) => {
+        const ops: SettingsPathOpView[] = [
+          { op: 'set', path: ['enabled'], value: enabled },
+          baseURL === ''
+            ? { op: 'unset', path: ['baseURL'] }
+            : { op: 'set', path: ['baseURL'], value: baseURL },
+        ]
+        await providerSettings.mutate(ops, revision)
+        const key = apiKey.trim()
+        if (key === '') return
+        const ref = providerSettings.getSnapshot().value?.apiKeyEnv ?? provider.defaultApiKeyRef
+        const stored = await ctx.remote.credentials.set(ref, key)
+        if (!stored.ok) throw stored.error
+      },
+      setModelEnabled: async (providerId, model, enabled, revision) => {
+        await modelPolicy.mutate([{
+          op: 'set', path: ['providers', providerId, 'models', model],
+          value: enabled ? 'enabled' : 'disabled',
+        }], revision)
+      },
+    }
+    ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
+      name: 'settings.models.provider-card',
+      key: provider.settingsNamespace,
+      locale: NS,
+      inject: () => operations,
+    }, ProviderDetails))
   }
-  ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
-    name: 'settings.models.provider-card',
-    key: SETTINGS_NAMESPACE,
-    locale: NS,
-    inject: () => operations,
-  }, ProviderDetails))
 }
 
 async function loadProvider(ctx: Context, provider: string): Promise<ProviderDetailsState> {

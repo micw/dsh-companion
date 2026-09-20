@@ -63,6 +63,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /disclosures: \{ \.\.\.restoredDisclosures \}/);
   assert.match(script, /root\.dataset\.disclosureId = disclosureId/);
   assert.match(script, /function applyProcessEvent/);
+  assert.match(script, /function appendModelStatus/);
+  assert.match(script, /reasoning-token-progress/);
+  assert.match(script, /reasoning tokens/);
   assert.match(script, /function setMessageTime/);
   assert.match(script, /function completeTurn/);
   assert.match(script, /`Thought for \$\{formatDuration\(measuredRunMs\)\}`/);
@@ -83,14 +86,23 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /return `\$\{amount\} equivalent`/);
   assert.match(script, /return `Σ \$\{amount\}`/);
   assert.match(script, /function renderSessionCost/);
-  assert.match(script, /sessionCostControl\.open = disclosureState\('session:cost', false\)/);
-  assert.doesNotMatch(script, /if \(!available\) \{\s*sessionCostControl\.open = false/);
+  assert.match(dshClient, /`\/compact --provider \$\{selection\.provider\} --model \$\{selection\.model\}`/);
+  assert.match(dshClient, /snapshots\.filter\(snapshot => snapshot\.refreshing\)/);
+  assert.match(dshClient, /companionProviderAccounts', 'refresh'/);
+  assert.match(dshClient, /publishProviderAccounts\(false\)/);
+  assert.doesNotMatch(dshClient, /providerAccountsTimer/);
+  assert.doesNotMatch(script, /sessionCostControl\.open/);
+  assert.match(extension, /<div id="session-cost-control">[\s\S]*<strong id="session-cost-summary">/);
   assert.match(script, /function timingControl/);
   assert.match(script, /function closeStatControls/);
   assert.match(script, /function renderQueue/);
   assert.match(script, /function requestOlderHistory/);
+  assert.match(script, /requestOlderHistory\(true\)/);
+  assert.match(script, /initial && output\.querySelector\('\.message\.user'\)/);
   assert.match(script, /function resetTranscript/);
   assert.match(script, /function beginHistoryPrepend/);
+  assert.match(script, /mergePrependedTurnState/);
+  assert.match(script, /placeTurnProcessAfterMessage/);
   assert.match(script, /output\.scrollTop = previous\.scrollTop \+ output\.scrollHeight - previous\.scrollHeight/);
   assert.match(script, /function updateStickyPrompt/);
   assert.match(script, /function setStickyPrompt/);
@@ -151,6 +163,11 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /id="provider-usage" hidden/);
   assert.match(extension, /id="session-info" hidden/);
   assert.match(extension, /id="session-cost-row"[\s\S]*id="session-cost-summary"/);
+  assert.match(extension, /isReadyMessage/);
+  assert.match(extension, /new WebviewMessenger/);
+  assert.match(extension, /transcript-state\.js/);
+  assert.match(script, /message\.type === 'batch'/);
+  assert.match(script, /vscode\.postMessage\(\{ type: 'ready' \}\)/);
   assert.match(extension, /type: 'sessionInformation'/);
   assert.match(extension, /type: 'sessionCost'/);
   assert.match(extension, /context\.extension\.packageJSON\.version/);
@@ -168,6 +185,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(dshClient, /mountCompanionProviderRemotes/);
   assert.match(dshClient, /faceOf\('modelCost'\)/);
   assert.match(dshClient, /accountingFromStream/);
+  assert.match(dshClient, /reasoningStatusId/);
+  assert.match(dshClient, /status\.kind === 'reasoning-token-progress'/);
+  assert.match(dshClient, /emitFinalReasoningStatus/);
   assert.match(dshClient, /await client\.publishProviderAccounts\(\)/);
   assert.match(dshClient, /const request = \+\+this\.providerAccountsRequest/);
   assert.match(dshClient, /if \(this\.connectionInterrupted\)[\s\S]*this\.publishProviderAccounts\(\)/);
@@ -187,9 +207,9 @@ test('the packaged runtime owns a separate loopback origin', async () => {
   const smoke = await readFile(new URL('../scripts/smoke-managed-runtime.mjs', import.meta.url), 'utf8');
   assert.equal(PACKAGED_DSH_ORIGIN, 'http://127.0.0.1:3082');
   assert.match(extension, /runtime\.origin !== DSH_ORIGIN && runtime\.origin !== PACKAGED_DSH_ORIGIN/);
-  assert.match(installer, /'--port', new URL\(PACKAGED_DSH_ORIGIN\)\.port/);
-  assert.match(installer, /origin: PACKAGED_DSH_ORIGIN/);
-  assert.match(smoke, /PACKAGED_DSH_ORIGIN\)/);
+  assert.match(installer, /origin = PACKAGED_DSH_ORIGIN/);
+  assert.match(installer, /'--port', new URL\(origin\)\.port/);
+  assert.match(smoke, /server\.listen\(0, '127\.0\.0\.1'/);
 });
 
 test('provider account snapshots retain validated allowance and reset facts', () => {
@@ -207,6 +227,8 @@ test('provider account snapshots retain validated allowance and reset facts', ()
       allowances: [{
         id: 'global',
         name: 'Overall',
+        observedAt: 900,
+        ageSeconds: 100,
         primary: { usedPercent: 24.5, windowSeconds: 18_000, resetsAt: 20_000 },
         secondary: { usedPercent: 70, resetsInSeconds: 300 },
       }],
@@ -224,6 +246,8 @@ test('provider account snapshots retain validated allowance and reset facts', ()
       allowances: [{
         id: 'global',
         name: 'Overall',
+        observedAt: 900,
+        ageSeconds: 100,
         primary: { usedPercent: 24.5, windowSeconds: 18_000, resetsAt: 20_000 },
         secondary: { usedPercent: 70, resetsInSeconds: 300 },
       }],
@@ -267,10 +291,12 @@ test('session cost projections validate currencies, kinds, and safe integer nano
 
 test('settlement accounting rejects direct and stream disagreement', () => {
   const direct = {
+    scope: 'call',
     costs: [{ kind: 'reported', amount: { currency: 'USD', nanos: 1 }, source: 'provider' }],
   };
   assert.equal(reconcileSettlementAccounting(direct, structuredClone(direct)), direct);
   assert.equal(reconcileSettlementAccounting(direct, {
+    scope: 'call',
     costs: [{ kind: 'reported', amount: { currency: 'USD', nanos: 2 }, source: 'provider' }],
   }), undefined);
   assert.equal(reconcileSettlementAccounting({ ...direct, extra: true }, undefined), undefined);
@@ -285,6 +311,27 @@ test('turn statistics omit a partial cost when any settled attempt lacks account
   assert.equal(stats.finish(3, 'completed').cost, undefined);
 });
 
+test('turn statistics accept one final cumulative turn-cost snapshot', () => {
+  const stats = new TurnStats(0);
+  stats.addAttempt(1, 1, { inputTokens: 1, outputTokens: 1, totalTokens: 2 });
+  stats.addAttempt(2, 2, { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, undefined, {
+    scope: 'turn',
+    costs: [{ kind: 'virtual', amount: { currency: 'USD', nanos: 500 }, source: 'wrapper delta' }],
+  });
+  assert.deepEqual(stats.finish(3, 'completed').cost, {
+    totals: [{ currency: 'USD', nanos: 500 }],
+    breakdown: [{ kind: 'virtual', currency: 'USD', nanos: 500, calls: 2 }],
+    details: [{
+      scope: 'turn',
+      kind: 'virtual',
+      currency: 'USD',
+      nanos: 500,
+      calls: 2,
+      sources: ['wrapper delta'],
+    }],
+  });
+});
+
 test('turn statistics aggregate usage, cost, and timing across attempts', () => {
   const stats = new TurnStats(1_000);
   stats.startStep(1, 1_100);
@@ -297,7 +344,7 @@ test('turn statistics aggregate usage, cost, and timing across attempts', () => 
     outputTokens: 5,
     reasoningTokens: 0,
     totalTokens: 105,
-  }, undefined, { costs: [{
+  }, undefined, { scope: 'call', costs: [{
     kind: 'reported',
     amount: { currency: 'USD', nanos: 100_000_000 },
     source: 'provider response',
@@ -312,7 +359,7 @@ test('turn statistics aggregate usage, cost, and timing across attempts', () => 
     outputTokens: 10,
     reasoningTokens: 2,
     totalTokens: 110,
-  }, undefined, { costs: [{
+  }, undefined, { scope: 'call', costs: [{
     kind: 'virtual',
     amount: { currency: 'USD', nanos: 200_000_000 },
     source: 'reference tariff',
@@ -331,6 +378,7 @@ test('turn statistics aggregate usage, cost, and timing across attempts', () => 
         kind: 'virtual', currency: 'USD', nanos: 200_000_000, calls: 1,
       }],
       details: [{
+        scope: 'call',
         kind: 'reported',
         currency: 'USD',
         nanos: 100_000_000,
@@ -339,6 +387,7 @@ test('turn statistics aggregate usage, cost, and timing across attempts', () => 
         sources: ['provider response'],
         components: { inputNanos: 60_000_000 },
       }, {
+        scope: 'call',
         kind: 'virtual',
         currency: 'USD',
         nanos: 200_000_000,

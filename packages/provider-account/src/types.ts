@@ -24,6 +24,10 @@ export interface CompanionAllowanceGroup {
   readonly id: string
   readonly name?: string
   readonly reached?: boolean
+  /** Provider observation time for this independently refreshed group, in Unix milliseconds. */
+  readonly observedAt?: number
+  /** Provider-reported age when no exact observation timestamp is available. */
+  readonly ageSeconds?: number
   readonly primary?: CompanionAllowanceWindow
   readonly secondary?: CompanionAllowanceWindow
 }

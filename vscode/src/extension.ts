@@ -4,6 +4,7 @@ import { DSH_ORIGIN, DshClient, DshHttpError, PACKAGED_DSH_ORIGIN, exchangeLaunc
 import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
+import { WebviewMessenger } from './webviewMessenger';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
 const COOKIE_SECRET_KEY = 'dshCompanion.developmentCookie';
@@ -47,6 +48,10 @@ interface OpenLinkMessage {
   readonly href: string;
 }
 
+interface ReadyMessage {
+  readonly type: 'ready';
+}
+
 interface ChatEditorState {
   readonly version: 1 | 2;
   readonly sessionId?: string;
@@ -56,6 +61,8 @@ interface ConnectedChat {
   readonly client: DshClient;
   readonly backendVersion: string;
 }
+
+const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
@@ -146,10 +153,15 @@ function configureChatEditor(
   };
   panel.webview.html = editorHtml(
     panel.webview,
+    vscode.Uri.joinPath(mediaRoot, 'transcript-state.js'),
     vscode.Uri.joinPath(mediaRoot, 'main.js'),
     vscode.Uri.joinPath(mediaRoot, 'style.css'),
   );
 
+  const messenger = new WebviewMessenger(panel.webview, (error) => {
+    console.warn('DSH Companion Webview message delivery failed', error);
+  });
+  panelMessengers.set(panel, messenger);
   let client: DshClient | undefined;
   const ready = connect(context, runtimeControl, panel, restoredSessionId).then((connected) => {
     client = connected.client;
@@ -169,6 +181,7 @@ function configureChatEditor(
     });
   });
   const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
+    if (isReadyMessage(message)) messenger.markReady();
     if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
     if (isStopMessage(message)) void stop(panel, ready);
     if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
@@ -180,6 +193,8 @@ function configureChatEditor(
   });
   panel.onDidDispose(() => {
     receive.dispose();
+    messenger.dispose();
+    panelMessengers.delete(panel);
     client?.dispose();
   });
 }
@@ -395,7 +410,12 @@ async function compact(panel: vscode.WebviewPanel, ready: Promise<DshClient>): P
 }
 
 function post(panel: vscode.WebviewPanel, message: object): void {
-  void panel.webview.postMessage(message);
+  panelMessengers.get(panel)?.send(message);
+}
+
+function isReadyMessage(value: unknown): value is ReadyMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'ready';
 }
 
 function isSubmitMessage(value: unknown): value is SubmitMessage {
@@ -461,8 +481,14 @@ function isChatEditorState(value: unknown): value is ChatEditorState {
       || typeof Reflect.get(value, 'sessionId') === 'string');
 }
 
-function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.Uri): string {
+function editorHtml(
+  webview: vscode.Webview,
+  transcriptState: vscode.Uri,
+  script: vscode.Uri,
+  style: vscode.Uri,
+): string {
   const nonce = randomBytes(16).toString('base64');
+  const transcriptStateUri = webview.asWebviewUri(transcriptState);
   const scriptUri = webview.asWebviewUri(script);
   const styleUri = webview.asWebviewUri(style);
   return `<!doctype html>
@@ -533,10 +559,10 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
           <div class="session-info-row"><span>DSH backend</span><code id="session-info-backend-version"></code></div>
           <div id="session-cost-row" class="session-info-row" hidden>
             <span>Session cost</span>
-            <details id="session-cost-control">
-              <summary id="session-cost-summary"></summary>
+            <div id="session-cost-control">
+              <strong id="session-cost-summary"></strong>
               <div id="session-cost-breakdown"></div>
-            </details>
+            </div>
           </div>
           <div id="session-info-status" role="status" hidden></div>
         </div>
@@ -549,6 +575,7 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
       </div>
     </div>
   </form>
+  <script nonce="${nonce}" src="${transcriptStateUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

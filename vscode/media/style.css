@@ -324,12 +324,14 @@ body {
   padding: 12px 10px 0;
 }
 
-.process-row {
+.process-row,
+.process-status-row {
   min-width: 0;
   margin: 0 0 9px;
 }
 
-.process-row > summary {
+.process-row > summary,
+.process-status-row {
   display: flex;
   align-items: center;
   min-height: 24px;
@@ -341,6 +343,7 @@ body {
   list-style: none;
   white-space: nowrap;
 }
+.process-status-row { cursor: default; }
 
 .row-icon {
   width: 24px;
@@ -957,38 +960,30 @@ body {
   text-align: right;
 }
 #session-info-status[data-error='true'] { color: var(--vscode-errorForeground); }
-#session-cost-control { min-width: 0; }
-#session-cost-control > summary {
+#session-cost-row { align-items: start; }
+#session-cost-row > span { padding-top: 4px; }
+#session-cost-control {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+#session-cost-summary {
   overflow: hidden;
-  cursor: pointer;
   color: var(--vscode-foreground);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  list-style: none;
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-#session-cost-control > summary::-webkit-details-marker { display: none; }
-#session-cost-control > summary::after {
-  content: '›';
-  display: inline-block;
-  margin-left: 6px;
-  color: var(--vscode-descriptionForeground);
-  transform: rotate(90deg);
-}
-#session-cost-control[open] > summary::after { transform: rotate(-90deg); }
-#session-cost-breakdown {
-  grid-column: 1 / -1;
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-  border-radius: 5px;
-  background: var(--vscode-editor-background);
 }
 #session-cost-breakdown dl {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 12px;
+  gap: 4px 12px;
   margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
 }
 #session-cost-breakdown dt { color: var(--vscode-descriptionForeground); }
 #session-cost-breakdown dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }

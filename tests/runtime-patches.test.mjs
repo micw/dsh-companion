@@ -22,6 +22,8 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'sea-compatible-preset-directory-scan',
     'model-capabilities-and-selection-intent',
     'provider-neutral-model-cost-accounting',
+    'turn-cost-snapshots-and-model-status',
+    'explicit-manual-compaction-route',
   ]);
 });
 
@@ -98,4 +100,31 @@ test('the model capabilities patch projects catalog fields without core ownershi
     '@deepseek-ai/dsh-api-session-controller',
     '@deepseek-ai/dsh-tool-cordis',
   ]);
+});
+
+test('the Turn accounting patch carries its runtime and documentation contracts together', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[5];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /readonly scope: 'call' \| 'turn'/u);
+  assert.match(text, /turnId\?: LlmTurnId/u);
+  assert.match(text, /type: 'status'/u);
+  assert.match(text, /statuses\?: readonly TimedModelStatus\[\]/u);
+  assert.match(text, /"symbol": "TimedModelStatus"/u);
+  assert.match(text, /docs\/subsystems\/llm-streaming\.md/u);
+  assert.match(text, /docs\/persistence-catalog\.md/u);
+});
+
+test('the manual compaction route patch carries its API, generator, and documentation together', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[6];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /interface ManualCompactionTarget/u);
+  assert.match(text, /--provider <id> --model <id>/u);
+  assert.match(text, /target\?: ManualCompactionTarget/u);
+  assert.match(text, /scripts\/gen-cordis-catalog\.ts/u);
+  assert.match(text, /docs\/subsystems\/compaction\.md/u);
+  assert.match(text, /2026-07-30-queued-manual-compaction\.md/u);
 });

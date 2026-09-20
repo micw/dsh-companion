@@ -1,3 +1,4 @@
+const { mergePrependedTurnState, placeTurnProcessAfterMessage } = globalThis.dshCompanionTranscriptState;
 const vscode = acquireVsCodeApi();
 const output = document.getElementById('output');
 const stickyPrompt = document.getElementById('sticky-prompt');
@@ -187,12 +188,6 @@ sessionInfoCopy.addEventListener('click', (event) => {
   sessionInfoCopy.disabled = true;
   vscode.postMessage({ type: 'copySessionId' });
 });
-sessionCostControl.open = disclosureState('session:cost', false);
-sessionCostControl.addEventListener('toggle', () => {
-  state.disclosures['session:cost'] = sessionCostControl.open;
-  saveState();
-  if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
-});
 compactButton.addEventListener('click', () => {
   if (running || compacting || !compactAvailable) return;
   compactResult.hidden = true;
@@ -288,7 +283,18 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('message', (event) => {
-  const message = event.data;
+  applyHostMessage(event.data);
+});
+
+function applyHostMessage(message) {
+  if (!isRecord(message)) return;
+  if (message.type === 'batch') {
+    if (!Array.isArray(message.messages) || message.messages.length > 64) return;
+    for (const item of message.messages) {
+      if (isRecord(item) && item.type !== 'batch') applyHostMessage(item);
+    }
+    return;
+  }
   if (message.type === 'resetTranscript') {
     resetTranscript();
     return;
@@ -340,7 +346,7 @@ window.addEventListener('message', (event) => {
     historyHasMore = message.hasMore === true;
     historyLoading = false;
     if (!running) status.textContent = 'Connected';
-    requestAnimationFrame(requestOlderHistory);
+    requestAnimationFrame(() => requestOlderHistory(true));
     return;
   }
   if (message.type === 'historyLoadFailed') {
@@ -490,7 +496,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (message.type === 'error') appendMessage('error', message.text);
-});
+}
 
 function resetTranscript() {
   output.replaceChildren();
@@ -528,6 +534,7 @@ function appendMessage(role, text, html, time = Date.now()) {
   if (role === 'assistant') {
     activeAssistant = body;
     activeAssistantMessage = article;
+    if (turn !== undefined) turn.latestAssistantMessage = article;
   }
   scheduleStickyPrompt();
   followOutput();
@@ -617,6 +624,7 @@ function applyProcessEvent(event) {
     ensureTurn(event.turn, event.time);
     return;
   }
+  activeTurn = event.turn;
   const turn = ensureTurn(event.turn);
   if (event.type === 'turn-end') {
     completeTurn(turn, event.time, event.reason);
@@ -631,6 +639,10 @@ function applyProcessEvent(event) {
   }
   if (event.type === 'reasoning' && typeof event.text === 'string') {
     appendReasoning(turn, event);
+    return;
+  }
+  if (event.type === 'status') {
+    appendModelStatus(turn, event);
     return;
   }
   if (event.type === 'tool-call') {
@@ -675,12 +687,17 @@ function ensureTurn(number, startedAt) {
     root,
     label,
     rows,
+    disclosureRoot: root,
+    disclosureLabel: label,
     toolCount: 0,
     contextCount: 0,
     reasoning: new Map(),
+    statuses: new Map(),
     toolCallIds: new Set(),
     contextIds: new Set(),
     startedAt,
+    latestAssistantMessage: undefined,
+    completed: false,
   };
   turns.set(number, turn);
   return turn;
@@ -688,6 +705,7 @@ function ensureTurn(number, startedAt) {
 
 function completeTurn(turn, completedAt, reason) {
   if (!Number.isFinite(completedAt)) return;
+  turn.completed = true;
   const measuredRunMs = Number.isFinite(turn.runMs)
     ? turn.runMs
     : Number.isFinite(turn.startedAt) ? Math.max(0, completedAt - turn.startedAt) : undefined;
@@ -722,9 +740,47 @@ function appendReasoning(turn, event) {
   followOutput();
 }
 
+function appendModelStatus(turn, event) {
+  if (event.kind !== 'reasoning-token-progress' || typeof event.id !== 'string'
+    || !['reported', 'estimated'].includes(event.basis)
+    || (event.deltaTokens === undefined && event.totalTokens === undefined)) return;
+  const delta = Number.isSafeInteger(event.deltaTokens) && event.deltaTokens >= 0 ? event.deltaTokens : undefined;
+  const total = Number.isSafeInteger(event.totalTokens) && event.totalTokens >= 0 ? event.totalTokens : undefined;
+  if (delta === undefined && total === undefined) return;
+  let row = turn.statuses.get(event.id);
+  if (row === undefined) {
+    const root = document.createElement('div');
+    root.className = 'process-status-row';
+    root.dataset.statusId = event.id;
+    const icon = document.createElement('span');
+    icon.className = 'row-icon';
+    icon.textContent = '◌';
+    const title = document.createElement('span');
+    title.className = 'row-title';
+    title.textContent = 'Thinking';
+    const separator = document.createElement('span');
+    separator.className = 'separator';
+    separator.textContent = '·';
+    const summary = document.createElement('span');
+    summary.className = 'row-summary';
+    root.append(icon, title, separator, summary);
+    turn.rows.append(root);
+    row = { root, summary, tokens: 0, estimated: true };
+    turn.statuses.set(event.id, row);
+  }
+  const nextTokens = total ?? row.tokens + (delta ?? 0);
+  if (!Number.isSafeInteger(nextTokens) || nextTokens < 0) return;
+  row.tokens = nextTokens;
+  row.estimated = event.basis === 'estimated' && total === undefined;
+  row.summary.textContent = `${row.estimated ? '~' : ''}${exactTokens(row.tokens)} reasoning tokens`;
+  updateTurnProcessLabel(turn, true);
+  followOutput();
+}
+
 function appendToolCall(turn, event) {
   if (typeof event.callId !== 'string' || typeof event.name !== 'string') return;
   if (turn.toolCallIds.has(event.callId)) return;
+  placeTurnProcessAfterMessage(turn);
   const row = disclosureRow(
     'tool',
     `turn:${String(event.turn)}:tool:${event.callId}`,
@@ -768,6 +824,7 @@ function appendContext(turn, event) {
 function updateTurnProcessLabel(turn, active) {
   const labels = [];
   if (turn.reasoning.size > 0) labels.push('Reasoning');
+  else if (turn.statuses.size > 0) labels.push('Thinking');
   if (turn.toolCount > 0) labels.push(`${turn.toolCount} tool ${turn.toolCount === 1 ? 'call' : 'calls'}`);
   if (turn.contextCount > 0) {
     labels.push(`${turn.contextCount} context ${turn.contextCount === 1 ? 'injection' : 'injections'}`);
@@ -893,6 +950,7 @@ function appendCostBreakdown(panel, cost) {
   }
   for (const detail of cost.details ?? []) {
     rows.push([`${titleCase(detail.kind)} detail`, formatMoney(detail)]);
+    rows.push(['Coverage', detail.scope === 'turn' ? 'Complete turn snapshot' : 'Model call']);
     if (Array.isArray(detail.routes) && detail.routes.length > 0) {
       rows.push(['Provider / model', detail.routes.join(', ')]);
     }
@@ -1010,13 +1068,9 @@ function statIcon(kind) {
     path.setAttribute('d', 'M2.5 3.5C2.5 2.1 4.9 1 8 1s5.5 1.1 5.5 2.5v9C13.5 13.9 11.1 15 8 15s-5.5-1.1-5.5-2.5v-9Zm1 0C3.5 4.2 5.3 5 8 5s4.5-.8 4.5-1.5S10.7 2 8 2s-4.5.8-4.5 1.5Zm0 3v2C3.5 9.2 5.3 10 8 10s4.5-.8 4.5-1.5v-2C11.5 7.2 9.9 8 8 8s-3.5-.8-4.5-1.5Zm9 4C11.5 11.2 9.9 12 8 12s-3.5-.8-4.5-1.5v2C3.5 13.2 5.3 14 8 14s4.5-.8 4.5-1.5v-2Z');
     svg.append(path);
   } else if (kind === 'cost') {
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', '8');
-    text.setAttribute('y', '12');
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('font-size', '12');
-    text.textContent = '$';
-    svg.append(text);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M2.5 5C2.5 3.9 4.9 3 8 3s5.5.9 5.5 2v6c0 1.1-2.4 2-5.5 2s-5.5-.9-5.5-2V5Zm1 0c0 .4 1.6 1 4.5 1s4.5-.6 4.5-1S10.9 4 8 4s-4.5.6-4.5 1Zm0 2v1c0 .4 1.6 1 4.5 1s4.5-.6 4.5-1V7c-1 .6-2.7 1-4.5 1s-3.5-.4-4.5-1Zm0 3v1c0 .4 1.6 1 4.5 1s4.5-.6 4.5-1v-1c-1 .6-2.7 1-4.5 1s-3.5-.4-4.5-1Z');
+    svg.append(path);
   } else {
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('cx', '8');
@@ -1778,7 +1832,8 @@ function followOutput() {
   });
 }
 
-function requestOlderHistory() {
+function requestOlderHistory(initial = false) {
+  if (initial && output.querySelector('.message.user') !== null) return;
   if (!historyHasMore || historyLoading || prependState !== undefined || output.scrollTop > 480) return;
   historyLoading = true;
   vscode.postMessage({ type: 'loadOlder' });
@@ -1813,6 +1868,13 @@ function endHistoryPrepend() {
   const prependedCompactions = compactions;
   const fragment = renderTarget;
   renderTarget = output;
+  for (const [number, older] of prependedTurns) {
+    const newer = previous.turns.get(number);
+    if (newer === undefined) continue;
+    const merged = mergePrependedTurnState(older, newer);
+    updateTurnProcessLabel(merged, !merged.completed);
+    prependedTurns.set(number, merged);
+  }
   output.prepend(fragment);
   turns = new Map([...prependedTurns, ...previous.turns]);
   tools = new Map([...prependedTools, ...previous.tools]);
@@ -1964,8 +2026,9 @@ function isCostSummary(value) {
 
 function isCostDetail(detail) {
   return isRecord(detail) && Object.keys(detail).every((key) => (
-    ['kind', 'currency', 'nanos', 'calls', 'routes', 'sources', 'tariffVersions', 'components'].includes(key)
-  )) && ['reported', 'estimated', 'virtual'].includes(detail.kind)
+    ['scope', 'kind', 'currency', 'nanos', 'calls', 'routes', 'sources', 'tariffVersions', 'components'].includes(key)
+  )) && ['call', 'turn'].includes(detail.scope)
+    && ['reported', 'estimated', 'virtual'].includes(detail.kind)
     && typeof detail.currency === 'string' && /^[A-Z]{3,12}$/u.test(detail.currency)
     && isCount(detail.nanos) && !Object.is(detail.nanos, -0) && Number.isSafeInteger(detail.calls) && detail.calls > 0
     && (detail.routes === undefined
@@ -2101,3 +2164,4 @@ renderSessionInformation();
 renderContextMeter();
 updateScrollButton();
 saveState();
+vscode.postMessage({ type: 'ready' });
