@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-typert-protocol": [
+        "typert-protocol.d.ts"
+      ],
+      "@dsh-companion/model-policy": [
+        "packages/model-policy/src/index.ts"
+      ],
+      "@dsh-companion/provider-account": [
+        "packages/provider-account/src/index.ts"
+      ],
+      "@dsh-companion/provider-catalog": [
+        "packages/provider-catalog/src/index.ts"
+      ],
+      "@dsh-companion/provider-catalog/types": [
+        "packages/provider-catalog/src/types.ts"
+      ]
+    }
+  }
+}

@@ -32,6 +32,7 @@
   ],
   "activationEvents": [
     "onCommand:dshCompanion.newChatEditor",
+    "onCommand:dshCompanion.openDevelopmentWebUi",
     "onCommand:dshCompanion.stopManagedRuntime",
     "onWebviewPanel:dshCompanion.chatEditor"
   ],
@@ -40,6 +41,10 @@
       {
         "command": "dshCompanion.newChatEditor",
         "title": "DSH: New Chat Editor"
+      },
+      {
+        "command": "dshCompanion.openDevelopmentWebUi",
+        "title": "DSH: Open Web UI"
       },
       {
         "command": "dshCompanion.stopManagedRuntime",
@@ -55,6 +60,7 @@
     "markdown-it": "^14.1.0"
   },
   "devDependencies": {
+    "@dsh-companion/provider-client": "workspace:*",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.93.0",

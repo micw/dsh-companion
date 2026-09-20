@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import { DSH_ORIGIN, DshClient, DshHttpError, exchangeLaunchUrl } from './dshClient';
+import { DSH_ORIGIN, DshClient, DshHttpError, PACKAGED_DSH_ORIGIN, exchangeLaunchUrl } from './dshClient';
 import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
@@ -43,13 +43,20 @@ interface ChatEditorState {
   readonly sessionId?: string;
 }
 
-/** Registers the DSH Companion chat editor command. */
+/** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
   const runtimeControl = connectRuntime(context);
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
   });
   context.subscriptions.push(
+    vscode.commands.registerCommand('dshCompanion.openDevelopmentWebUi', async () => {
+      try {
+        await openDevelopmentWebUi(context, runtimeControl);
+      } catch (error) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    }),
     vscode.commands.registerCommand('dshCompanion.newChatEditor', () => {
       openChatEditor(context, runtimeControl);
     }),
@@ -78,6 +85,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
 /** Releases resources owned by editor-panel subscriptions. */
 export function deactivate(): void {}
+
+async function openDevelopmentWebUi(
+  context: vscode.ExtensionContext,
+  runtimeControlPromise: Promise<RuntimeControl | undefined>,
+): Promise<void> {
+  let runtime = await runtimeControlPromise;
+  if (runtime === undefined) {
+    runtime = await connectRuntime(context);
+    if (runtime !== undefined) context.subscriptions.push(runtime);
+  }
+  if (runtime?.runtimeId !== 'source' || runtime.origin !== DSH_ORIGIN) {
+    throw new Error('The DSH Companion source development runtime is unavailable');
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(await runtime.bootstrapUrl()));
+}
 
 function openChatEditor(
   context: vscode.ExtensionContext,
@@ -153,8 +175,8 @@ async function connect(
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
   if (runtime === undefined) throw new Error('Managed DSH runtime is unavailable');
-  if (runtime.origin !== DSH_ORIGIN) {
-    throw new Error(`DSH runtime origin ${runtime.origin} does not match ${DSH_ORIGIN}`);
+  if (runtime.origin !== DSH_ORIGIN && runtime.origin !== PACKAGED_DSH_ORIGIN) {
+    throw new Error(`DSH runtime origin ${runtime.origin} does not match a Companion runtime origin`);
   }
   if (runtime.clientModule === undefined) throw new Error('Managed DSH runtime does not provide its Client module');
   let streamingAssistant = '';
@@ -204,7 +226,7 @@ async function connect(
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   try {
     if (cookie !== undefined) {
-      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule);
+      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin);
       return client;
     }
   } catch (error) {
@@ -215,9 +237,9 @@ async function connect(
 
   sink.status('Authentication required');
   const launchUrl = await runtime.bootstrapUrl();
-  cookie = await exchangeLaunchUrl(launchUrl);
+  cookie = await exchangeLaunchUrl(launchUrl, runtime.origin);
   await context.secrets.store(COOKIE_SECRET_KEY, cookie);
-  return DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule);
+  return DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin);
 }
 
 async function submit(

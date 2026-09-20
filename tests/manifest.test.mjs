@@ -14,11 +14,15 @@ test('source manifests keep the neutral internal version', () => {
   assert.equal(manifest.version, '0.0.0');
 });
 
-test('the extension contributes chat creation and managed-runtime stop commands', () => {
+test('the extension contributes chat, development Web UI, and managed-runtime stop commands', () => {
   assert.deepEqual(manifest.contributes.commands, [
     {
       command: 'dshCompanion.newChatEditor',
       title: 'DSH: New Chat Editor',
+    },
+    {
+      command: 'dshCompanion.openDevelopmentWebUi',
+      title: 'DSH: Open Web UI',
     },
     {
       command: 'dshCompanion.stopManagedRuntime',
@@ -27,6 +31,7 @@ test('the extension contributes chat creation and managed-runtime stop commands'
   ]);
   assert.deepEqual(manifest.activationEvents, [
     'onCommand:dshCompanion.newChatEditor',
+    'onCommand:dshCompanion.openDevelopmentWebUi',
     'onCommand:dshCompanion.stopManagedRuntime',
     'onWebviewPanel:dshCompanion.chatEditor',
   ]);

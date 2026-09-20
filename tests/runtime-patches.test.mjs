@@ -20,6 +20,7 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'node-client-object-runtime',
     'web-runtime-session-title-dependency',
     'sea-compatible-preset-directory-scan',
+    'model-capabilities-and-selection-intent',
   ]);
 });
 
@@ -57,4 +58,20 @@ test('the SEA compatibility patch retains directory validation for preset candid
   assert.match(text, /packages\/preset\/agent-presets\/src\/discovery\.ts/);
   assert.match(text, /await isDirectory\(directory\)/);
   assert.doesNotMatch(text, /packages\/(?:core\/agent|core\/agent-loop|core\/session)\/src/);
+});
+
+test('the model capabilities patch projects catalog fields without core ownership', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[3];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /packages\/api\/session-controller\/src\/types\.ts/);
+  assert.match(text, /inputModalities/);
+  assert.match(text, /contextWindow/);
+  assert.doesNotMatch(text, /^diff --git a\/packages\/core\/(?:agent|agent-loop|session)\/src/m);
+  assert.equal(patch.upstreamDiscussion, null);
+  assert.deepEqual(patch.affectedModules, [
+    '@deepseek-ai/dsh-api-session-controller',
+    '@deepseek-ai/dsh-tool-cordis',
+  ]);
 });

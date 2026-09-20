@@ -11,7 +11,7 @@
     {
       "id": "node-client-object-runtime",
       "file": "patches/0001-publish-node-client-object-runtime.patch",
-      "sha256": "e43bbf59b4b24bd47e3a97ddb7babe9d22974ab0ce06e3a8cfcf3f4fc01a1d91",
+      "sha256": "7d8726466195695caf97bcd7fb770ac96ab997b77996082356458a9187f626c4",
       "assessment": "patches/node-client-object-runtime.md",
       "upstreamDiscussion": null,
       "affectedModules": [
@@ -22,7 +22,7 @@
     {
       "id": "web-runtime-session-title-dependency",
       "file": "patches/0002-close-web-runtime-session-title-dependency.patch",
-      "sha256": "2c5cc7e99d2942ab9be6f93c7409893f83f313f05fb7f7ba7d307eed66558399",
+      "sha256": "fa316821317ee6fd6be739bd93dd230431ffd6e0d586105081017bfa363159d9",
       "assessment": "patches/web-runtime-session-title-dependency.md",
       "upstreamDiscussion": null,
       "affectedModules": [
@@ -33,11 +33,22 @@
     {
       "id": "sea-compatible-preset-directory-scan",
       "file": "patches/0003-scan-presets-with-sea-compatible-directory-stats.patch",
-      "sha256": "49cfeb1022c8cca3f627f2fcce4dac4f0016dc8e5b97317ad9f1fe22118cfc6a",
+      "sha256": "27fcc76b9608fd2cb9a5d1f956d7f1cff1fa958cd8599ef1d289c26b8f727778",
       "assessment": "patches/sea-compatible-preset-directory-scan.md",
       "upstreamDiscussion": null,
       "affectedModules": [
         "@deepseek-ai/dsh-agent-presets"
+      ]
+    },
+    {
+      "id": "model-capabilities-and-selection-intent",
+      "file": "patches/0004-share-model-capabilities-and-preserve-selection-intent.patch",
+      "sha256": "a9a4fd9440fa7151b0b6526628bf83fe161e084e18e585fe36214bf8e3cc1c1e",
+      "assessment": "patches/model-capabilities-and-selection-intent.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-tool-cordis"
       ]
     }
   ]

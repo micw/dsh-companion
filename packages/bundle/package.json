@@ -1,0 +1,21 @@
+{
+  "name": "@dsh-companion/bundle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "cordis.patch.yml"
+  ],
+  "dependencies": {
+    "@dsh-companion/model-policy": "workspace:*",
+    "@dsh-companion/provider-account": "workspace:*",
+    "@dsh-companion/provider-catalog": "workspace:*",
+    "@dsh-companion/provider-client": "workspace:*",
+    "@dsh-companion/ui-provider-settings": "workspace:*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

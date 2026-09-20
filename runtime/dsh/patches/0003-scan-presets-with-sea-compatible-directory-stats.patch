@@ -1,5 +1,5 @@
 diff --git a/packages/preset/agent-presets/src/discovery.ts b/packages/preset/agent-presets/src/discovery.ts
-index 8d39410b00..72859c9e3f 100644
+index 8d39410..72859c9 100644
 --- a/packages/preset/agent-presets/src/discovery.ts
 +++ b/packages/preset/agent-presets/src/discovery.ts
 @@ -272,6 +272,20 @@ async function isFile(path: string): Promise<boolean> {

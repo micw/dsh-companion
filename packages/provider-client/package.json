@@ -1,0 +1,58 @@
+{
+  "name": "@dsh-companion/provider-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./runtime": {
+      "types": "./lib/types/runtime.d.ts",
+      "default": "./lib/runtime.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/runtime.cjs",
+    "lib/client.js",
+    "lib/client.js.map",
+    "lib/types/**/*.d.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsdown",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/dsh-typert-protocol": "link:../../../deepseek-harness/packages/typert/protocol",
+    "@dsh-companion/provider-account": "workspace:*",
+    "@dsh-companion/provider-catalog": "workspace:*",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.9.2"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@dsh-companion/provider-account",
+        "@dsh-companion/provider-catalog"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

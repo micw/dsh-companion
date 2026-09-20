@@ -1,12 +1,19 @@
 {
   "compilerOptions": {
     "module": "commonjs",
+    "moduleResolution": "node",
     "target": "ES2022",
     "lib": [
       "ES2022"
     ],
     "outDir": "out",
     "rootDir": "src",
+    "baseUrl": "..",
+    "paths": {
+      "@dsh-companion/provider-client/runtime": [
+        "packages/provider-client/lib/types/runtime.d.ts"
+      ]
+    },
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,

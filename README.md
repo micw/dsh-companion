@@ -13,7 +13,7 @@ pnpm install
 pnpm test
 ```
 
-The extension entrypoint is `vscode/`. The parent development workspace ensures that the required independently supervised source Runtime is available at `http://127.0.0.1:3081` across Extension Host restarts. Launch the extension in a VS Code Extension Development Host and run **DSH: New Chat Editor**.
+The extension entrypoint is `vscode/`. The parent development workspace ensures that the required independently supervised source Runtime is available at `http://127.0.0.1:3081` across Extension Host restarts. Launch the extension in a VS Code Extension Development Host and run **DSH: New Chat Editor**. The development-only **DSH: Open Web UI** command opens the same Runtime in the default browser through a fresh authenticated launch URL.
 
 ## Packaging and versioning
 
