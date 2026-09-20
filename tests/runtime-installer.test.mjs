@@ -135,4 +135,5 @@ test('source runtime reuse precedes packaged-storage URI requirements', async ()
   const reuse = source.indexOf("if (shared?.runtimeId === 'source') return shared;");
   const storageCheck = source.indexOf("context.globalStorageUri.scheme !== 'file'");
   assert.ok(reuse >= 0 && storageCheck > reuse);
+  assert.match(source, /manifest\.dsh\.upstreamVersion[\s\S]*upstreamCommit\.slice\(0, 8\)[\s\S]*patchSetSha256\.slice\(0, 8\)/);
 });

@@ -46,10 +46,39 @@ export type DshProcessEvent =
   }
   | { readonly type: 'turn-summary'; readonly summary: DshTurnSummary; readonly turn: number };
 
+export type DshCostKind = 'reported' | 'estimated' | 'virtual';
+
+export interface DshCostSummary {
+  readonly totals: readonly { readonly currency: string; readonly nanos: number }[];
+  readonly coverage?: { readonly accountedTurns: number; readonly unaccountedTurns: number };
+  readonly breakdown: readonly {
+    readonly kind: DshCostKind;
+    readonly currency: string;
+    readonly nanos: number;
+    readonly calls: number;
+  }[];
+  readonly details?: readonly {
+    readonly kind: DshCostKind;
+    readonly currency: string;
+    readonly nanos: number;
+    readonly calls: number;
+    readonly routes?: readonly string[];
+    readonly sources?: readonly string[];
+    readonly tariffVersions?: readonly string[];
+    readonly components?: {
+      readonly inputNanos?: number;
+      readonly outputNanos?: number;
+      readonly cacheReadNanos?: number;
+      readonly cacheWriteNanos?: number;
+    };
+  }[];
+}
+
 export interface DshTurnSummary {
   readonly completedAt: number;
   readonly runMs: number;
   readonly reason: string;
+  readonly cost?: DshCostSummary;
   readonly usage?: {
     readonly uncachedInputTokens: number;
     readonly cacheReadTokens?: number;
@@ -113,6 +142,41 @@ export interface DshContextPressureState {
   readonly current?: DshContextPressure;
 }
 
+export interface DshAllowanceWindow {
+  readonly usedPercent: number;
+  readonly windowSeconds?: number;
+  readonly resetsAt?: number;
+  readonly resetsInSeconds?: number;
+}
+
+export interface DshAllowanceGroup {
+  readonly id: string;
+  readonly name?: string;
+  readonly reached?: boolean;
+  readonly primary?: DshAllowanceWindow;
+  readonly secondary?: DshAllowanceWindow;
+}
+
+export interface DshProviderAccountSnapshot {
+  readonly provider: string;
+  readonly status: 'ready' | 'stale' | 'unavailable';
+  readonly observedAt?: number;
+  readonly refreshing: boolean;
+  readonly error?: string;
+  readonly value?: {
+    readonly accountStatus: 'ready' | 'authentication-required';
+    readonly plan?: { readonly id: string; readonly name?: string };
+    readonly credits?: {
+      readonly hasCredits?: boolean;
+      readonly unlimited?: boolean;
+      readonly balance?: string;
+      readonly overageLimitReached?: boolean;
+    };
+    readonly activeAllowance?: string;
+    readonly allowances: readonly DshAllowanceGroup[];
+  };
+}
+
 export interface DshCompactResult {
   readonly kind: 'success' | 'error';
   readonly text?: string;
@@ -132,6 +196,8 @@ export interface DshOutputSink {
   modelCatalog(catalog: DshModelCatalog): void;
   modelSelection(selection: DshModelSelection): void;
   contextPressure(pressure: DshContextPressure | undefined): void;
+  sessionCost(cost: DshCostSummary | undefined): void;
+  providerAccounts(snapshots: readonly DshProviderAccountSnapshot[]): void;
   compactAvailable(value: boolean): void;
   compaction(event: DshCompactionEvent): void;
   compacting(value: boolean): void;
@@ -213,6 +279,21 @@ interface CanonicalState {
 }
 
 let canonicalAssemblyQueue: Promise<void> = Promise.resolve();
+
+interface CostSample {
+  readonly kind: DshCostKind;
+  readonly currency: string;
+  readonly nanos: number;
+  readonly source: string;
+  readonly tariffVersion?: string;
+  readonly route?: string;
+  readonly components?: {
+    readonly inputNanos?: number;
+    readonly outputNanos?: number;
+    readonly cacheReadNanos?: number;
+    readonly cacheWriteNanos?: number;
+  };
+}
 
 interface UsageSample {
   readonly inputTokens: number;
@@ -342,6 +423,9 @@ export class TurnStats {
   private readonly stepStarts = new Map<number, number>();
   private readonly firstTokens = new Map<number, number>();
   private readonly attempts: UsageSample[] = [];
+  private readonly costs: CostSample[] = [];
+  private settledAttempts = 0;
+  private completeAccounting = true;
   private route: string | undefined;
 
   constructor(readonly startedAt: number) {}
@@ -360,7 +444,17 @@ export class TurnStats {
     if (typeof time === 'number' && !this.firstTokens.has(step)) this.firstTokens.set(step, time);
   }
 
-  addAttempt(step: number, completedAt: unknown, usage: unknown, route = this.route): void {
+  addAttempt(
+    step: number,
+    completedAt: unknown,
+    usage: unknown,
+    route = this.route,
+    accounting?: unknown,
+  ): void {
+    this.settledAttempts += 1;
+    const costs = normalizeCosts(accounting, route);
+    if (costs.length === 0) this.completeAccounting = false;
+    else this.costs.push(...costs);
     const normalized = normalizeUsage(usage, route);
     if (normalized === undefined) return;
     const firstToken = this.firstTokens.get(step);
@@ -372,6 +466,9 @@ export class TurnStats {
 
   finish(completedAt: number, reason: string): DshTurnSummary {
     const usage = aggregateUsage(this.attempts);
+    const cost = this.completeAccounting && this.settledAttempts > 0
+      ? aggregateCosts(this.costs)
+      : undefined;
     const firstStep = [...this.stepStarts.keys()].sort((left, right) => left - right)[0];
     const stepStart = firstStep === undefined ? undefined : this.stepStarts.get(firstStep);
     const firstToken = firstStep === undefined ? undefined : this.firstTokens.get(firstStep);
@@ -388,6 +485,7 @@ export class TurnStats {
       completedAt,
       runMs: Math.max(0, completedAt - this.startedAt),
       reason,
+      ...(cost === undefined ? {} : { cost }),
       ...(usage === undefined ? {} : { usage }),
       ...(ttftMs === undefined ? {} : { ttftMs }),
       ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
@@ -408,6 +506,8 @@ export class DshClient {
   private contextPressureState: DshContextPressureState = { watermark: -1 };
   private readonly activeCompactions = new Set<string>();
   private readonly activeCompactionCommands = new Set<string>();
+  private providerAccountsRequest = 0;
+  private connectionInterrupted = false;
   private canonical: CanonicalState | undefined;
 
   private constructor(
@@ -491,6 +591,12 @@ export class DshClient {
       sink.modelSelection(modelCatalog.default);
       sink.compactAvailable(commands.some((command) => command.name === 'compact'));
       await client.openCanonical();
+      try {
+        await client.publishProviderAccounts();
+      } catch (error) {
+        console.warn('DSH provider usage is unavailable', error);
+        sink.providerAccounts([]);
+      }
       sink.status('Connected');
       return client;
     } catch (error) {
@@ -545,6 +651,16 @@ export class DshClient {
     parseModelSelection(value.selected);
   }
 
+  /** Refreshes one provider account and republishes the complete validated snapshot list. */
+  async refreshProviderAccount(provider: string): Promise<void> {
+    if (provider.length === 0) throw new Error('Provider account refresh requires a provider id');
+    const result = await callCanonicalRemote(
+      this.requireCanonical().graph, 'companionProviderAccounts', 'refresh', provider,
+    );
+    parseProviderAccountSnapshot(unwrapCanonicalResult(result, 'companionProviderAccounts.refresh'));
+    await this.publishProviderAccounts();
+  }
+
   /** Runs DSH's canonical argument-free `/compact` command for this Session. */
   async compact(): Promise<DshCompactResult> {
     const result = await callCanonicalRemote(
@@ -579,6 +695,21 @@ export class DshClient {
     return this.canonical;
   }
 
+  private async publishProviderAccounts(): Promise<void> {
+    const request = ++this.providerAccountsRequest;
+    const result = await callCanonicalRemote(
+      this.requireCanonical().graph, 'companionProviderAccounts', 'list',
+    );
+    if (providerAccountRemoteUnavailable(result)) {
+      if (request === this.providerAccountsRequest) this.sink.providerAccounts([]);
+      return;
+    }
+    const value = unwrapCanonicalResult(result, 'companionProviderAccounts.list');
+    if (!Array.isArray(value)) throw new Error('DSH returned an invalid provider-account list');
+    const snapshots = value.map(parseProviderAccountSnapshot);
+    if (request === this.providerAccountsRequest) this.sink.providerAccounts(snapshots);
+  }
+
   private async openCanonical(): Promise<void> {
     const canonical = this.requireCanonical();
     const session = canonical.binding.session;
@@ -595,29 +726,48 @@ export class DshClient {
     const projectEvents = (): void => { this.receiveCanonicalWindow(canonical.binding.eventSource.getSnapshot()); };
     const modelProjection = session.projections.faceOf('modelSelection');
     const contextProjection = session.projections.faceOf('contextPressure');
+    const costProjection = session.projections.faceOf('modelCost');
     const projectModel = (): void => {
       this.acceptModelSelection(modelProjection.getSnapshot(), this.modelSelectionState.watermark + 1);
     };
     const projectContext = (): void => {
       this.acceptContextPressure(contextProjection.getSnapshot(), this.contextPressureState.watermark + 1);
     };
+    const projectCost = (): void => {
+      const snapshot = costProjection.getSnapshot();
+      this.sink.sessionCost(snapshot === undefined ? undefined : parseCostSummary(snapshot));
+    };
     const projectConnection = (): void => {
       const state = canonical.graph.connection.state.getSnapshot();
-      if (state === 'connecting') this.sink.status('Reconnecting to DSH…');
-      if (state === 'disconnected') this.sink.status('Disconnected; retrying…');
-      if (state === 'connected') this.sink.status('Connected');
+      if (state === 'connecting') {
+        this.connectionInterrupted = true;
+        this.sink.status('Reconnecting to DSH…');
+      }
+      if (state === 'disconnected') {
+        this.connectionInterrupted = true;
+        this.sink.status('Disconnected; retrying…');
+      }
+      if (state === 'connected') {
+        this.sink.status('Connected');
+        if (this.connectionInterrupted) {
+          this.connectionInterrupted = false;
+          void this.publishProviderAccounts().catch(() => this.sink.status('Provider usage update failed'));
+        }
+      }
     };
     canonical.disposers.push(
       session.subscribe(projectSession),
       canonical.binding.eventSource.subscribe(projectEvents),
       modelProjection.subscribe(projectModel),
       contextProjection.subscribe(projectContext),
+      costProjection.subscribe(projectCost),
       canonical.graph.connection.state.subscribe(projectConnection),
     );
     projectSession();
     projectEvents();
     projectModel();
     projectContext();
+    projectCost();
     projectConnection();
     await waitForCanonicalSession(session);
   }
@@ -839,6 +989,9 @@ export class DshClient {
       });
       this.turnStats = undefined;
       if (!older) this.sink.running(false);
+      if (!older && !fromSnapshot) {
+        void this.publishProviderAccounts().catch(() => this.sink.status('Provider usage update failed'));
+      }
       return;
     }
 
@@ -908,6 +1061,7 @@ export class DshClient {
         event.time,
         event.data.usage ?? usageFromStream(event.data.stream),
         route,
+        reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
       );
       if (fromSnapshot && Array.isArray(event.data.message.content)) {
         for (const [index, block] of event.data.message.content.entries()) {
@@ -969,7 +1123,13 @@ export class DshClient {
     if (event.type === 'assistant/attempt' && Array.isArray(event.data.stream)) {
       const step = typeof event.data.step === 'number' ? event.data.step : this.currentStep;
       this.turnStats?.firstToken(step, firstVisibleStreamTime(event.data.stream));
-      this.turnStats?.addAttempt(step, event.time, usageFromStream(event.data.stream));
+      this.turnStats?.addAttempt(
+        step,
+        event.time,
+        usageFromStream(event.data.stream),
+        undefined,
+        reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
+      );
       for (const item of event.data.stream) {
         if (isRecord(item) && item.type === 'chunk' && isRecord(item.chunk)) {
           this.receiveFinish(item.chunk);
@@ -1090,6 +1250,12 @@ async function callCanonicalRemote(
   return Reflect.apply(namespace[methodName], namespace, args);
 }
 
+function providerAccountRemoteUnavailable(value: unknown): boolean {
+  if (!isRecord(value) || value.ok !== false || !isRecord(value.error)) return false;
+  return value.error.code === 'gateway/invocation-unavailable'
+    || value.error.code === 'gateway/definition-unavailable';
+}
+
 function unwrapCanonicalResult(value: unknown, operation: string): unknown {
   if (!isRecord(value) || typeof value.ok !== 'boolean') {
     throw new Error(`DSH returned an invalid ${operation} result`);
@@ -1151,6 +1317,96 @@ async function waitForCanonicalSession(session: CanonicalSession): Promise<void>
     const dispose = session.subscribe(inspect);
     inspect();
   });
+}
+
+export function parseProviderAccountSnapshot(value: unknown): DshProviderAccountSnapshot {
+  if (!isRecord(value) || typeof value.provider !== 'string' || value.provider.length === 0
+    || !['ready', 'stale', 'unavailable'].includes(String(value.status))
+    || typeof value.refreshing !== 'boolean'
+    || (value.observedAt !== undefined && !isCount(value.observedAt))
+    || (value.error !== undefined && typeof value.error !== 'string')) {
+    throw new Error('DSH returned an invalid provider-account snapshot');
+  }
+  let account: DshProviderAccountSnapshot['value'];
+  if (value.value !== undefined) {
+    if (!isRecord(value.value) || value.value.provider !== value.provider
+      || !['ready', 'authentication-required'].includes(String(value.value.accountStatus))
+      || !Array.isArray(value.value.allowances)) {
+      throw new Error('DSH returned an invalid provider-account value');
+    }
+    const plan = value.value.plan;
+    if (plan !== undefined && (!isRecord(plan) || typeof plan.id !== 'string'
+      || plan.id.length === 0 || (plan.name !== undefined && typeof plan.name !== 'string'))) {
+      throw new Error('DSH returned an invalid provider plan');
+    }
+    const credits = value.value.credits;
+    if (credits !== undefined && (!isRecord(credits)
+      || (credits.hasCredits !== undefined && typeof credits.hasCredits !== 'boolean')
+      || (credits.unlimited !== undefined && typeof credits.unlimited !== 'boolean')
+      || (credits.balance !== undefined && typeof credits.balance !== 'string')
+      || (credits.overageLimitReached !== undefined && typeof credits.overageLimitReached !== 'boolean'))) {
+      throw new Error('DSH returned invalid provider credits');
+    }
+    const allowances = value.value.allowances.map(parseAllowanceGroup);
+    account = {
+      accountStatus: value.value.accountStatus as 'ready' | 'authentication-required',
+      ...(plan === undefined ? {} : {
+        plan: { id: plan.id as string, ...(plan.name === undefined ? {} : { name: plan.name as string }) },
+      }),
+      ...(credits === undefined ? {} : { credits: {
+        ...(credits.hasCredits === undefined ? {} : { hasCredits: credits.hasCredits as boolean }),
+        ...(credits.unlimited === undefined ? {} : { unlimited: credits.unlimited as boolean }),
+        ...(credits.balance === undefined ? {} : { balance: credits.balance as string }),
+        ...(credits.overageLimitReached === undefined
+          ? {}
+          : { overageLimitReached: credits.overageLimitReached as boolean }),
+      } }),
+      ...(value.value.activeAllowance === undefined
+        ? {}
+        : { activeAllowance: requireString(value.value.activeAllowance) }),
+      allowances,
+    };
+  }
+  return {
+    provider: value.provider,
+    status: value.status as DshProviderAccountSnapshot['status'],
+    ...(value.observedAt === undefined ? {} : { observedAt: value.observedAt as number }),
+    refreshing: value.refreshing,
+    ...(value.error === undefined ? {} : { error: value.error }),
+    ...(account === undefined ? {} : { value: account }),
+  };
+}
+
+function parseAllowanceGroup(value: unknown): DshAllowanceGroup {
+  if (!isRecord(value) || typeof value.id !== 'string' || value.id.length === 0
+    || (value.name !== undefined && typeof value.name !== 'string')
+    || (value.reached !== undefined && typeof value.reached !== 'boolean')) {
+    throw new Error('DSH returned an invalid provider allowance');
+  }
+  return {
+    id: value.id,
+    ...(value.name === undefined ? {} : { name: value.name }),
+    ...(value.reached === undefined ? {} : { reached: value.reached }),
+    ...(value.primary === undefined ? {} : { primary: parseAllowanceWindow(value.primary) }),
+    ...(value.secondary === undefined ? {} : { secondary: parseAllowanceWindow(value.secondary) }),
+  };
+}
+
+function parseAllowanceWindow(value: unknown): DshAllowanceWindow {
+  if (!isRecord(value) || typeof value.usedPercent !== 'number' || !Number.isFinite(value.usedPercent)
+    || value.usedPercent < 0) throw new Error('DSH returned an invalid provider allowance window');
+  return {
+    usedPercent: value.usedPercent,
+    ...(value.windowSeconds === undefined
+      ? {}
+      : { windowSeconds: optionalCount(value.windowSeconds, 'allowance windowSeconds', true) }),
+    ...(value.resetsAt === undefined
+      ? {}
+      : { resetsAt: optionalSafeInteger(value.resetsAt, 'allowance resetsAt') }),
+    ...(value.resetsInSeconds === undefined
+      ? {}
+      : { resetsInSeconds: optionalSafeInteger(value.resetsInSeconds, 'allowance resetsInSeconds') }),
+  };
 }
 
 function parseCompactResult(value: unknown): DshCompactResult {
@@ -1245,6 +1501,12 @@ function optionalCount(value: unknown, name: string, positive = false): number |
   return value as number;
 }
 
+function optionalSafeInteger(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value)) throw new Error(`DSH returned an invalid ${name}`);
+  return value as number;
+}
+
 function modelLabelMap(value: DshModelCatalog): ReadonlyMap<string, string> {
   const labels = new Map<string, string>();
   for (const group of value.groups) {
@@ -1254,6 +1516,230 @@ function modelLabelMap(value: DshModelCatalog): ReadonlyMap<string, string> {
     }
   }
   return labels;
+}
+
+/** Select accounting only when direct and durable stream representations agree. */
+export function reconcileSettlementAccounting(direct: unknown, streamed: unknown): unknown {
+  const directCosts = direct === undefined ? undefined : normalizeCosts(direct);
+  const streamedCosts = streamed === undefined ? undefined : normalizeCosts(streamed);
+  if (directCosts?.length === 0 || streamedCosts?.length === 0) return undefined;
+  if (directCosts !== undefined && streamedCosts !== undefined
+    && JSON.stringify(directCosts) !== JSON.stringify(streamedCosts)) return undefined;
+  return direct ?? streamed;
+}
+
+function normalizeCosts(value: unknown, route?: string): CostSample[] {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'costs')
+    || !Array.isArray(value.costs) || value.costs.length === 0) return [];
+  const costs: CostSample[] = [];
+  const seen = new Set<string>();
+  for (const item of value.costs) {
+    if (!isRecord(item) || Object.keys(item).some((key) => (
+      !['kind', 'amount', 'source', 'tariffVersion', 'breakdown'].includes(key)
+    )) || !['reported', 'estimated', 'virtual'].includes(String(item.kind))
+      || typeof item.source !== 'string' || item.source.length === 0
+      || (item.tariffVersion !== undefined
+        && (typeof item.tariffVersion !== 'string' || item.tariffVersion.length === 0))) return [];
+    const amount = parseMonetaryAmount(item.amount);
+    if (amount === undefined) return [];
+    const key = `${String(item.kind)}\0${amount.currency}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const components = parseCostComponents(item.breakdown, amount.nanos);
+    if (item.breakdown !== undefined && components === undefined) return [];
+    costs.push({
+      kind: item.kind as DshCostKind,
+      currency: amount.currency,
+      nanos: amount.nanos,
+      source: item.source,
+      ...(item.tariffVersion === undefined ? {} : { tariffVersion: item.tariffVersion }),
+      ...(route === undefined ? {} : { route }),
+      ...(components === undefined ? {} : { components }),
+    });
+  }
+  return costs;
+}
+
+function parseMonetaryAmount(value: unknown): { readonly currency: string; readonly nanos: number } | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, 'currency') || !Object.hasOwn(value, 'nanos')
+    || typeof value.currency !== 'string' || !/^[A-Z]{3,12}$/u.test(value.currency)
+    || !isCount(value.nanos) || Object.is(value.nanos, -0)) return undefined;
+  return { currency: value.currency, nanos: value.nanos };
+}
+
+function parseCostComponents(value: unknown, amountNanos: number): CostSample['components'] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return undefined;
+  const allowed = new Set(['inputNanos', 'outputNanos', 'cacheReadNanos', 'cacheWriteNanos']);
+  if (Object.keys(value).length === 0 || Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  const result: Record<string, number> = {};
+  let classified = 0;
+  for (const [source, target] of [
+    ['inputNanos', 'inputNanos'],
+    ['outputNanos', 'outputNanos'],
+    ['cacheReadNanos', 'cacheReadNanos'],
+    ['cacheWriteNanos', 'cacheWriteNanos'],
+  ] as const) {
+    if (value[source] === undefined) continue;
+    if (!isCount(value[source]) || Object.is(value[source], -0)) return undefined;
+    classified += value[source] as number;
+    if (!Number.isSafeInteger(classified) || classified > amountNanos) return undefined;
+    result[target] = value[source] as number;
+  }
+  return Object.keys(result).length === 0 ? undefined : result;
+}
+
+export function parseCostSummary(value: unknown): DshCostSummary {
+  if (!isRecord(value) || !Array.isArray(value.totals) || !Array.isArray(value.breakdown)
+    || !isRecord(value.coverage) || !isCount(value.coverage.accountedTurns)
+    || Object.is(value.coverage.accountedTurns, -0) || !isCount(value.coverage.unaccountedTurns)
+    || Object.is(value.coverage.unaccountedTurns, -0)) {
+    throw new Error('DSH returned an invalid model-cost projection');
+  }
+  const coverage = {
+    accountedTurns: value.coverage.accountedTurns,
+    unaccountedTurns: value.coverage.unaccountedTurns,
+  };
+  const totalsByCurrency = new Map<string, number>();
+  const totals = value.totals.map((item) => {
+    const amount = parseMonetaryAmount(item);
+    if (amount === undefined || totalsByCurrency.has(amount.currency)) {
+      throw new Error('DSH returned an invalid model-cost total');
+    }
+    totalsByCurrency.set(amount.currency, amount.nanos);
+    return amount;
+  });
+  const bucketKeys = new Set<string>();
+  const breakdownByCurrency = new Map<string, number[]>();
+  const breakdown = value.breakdown.map((item) => {
+    if (!isRecord(item) || !['reported', 'estimated', 'virtual'].includes(String(item.kind))
+      || typeof item.currency !== 'string' || !/^[A-Z]{3,12}$/u.test(item.currency)
+      || !isCount(item.nanos) || Object.is(item.nanos, -0)
+      || !Number.isSafeInteger(item.calls) || Number(item.calls) <= 0) {
+      throw new Error('DSH returned an invalid model-cost breakdown');
+    }
+    const key = `${item.currency}\0${String(item.kind)}`;
+    if (bucketKeys.has(key)) throw new Error('DSH returned a duplicate model-cost breakdown');
+    bucketKeys.add(key);
+    const values = breakdownByCurrency.get(item.currency) ?? [];
+    values.push(item.nanos);
+    breakdownByCurrency.set(item.currency, values);
+    return {
+      kind: item.kind as DshCostKind,
+      currency: item.currency,
+      nanos: item.nanos,
+      calls: item.calls as number,
+    };
+  });
+  if (totalsByCurrency.size !== breakdownByCurrency.size) {
+    throw new Error('DSH returned inconsistent model-cost totals');
+  }
+  for (const [currency, values] of breakdownByCurrency) {
+    if (safeSum(values) !== totalsByCurrency.get(currency)) {
+      throw new Error('DSH returned inconsistent model-cost totals');
+    }
+  }
+  return { totals, breakdown, coverage };
+}
+
+function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefined {
+  if (costs.length === 0) return undefined;
+  const totals = new Map<string, number[]>();
+  const summaryBuckets = new Map<string, { kind: DshCostKind; currency: string; values: number[] }>();
+  const detailBuckets = new Map<string, {
+    kind: DshCostKind;
+    currency: string;
+    values: number[];
+    routes: Set<string>;
+    sources: Set<string>;
+    tariffVersions: Set<string>;
+    components: Map<keyof NonNullable<CostSample['components']>, number[]>;
+  }>();
+  for (const cost of costs) {
+    const total = totals.get(cost.currency) ?? [];
+    total.push(cost.nanos);
+    totals.set(cost.currency, total);
+    const summaryKey = `${cost.currency}\0${cost.kind}`;
+    const summary = summaryBuckets.get(summaryKey) ?? {
+      kind: cost.kind, currency: cost.currency, values: [],
+    };
+    summary.values.push(cost.nanos);
+    summaryBuckets.set(summaryKey, summary);
+    const key = `${summaryKey}\0${cost.source}\0${cost.tariffVersion ?? ''}`;
+    let bucket = detailBuckets.get(key);
+    if (bucket === undefined) {
+      bucket = {
+        kind: cost.kind,
+        currency: cost.currency,
+        values: [],
+        routes: new Set(),
+        sources: new Set(),
+        tariffVersions: new Set(),
+        components: new Map(),
+      };
+      detailBuckets.set(key, bucket);
+    }
+    bucket.values.push(cost.nanos);
+    if (cost.route !== undefined) bucket.routes.add(cost.route);
+    bucket.sources.add(cost.source);
+    if (cost.tariffVersion !== undefined) bucket.tariffVersions.add(cost.tariffVersion);
+    if (cost.components !== undefined) {
+      for (const [name, nanos] of Object.entries(cost.components) as [keyof typeof cost.components, number][]) {
+        const values = bucket.components.get(name) ?? [];
+        values.push(nanos);
+        bucket.components.set(name, values);
+      }
+    }
+  }
+  const totalRows: { currency: string; nanos: number }[] = [];
+  for (const [currency, values] of totals) {
+    const nanos = safeSum(values);
+    if (nanos === undefined) return undefined;
+    totalRows.push({ currency, nanos });
+  }
+  const breakdown: DshCostSummary['breakdown'][number][] = [];
+  for (const bucket of summaryBuckets.values()) {
+    const nanos = safeSum(bucket.values);
+    if (nanos === undefined) return undefined;
+    breakdown.push({
+      kind: bucket.kind,
+      currency: bucket.currency,
+      nanos,
+      calls: bucket.values.length,
+    });
+  }
+  const details: NonNullable<DshCostSummary['details']>[number][] = [];
+  for (const bucket of detailBuckets.values()) {
+    const nanos = safeSum(bucket.values);
+    if (nanos === undefined) return undefined;
+    const components: Record<string, number> = {};
+    for (const [name, values] of bucket.components) {
+      if (values.length !== bucket.values.length) continue;
+      const total = safeSum(values);
+      if (total === undefined) return undefined;
+      components[name] = total;
+    }
+    details.push({
+      kind: bucket.kind,
+      currency: bucket.currency,
+      nanos,
+      calls: bucket.values.length,
+      ...(bucket.routes.size === 0 ? {} : { routes: [...bucket.routes] }),
+      sources: [...bucket.sources],
+      ...(bucket.tariffVersions.size === 0 ? {} : { tariffVersions: [...bucket.tariffVersions] }),
+      ...(Object.keys(components).length === 0 ? {} : { components }),
+    });
+  }
+  const order: Record<DshCostKind, number> = { reported: 0, estimated: 1, virtual: 2 };
+  totalRows.sort((left, right) => left.currency.localeCompare(right.currency));
+  breakdown.sort((left, right) => left.currency.localeCompare(right.currency) || order[left.kind] - order[right.kind]);
+  details.sort((left, right) => left.currency.localeCompare(right.currency)
+    || order[left.kind] - order[right.kind]
+    || (left.sources?.[0] ?? '').localeCompare(right.sources?.[0] ?? '')
+    || (left.tariffVersions?.[0] ?? '').localeCompare(right.tariffVersions?.[0] ?? '')
+    || (left.routes?.[0] ?? '').localeCompare(right.routes?.[0] ?? ''));
+  return { totals: totalRows, breakdown, details };
 }
 
 function normalizeUsage(value: unknown, route?: string): UsageSample | undefined {
@@ -1325,6 +1811,16 @@ function usageFromStream(stream: unknown): unknown {
     const item = stream[index];
     if (isRecord(item) && item.type === 'chunk' && isRecord(item.chunk)
       && item.chunk.type === 'usage') return item.chunk.usage;
+  }
+  return undefined;
+}
+
+function accountingFromStream(stream: unknown): unknown {
+  if (!Array.isArray(stream)) return undefined;
+  for (let index = stream.length - 1; index >= 0; index--) {
+    const item = stream[index];
+    if (isRecord(item) && item.type === 'chunk' && isRecord(item.chunk)
+      && item.chunk.type === 'accounting') return item.chunk.accounting;
   }
   return undefined;
 }

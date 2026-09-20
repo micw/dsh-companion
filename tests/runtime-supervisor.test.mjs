@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +10,14 @@ import { RuntimeControl } from '../vscode/out/runtimeControl.js';
 
 test('supervisor validates a loopback DSH runtime configuration', () => {
   assert.throws(() => parseConfig({}), /Invalid DSH Companion runtime supervisor configuration/);
+  assert.equal(parseConfig({
+    version: 1,
+    stateFile: '/tmp/state.json',
+    command: process.execPath,
+    args: [],
+    cwd: '/tmp',
+    origin: 'http://127.0.0.1:3081',
+  }).backendVersion, 'Unavailable');
   assert.throws(() => parseConfig({
     version: 1,
     stateFile: '/tmp/state.json',
@@ -16,6 +25,7 @@ test('supervisor validates a loopback DSH runtime configuration', () => {
     args: [],
     cwd: '/tmp',
     origin: 'http://example.com:3081',
+    backendVersion: '0.1.5-rc.2',
   }), /loopback/);
   assert.throws(() => parseConfig({
     version: 1,
@@ -24,8 +34,59 @@ test('supervisor validates a loopback DSH runtime configuration', () => {
     args: [],
     cwd: '/tmp',
     origin: 'http://127.0.0.1:3081',
+    backendVersion: '0.1.5-rc.2',
     runtimeId: 'unversioned',
   }), /runtime identity/);
+});
+
+test('RuntimeControl keeps an older supervisor without a version endpoint usable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-companion-old-supervisor-'));
+  const stateFile = join(root, 'runtime.json');
+  const instanceId = 'old-supervisor';
+  const token = 'old-token';
+  const origin = 'http://127.0.0.1:3081';
+  const server = createServer((request, response) => {
+    if (request.headers.authorization !== `Bearer ${token}`) {
+      response.writeHead(401).end();
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/v1/status') {
+      response.end(JSON.stringify({ version: 1, instanceId, state: 'ready', origin }));
+      return;
+    }
+    if (request.method === 'PUT' && request.url?.startsWith('/v1/clients/') === true) {
+      response.end(JSON.stringify({ version: 1, expiresInMs: 45_000 }));
+      return;
+    }
+    if (request.method === 'DELETE' && request.url?.startsWith('/v1/clients/') === true) {
+      response.writeHead(204).end();
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    await writeFile(stateFile, JSON.stringify({
+      version: 2,
+      instanceId,
+      supervisorPid: process.pid,
+      controlOrigin: `http://127.0.0.1:${String(address.port)}`,
+      controlToken: token,
+      runtime: { state: 'ready', origin, runtimeId: 'source' },
+    }));
+    const control = await RuntimeControl.fromStateFile(stateFile);
+    assert.ok(control);
+    assert.equal(await control.backendVersion(), 'Unavailable');
+    control.dispose();
+  } finally {
+    await new Promise((resolve) => { server.close(resolve); });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('supervisor publishes authenticated lifecycle state and stops its DSH process tree', async () => {
@@ -43,6 +104,7 @@ test('supervisor publishes authenticated lifecycle state and stops its DSH proce
     args: ['-e', childProgram],
     cwd: root,
     origin: 'http://127.0.0.1:39181',
+    backendVersion: '0.1.5-rc.2',
     runtimeId: 'source',
     clientModule: join(root, 'client-runtime.js'),
   });
@@ -71,8 +133,11 @@ test('supervisor publishes authenticated lifecycle state and stops its DSH proce
       idleShutdown: 'awaiting-dsh-quiescence',
     });
 
-    const unauthorized = await fetch(`${state.controlOrigin}/v1/bootstrap`);
+    const unauthorized = await fetch(`${state.controlOrigin}/v1/backend-version`);
     assert.equal(unauthorized.status, 401);
+    const backendVersion = await fetch(`${state.controlOrigin}/v1/backend-version`, { headers });
+    assert.equal(backendVersion.status, 200);
+    assert.equal(await backendVersion.json(), '0.1.5-rc.2');
     const bootstrap = await fetch(`${state.controlOrigin}/v1/bootstrap`, { headers });
     assert.equal(bootstrap.status, 200);
     assert.deepEqual(await bootstrap.json(), {
@@ -98,6 +163,7 @@ test('supervisor publishes authenticated lifecycle state and stops its DSH proce
     assert.equal(control.origin, 'http://127.0.0.1:39181');
     assert.equal(control.runtimeId, 'source');
     assert.equal(control.clientModule, join(root, 'client-runtime.js'));
+    assert.equal(await control.backendVersion(), '0.1.5-rc.2');
     assert.equal(new URL(await control.bootstrapUrl()).searchParams.get('token'), 'test-token');
     control.dispose();
 

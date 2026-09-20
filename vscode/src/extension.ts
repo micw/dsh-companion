@@ -18,6 +18,10 @@ interface StopMessage {
   readonly type: 'stop';
 }
 
+interface CopySessionIdMessage {
+  readonly type: 'copySessionId';
+}
+
 interface LoadOlderMessage {
   readonly type: 'loadOlder';
 }
@@ -33,6 +37,11 @@ interface CompactMessage {
   readonly type: 'compact';
 }
 
+interface RefreshProviderUsageMessage {
+  readonly type: 'refreshProviderUsage';
+  readonly provider: string;
+}
+
 interface OpenLinkMessage {
   readonly type: 'openLink';
   readonly href: string;
@@ -41,6 +50,11 @@ interface OpenLinkMessage {
 interface ChatEditorState {
   readonly version: 1 | 2;
   readonly sessionId?: string;
+}
+
+interface ConnectedChat {
+  readonly client: DshClient;
+  readonly backendVersion: string;
 }
 
 /** Registers the DSH Companion editor and runtime commands. */
@@ -138,9 +152,15 @@ function configureChatEditor(
 
   let client: DshClient | undefined;
   const ready = connect(context, runtimeControl, panel, restoredSessionId).then((connected) => {
-    client = connected;
-    post(panel, { type: 'session', sessionId: connected.sessionId });
-    return connected;
+    client = connected.client;
+    post(panel, { type: 'session', sessionId: connected.client.sessionId });
+    post(panel, {
+      type: 'sessionInformation',
+      sessionId: connected.client.sessionId,
+      companionVersion: String(context.extension.packageJSON.version),
+      backendVersion: connected.backendVersion,
+    });
+    return connected.client;
   });
   void ready.catch((error: unknown) => {
     post(panel, {
@@ -151,9 +171,11 @@ function configureChatEditor(
   const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
     if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
     if (isStopMessage(message)) void stop(panel, ready);
+    if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
     if (isSelectModelMessage(message)) void selectModel(panel, ready, message);
     if (isCompactMessage(message)) void compact(panel, ready);
+    if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
   });
   panel.onDidDispose(() => {
@@ -167,7 +189,7 @@ async function connect(
   runtimeControlPromise: Promise<RuntimeControl | undefined>,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
-): Promise<DshClient> {
+): Promise<ConnectedChat> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
   if (runtime === undefined) {
@@ -179,6 +201,12 @@ async function connect(
     throw new Error(`DSH runtime origin ${runtime.origin} does not match a Companion runtime origin`);
   }
   if (runtime.clientModule === undefined) throw new Error('Managed DSH runtime does not provide its Client module');
+  let backendVersion = 'Unavailable';
+  try {
+    backendVersion = await runtime.backendVersion();
+  } catch {
+    // A retained rollback runtime may predate the authenticated version endpoint.
+  }
   let streamingAssistant = '';
   const sink = {
     reset: () => {
@@ -201,6 +229,12 @@ async function connect(
     }),
     contextPressure: (pressure: import('./dshClient').DshContextPressure | undefined) => post(panel, {
       type: 'contextPressure', pressure,
+    }),
+    sessionCost: (cost: import('./dshClient').DshCostSummary | undefined) => post(panel, {
+      type: 'sessionCost', cost,
+    }),
+    providerAccounts: (snapshots: readonly import('./dshClient').DshProviderAccountSnapshot[]) => post(panel, {
+      type: 'providerAccounts', snapshots,
     }),
     compactAvailable: (value: boolean) => post(panel, { type: 'compactAvailable', value }),
     compaction: (event: import('./dshClient').DshCompactionEvent) => post(panel, { type: 'compaction', event }),
@@ -227,7 +261,7 @@ async function connect(
   try {
     if (cookie !== undefined) {
       const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin);
-      return client;
+      return { client, backendVersion };
     }
   } catch (error) {
     if (!(error instanceof DshHttpError) || error.status !== 401) throw error;
@@ -239,7 +273,22 @@ async function connect(
   const launchUrl = await runtime.bootstrapUrl();
   cookie = await exchangeLaunchUrl(launchUrl, runtime.origin);
   await context.secrets.store(COOKIE_SECRET_KEY, cookie);
-  return DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin);
+  return {
+    client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin),
+    backendVersion,
+  };
+}
+
+async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
+  try {
+    await vscode.env.clipboard.writeText((await ready).sessionId);
+    post(panel, { type: 'sessionIdCopied' });
+  } catch (error) {
+    post(panel, {
+      type: 'sessionIdCopyFailed',
+      text: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 async function submit(
@@ -310,6 +359,25 @@ async function selectModel(
   }
 }
 
+async function refreshProviderUsage(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  provider: string,
+): Promise<void> {
+  post(panel, { type: 'providerUsageRefreshing', provider, value: true });
+  try {
+    await (await ready).refreshProviderAccount(provider);
+  } catch (error) {
+    post(panel, {
+      type: 'providerUsageFailed',
+      provider,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerUsageRefreshing', provider, value: false });
+  }
+}
+
 async function compact(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
   post(panel, { type: 'compacting', value: true });
   try {
@@ -343,6 +411,11 @@ function isStopMessage(value: unknown): value is StopMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'stop';
 }
 
+function isCopySessionIdMessage(value: unknown): value is CopySessionIdMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'copySessionId';
+}
+
 function isLoadOlderMessage(value: unknown): value is LoadOlderMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'loadOlder';
 }
@@ -361,6 +434,13 @@ function isSelectModelMessage(value: unknown): value is SelectModelMessage {
 
 function isCompactMessage(value: unknown): value is CompactMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'compact';
+}
+
+function isRefreshProviderUsageMessage(value: unknown): value is RefreshProviderUsageMessage {
+  return typeof value === 'object' && value !== null
+    && Reflect.get(value, 'type') === 'refreshProviderUsage'
+    && typeof Reflect.get(value, 'provider') === 'string'
+    && Reflect.get(value, 'provider').length > 0;
 }
 
 function isOpenLinkMessage(value: unknown): value is OpenLinkMessage {
@@ -419,6 +499,10 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
           <div id="effort-menu" role="menu" aria-label="Choose reasoning effort" hidden></div>
         </div>
       </div>
+      <div id="provider-usage" hidden>
+        <button id="provider-usage-trigger" type="button" aria-haspopup="dialog" aria-expanded="false">Usage</button>
+        <div id="provider-usage-panel" role="dialog" aria-label="Provider usage and allowances" hidden></div>
+      </div>
       <div id="context-meter" hidden>
         <button id="context-trigger" type="button" aria-haspopup="dialog" aria-expanded="false">
           <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
@@ -431,6 +515,30 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
           <div id="context-figures"></div>
           <button id="compact" type="button" hidden>Compact</button>
           <div id="compact-result" role="status" hidden></div>
+        </div>
+      </div>
+      <div id="session-info" hidden>
+        <button id="session-info-trigger" type="button" aria-label="Session information" aria-haspopup="dialog" aria-expanded="false" title="Session information">
+          <span aria-hidden="true">i</span>
+        </button>
+        <div id="session-info-panel" role="dialog" aria-label="Session information" hidden>
+          <div class="session-info-row session-info-session">
+            <span>Session</span>
+            <div class="session-info-value-with-action">
+              <code id="session-info-id"></code>
+              <button id="session-info-copy" type="button" aria-label="Copy session ID" title="Copy session ID">Copy</button>
+            </div>
+          </div>
+          <div class="session-info-row"><span>DSH Companion</span><code id="session-info-companion-version"></code></div>
+          <div class="session-info-row"><span>DSH backend</span><code id="session-info-backend-version"></code></div>
+          <div id="session-cost-row" class="session-info-row" hidden>
+            <span>Session cost</span>
+            <details id="session-cost-control">
+              <summary id="session-cost-summary"></summary>
+              <div id="session-cost-breakdown"></div>
+            </details>
+          </div>
+          <div id="session-info-status" role="status" hidden></div>
         </div>
       </div>
       <div id="composer-actions">
