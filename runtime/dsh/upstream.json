@@ -94,6 +94,16 @@
         "@deepseek-ai/dsh-command-compact",
         "@deepseek-ai/dsh-tool-cordis"
       ]
+    },
+    {
+      "id": "agent-preset-fallbacks",
+      "file": "patches/0008-add-agent-preset-fallbacks.patch",
+      "sha256": "8b65d6f27fd5e2bc2fc07f5b3b50b4c2ea1ba8ea664e6ad7e16d200cbe069892",
+      "assessment": "patches/agent-preset-fallbacks.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-agent-presets"
+      ]
     }
   ]
 }

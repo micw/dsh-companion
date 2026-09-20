@@ -26,6 +26,17 @@ try {
     payload, storage, manifest.companionVersion,
     join(storage, 'runtime-owner'), join(storage, 'dsh-home'), origin,
   )));
+  const profile = JSON.parse(await readFile(join(
+    storage, 'dsh-home', 'profiles', 'dsh-companion', 'package.json',
+  ), 'utf8'));
+  const expectedBundles = [
+    '@deepseek-ai/dsh-base',
+    '@deepseek-ai/dsh-web-app',
+    ...manifest.launch.profileBundles,
+  ];
+  if (JSON.stringify(profile.dsh?.profile?.bundles) !== JSON.stringify(expectedBundles)) {
+    throw new Error('Managed DSH profile omits packaged Companion bundles');
+  }
   const launchUrl = await control.bootstrapUrl();
   await peerControl.bootstrapUrl();
   const exchanged = await fetch(launchUrl, { redirect: 'manual' });

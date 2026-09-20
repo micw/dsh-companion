@@ -24,7 +24,19 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'provider-neutral-model-cost-accounting',
     'turn-cost-snapshots-and-model-status',
     'explicit-manual-compaction-route',
+    'agent-preset-fallbacks',
   ]);
+});
+
+test('the preset fallback patch keeps retired ids out of the roster', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[7];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /fallbacks: z\.dict\(z\.string\(\)\)\.default\(\{\}\)/u);
+  assert.match(text, /presets\.find\(preset => preset\.id === this\.config\.fallbacks\?\.\[wanted\]\)/u);
+  assert.match(text, /some\(preset => preset\.id === 'retired'\)\)\.toBe\(false\)/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-agent-presets']);
 });
 
 test('the downstream Client patch stays outside DSH Agent and Session ownership', async () => {

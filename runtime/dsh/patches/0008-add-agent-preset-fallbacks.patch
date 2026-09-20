@@ -1,0 +1,76 @@
+diff --git a/packages/preset/agent-presets/README.md b/packages/preset/agent-presets/README.md
+index 6ef3374..6f7f35a 100644
+--- a/packages/preset/agent-presets/README.md
++++ b/packages/preset/agent-presets/README.md
+@@ -52,11 +52,14 @@ The plugin needs a `default` preset id and scans `roots` for presets:
+ |---|---|---|
+ | `default` | required | Preset id composed when a session names none |
+ | `roots` | `[]` | Scanned directories in precedence order; each supplies `path` (a leading `~` expands) and `trust` (defaults to `user`) |
++| `fallbacks` | `{}` | Replacement ids used only when the requested preset id is unavailable; fallback ids are not added to the roster |
+ | `includeShippedRoot` | `true` | Prepend the package's bundled presets as a `system` root before every configured root |
+ | `includeUserRoot` | `true` | Append `<dshHome>/.agent-presets` as a `user` root, after every configured root |
+
+ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-agent-presets) is the exhaustive source for every accepted field and its JSDoc.
+
++A fallback preserves resumability when a deployment replaces a preset: resolution prefers a currently available preset with the requested id, then consults `fallbacks`. The Session record retains its original id while the Agent mounts the resolved replacement, and the fallback key does not appear in `list()`.
++
+ The shipped root is prepended before every configured root, so the built-in set remains available and wins duplicate ids even when a patch replaces the roster configuration. `includeShippedRoot: false` drops that built-in set for deployments that supply all presets themselves. `includeUserRoot: false` drops the derived writable root; tests that pin an exact roster disable both derived roots.
+
+ ### Choosing the default preset
+diff --git a/packages/preset/agent-presets/src/index.ts b/packages/preset/agent-presets/src/index.ts
+index e357686..fa8804d 100644
+--- a/packages/preset/agent-presets/src/index.ts
++++ b/packages/preset/agent-presets/src/index.ts
+@@ -107,6 +107,7 @@ export class AgentPresets extends TypertRemoteService {
+       path: z.string().required(),
+       trust: z.union(['system', 'user'] as const).default('user'),
+     })).default([]),
++    fallbacks: z.dict(z.string()).default({}),
+     includeShippedRoot: z.boolean().default(true),
+     includeUserRoot: z.boolean().default(true),
+   }) as z<Config>
+@@ -344,6 +345,7 @@ export class AgentPresets extends TypertRemoteService {
+     const wanted = id ?? this.defaultId
+     const presets = await this.list()
+     const found = presets.find(preset => preset.id === wanted)
++      ?? presets.find(preset => preset.id === this.config.fallbacks?.[wanted])
+     if (found === undefined) {
+       const available = presets.map(preset => preset.id)
+       throw new RemoteError(
+diff --git a/packages/preset/agent-presets/src/preset.ts b/packages/preset/agent-presets/src/preset.ts
+index 5ffa58a..8913423 100644
+--- a/packages/preset/agent-presets/src/preset.ts
++++ b/packages/preset/agent-presets/src/preset.ts
+@@ -54,6 +54,8 @@ export interface Config {
+   default: string
+   /** Scanned roots in precedence order; an earlier root wins a duplicate id. */
+   roots: PresetRoot[]
++  /** Replacement ids used only when a requested preset is unavailable. */
++  fallbacks?: Readonly<Record<string, string>>
+   /**
+    * Prepend this package's bundled shipped presets as a `system` root, before
+    * every configured root, so the shipped set always mounts and wins a
+diff --git a/packages/preset/agent-presets/tests/mount.spec.ts b/packages/preset/agent-presets/tests/mount.spec.ts
+index 6c43c21..27ffc83 100644
+--- a/packages/preset/agent-presets/tests/mount.spec.ts
++++ b/packages/preset/agent-presets/tests/mount.spec.ts
+@@ -346,6 +346,19 @@ describe('rejecting a composition that cannot be used', () => {
+     await expect(ctx.agentPresets.resolve('nope'))
+       .rejects.toThrow(/preset "nope" not found \(available: .*standard/)
+   })
++
++  it('resolves an unavailable recorded id through a roster-hidden fallback', async () => {
++    const scoped = await harness({
++      default: 'standard',
++      roots: ROOTS,
++      fallbacks: { retired: 'standard' },
++      includeShippedRoot: false,
++      includeUserRoot: false,
++    })
++
++    expect((await scoped.agentPresets.resolve('retired')).id).toBe('standard')
++    expect((await scoped.agentPresets.list()).some(preset => preset.id === 'retired')).toBe(false)
++  })
+ })
+
+ describe('the preset roster', () => {

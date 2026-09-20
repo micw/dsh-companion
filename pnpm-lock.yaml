@@ -25,6 +25,19 @@ importers:
       '@dsh-companion/ui-provider-settings':
         specifier: workspace:*
         version: link:../ui-provider-settings
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../deepseek-harness/vendor/cordis
+        version: link:../../../deepseek-harness/vendor/cordis
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   packages/model-policy:
     dependencies:

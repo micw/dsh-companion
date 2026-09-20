@@ -26,7 +26,9 @@ Checked-in manifests keep the neutral version `0.0.0`. Packaging derives the pro
 Build the VSIX with:
 
 ```bash
-DSH_COMPANION_DSH_SOURCE=../deepseek-harness pnpm run vscode:package
+DSH_COMPANION_DSH_SOURCE=../deepseek-harness \
+DSH_COMPANION_PROVIDER_BUNDLES='["../dsh-companion-provider-claude-wrapper-advanced","../dsh-companion-provider-codex-wrapper-advanced"]' \
+pnpm run vscode:package
 ```
 
-The command requires a clean tracked working tree and an exact checkout containing the pinned DSH commit. It verifies and applies the reviewed patch series in a disposable clone, builds and health-checks the Linux runtime, and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).
+The command requires a clean tracked working tree, an exact checkout containing the pinned DSH commit, and built external provider package directories in product order. It verifies and applies the reviewed patch series in a disposable clone, embeds the adapter packages without their services or secrets, builds and health-checks the Linux runtime, and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).
