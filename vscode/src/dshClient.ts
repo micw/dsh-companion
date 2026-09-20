@@ -191,6 +191,49 @@ export interface DshCompactResult {
   readonly text?: string;
 }
 
+export interface DshProviderSettingsModel {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly enabled: boolean;
+}
+
+export interface DshProviderSettingsEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: 'native' | 'catalog' | 'wrapper';
+  readonly active: boolean;
+  readonly enabled: boolean;
+  readonly baseURL?: string;
+  readonly credential: {
+    readonly ref: string;
+    readonly configured: boolean;
+    readonly writable: boolean;
+    readonly source?: string;
+  };
+  readonly revision: number;
+  readonly models: readonly DshProviderSettingsModel[];
+}
+
+export interface DshProviderSettingsSnapshot {
+  readonly writable: boolean;
+  readonly modelPolicyRevision: number;
+  readonly providers: readonly DshProviderSettingsEntry[];
+}
+
+export interface DshProviderSettingsUpdate {
+  readonly provider: string;
+  readonly enabled: boolean;
+  readonly baseURL?: string;
+  readonly apiKey?: string;
+  readonly revision: number;
+}
+
+export interface DshProviderConnectionTest {
+  readonly snapshot: DshProviderSettingsSnapshot;
+  readonly modelCount: number;
+}
+
 export interface DshPermissionSelection {
   readonly options: readonly {
     readonly value: string;
@@ -297,6 +340,45 @@ interface CanonicalState {
   assistantAttemptId?: string;
 }
 
+interface SettingsNamespaceSnapshot {
+  readonly value: Record<string, unknown>;
+  readonly revision: number;
+}
+
+interface SettingsSnapshot {
+  readonly writable: boolean;
+  readonly namespaces: ReadonlyMap<string, SettingsNamespaceSnapshot>;
+}
+
+interface ProviderCatalogSnapshot {
+  readonly provider: string;
+  readonly models: readonly { readonly id: string; readonly name: string; readonly description?: string; readonly hidden: boolean }[];
+}
+
+const MODEL_POLICY_NAMESPACE = 'dsh-companion-model-policy';
+const PROVIDER_SETTINGS = [
+  {
+    id: 'deepseek-official', name: 'DeepSeek', kind: 'native', namespace: 'llm-deepseek',
+    credentialRef: 'DEEPSEEK_API_KEY',
+  },
+  {
+    id: 'openai', name: 'OpenAI', kind: 'catalog', namespace: 'llm-pi-ai',
+    credentialRef: 'OPENAI_API_KEY',
+  },
+  {
+    id: 'openrouter', name: 'OpenRouter', kind: 'catalog', namespace: 'llm-pi-ai',
+    credentialRef: 'OPENROUTER_API_KEY',
+  },
+  {
+    id: 'claude-wrapper-advanced', name: 'Claude Wrapper Advanced', kind: 'wrapper',
+    namespace: 'dsh-companion-claude-wrapper-advanced', credentialRef: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
+  },
+  {
+    id: 'codex-wrapper-advanced', name: 'Codex Wrapper Advanced', kind: 'wrapper',
+    namespace: 'dsh-companion-codex-wrapper-advanced', credentialRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
+  },
+] as const;
+
 let canonicalAssemblyQueue: Promise<void> = Promise.resolve();
 
 interface CostSample {
@@ -348,6 +430,149 @@ export function parseModelCatalog(value: unknown): DshModelCatalog {
     groups,
     failures,
   };
+}
+
+/** Validates the redacted subset of `settings.describe` used by the native provider manager. */
+export function parseSettingsDescribe(value: unknown): SettingsSnapshot {
+  if (!isRecord(value) || typeof value.writable !== 'boolean' || !Array.isArray(value.namespaces)) {
+    throw new Error('DSH returned an invalid settings description');
+  }
+  const namespaces = new Map<string, SettingsNamespaceSnapshot>();
+  for (const item of value.namespaces) {
+    const revision = item?.revision;
+    if (!isRecord(item) || typeof item.ns !== 'string' || !isRecord(item.value)
+      || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0
+      || namespaces.has(item.ns)) {
+      throw new Error('DSH returned an invalid settings namespace');
+    }
+    namespaces.set(item.ns, { value: structuredClone(item.value), revision });
+  }
+  return { writable: value.writable, namespaces };
+}
+
+function parseActiveProviders(value: unknown): ReadonlySet<string> {
+  if (!Array.isArray(value)) throw new Error('DSH returned an invalid LLM provider list');
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length === 0
+      || typeof item.name !== 'string' || ids.has(item.id)) throw new Error('DSH returned an invalid LLM provider');
+    ids.add(item.id);
+  }
+  return ids;
+}
+
+function parseConfigurableProviders(value: unknown): ReadonlySet<string> {
+  if (!Array.isArray(value)) throw new Error('DSH returned an invalid configurable-provider directory');
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.provider !== 'string' || item.provider.length === 0
+      || typeof item.displayName !== 'string' || typeof item.settingsNs !== 'string'
+      || !Array.isArray(item.settingsPath) || !item.settingsPath.every(path => typeof path === 'string')) {
+      throw new Error('DSH returned an invalid configurable-provider entry');
+    }
+    ids.add(item.provider);
+  }
+  return ids;
+}
+
+function parseProviderCatalogList(value: unknown): ReadonlyMap<string, ProviderCatalogSnapshot> {
+  if (!Array.isArray(value)) throw new Error('DSH returned an invalid Companion provider catalog list');
+  const catalogs = new Map<string, ProviderCatalogSnapshot>();
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.provider !== 'string' || !Array.isArray(item.models)
+      || catalogs.has(item.provider)) throw new Error('DSH returned an invalid Companion provider catalog');
+    const models = item.models.map((model) => {
+      if (!isRecord(model) || typeof model.id !== 'string' || typeof model.name !== 'string'
+        || typeof model.hidden !== 'boolean'
+        || (model.description !== undefined && typeof model.description !== 'string')) {
+        throw new Error('DSH returned an invalid Companion provider model');
+      }
+      return {
+        id: model.id,
+        name: model.name,
+        hidden: model.hidden,
+        ...(model.description === undefined ? {} : { description: model.description }),
+      };
+    });
+    catalogs.set(item.provider, { provider: item.provider, models });
+  }
+  return catalogs;
+}
+
+function parseCredentialDescriptions(
+  value: unknown,
+  refs: readonly string[],
+): ReadonlyMap<string, { readonly configured: boolean; readonly writable: boolean; readonly source?: string }> {
+  if (!isRecord(value)) throw new Error('DSH returned an invalid credential description');
+  const descriptions = new Map<string, { configured: boolean; writable: boolean; source?: string }>();
+  for (const ref of refs) {
+    const item = value[ref];
+    if (!isRecord(item) || typeof item.configured !== 'boolean' || typeof item.writable !== 'boolean'
+      || (item.source !== undefined && typeof item.source !== 'string')) {
+      throw new Error(`DSH returned an invalid credential description for ${ref}`);
+    }
+    descriptions.set(ref, {
+      configured: item.configured,
+      writable: item.writable,
+      ...(item.source === undefined ? {} : { source: item.source }),
+    });
+  }
+  return descriptions;
+}
+
+function providerSettingsRows(
+  settings: SettingsSnapshot,
+  activeProviders: ReadonlySet<string>,
+  catalogs: ReadonlyMap<string, ProviderCatalogSnapshot>,
+  modelCatalog: DshModelCatalog,
+): DshProviderSettingsEntry[] {
+  const policyNamespace = settings.namespaces.get(MODEL_POLICY_NAMESPACE);
+  const policyProviders = isRecord(policyNamespace?.value.providers) ? policyNamespace.value.providers : {};
+  return PROVIDER_SETTINGS.map((definition): DshProviderSettingsEntry => {
+    const namespace = settings.namespaces.get(definition.namespace);
+    if (namespace === undefined) throw new Error(`DSH omits required settings namespace ${definition.namespace}`);
+    const profile = definition.kind === 'catalog'
+      ? (isRecord(namespace.value.providers) && isRecord(namespace.value.providers[definition.id])
+        ? namespace.value.providers[definition.id] as Record<string, unknown>
+        : undefined)
+      : namespace.value;
+    const credentialRef = typeof profile?.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
+      ? profile.apiKeyEnv
+      : definition.credentialRef;
+    const enabled = definition.kind === 'catalog' ? profile !== undefined : profile?.enabled !== false;
+    const catalogGroup = modelCatalog.groups.find(group => group.id === definition.id);
+    const wrapperCatalog = catalogs.get(definition.id);
+    const fallbackModels: { id: string; name: string; description?: string }[] = definition.kind === 'native'
+      && Array.isArray(profile?.models)
+      ? profile.models.flatMap((model) => isRecord(model) && typeof model.id === 'string'
+        ? [{ id: model.id, name: typeof model.name === 'string' ? model.name : model.id }]
+        : [])
+      : [];
+    const sourceModels = definition.kind === 'wrapper'
+      ? wrapperCatalog?.models.filter(model => !model.hidden) ?? catalogGroup?.models ?? []
+      : catalogGroup?.models ?? fallbackModels;
+    const policyCandidate = policyProviders[definition.id];
+    const providerPolicy = isRecord(policyCandidate) ? policyCandidate : undefined;
+    const modelPolicy = providerPolicy !== undefined && isRecord(providerPolicy.models)
+      ? providerPolicy.models
+      : {};
+    return {
+      id: definition.id,
+      name: definition.name,
+      kind: definition.kind,
+      active: activeProviders.has(definition.id),
+      enabled,
+      ...(typeof profile?.baseURL === 'string' ? { baseURL: profile.baseURL } : {}),
+      credential: { ref: credentialRef, configured: false, writable: false },
+      revision: namespace.revision,
+      models: sourceModels.map(model => ({
+        id: model.id,
+        name: model.name,
+        ...(model.description === undefined ? {} : { description: model.description }),
+        enabled: modelPolicy[model.id] !== 'disabled',
+      })),
+    };
+  });
 }
 
 /** Validates the DSH-owned permission-preset projection used by the composer selector. */
@@ -576,7 +801,8 @@ export class DshClient {
   private currentStep = 0;
   private openTurn: number | undefined;
   private turnStats: TurnStats | undefined;
-  private readonly modelLabels: ReadonlyMap<string, string>;
+  private modelLabels: ReadonlyMap<string, string>;
+  private modelCatalogValue: DshModelCatalog;
   private modelSelectionState: DshModelSelectionState;
   private contextPressureState: DshContextPressureState = { watermark: -1 };
   private readonly activeCompactions = new Set<string>();
@@ -590,10 +816,11 @@ export class DshClient {
   private constructor(
     sessionId: string,
     private readonly sink: DshOutputSink,
-    private readonly modelCatalogValue: DshModelCatalog,
+    modelCatalogValue: DshModelCatalog,
     canonical: CanonicalState,
   ) {
     this.sessionId = sessionId;
+    this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
     this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
     this.canonical = canonical;
@@ -738,6 +965,128 @@ export class DshClient {
     await this.publishProviderAccounts();
   }
 
+  /** Reads the five Preview provider rows from DSH Settings, Credentials, LLM, and Companion catalogs. */
+  async providerSettings(): Promise<DshProviderSettingsSnapshot> {
+    const graph = this.requireCanonical().graph;
+    const [settingsResult, providersResult, directoryResult, catalogsResult] = await Promise.all([
+      callCanonicalRemote(graph, 'settings', 'describe'),
+      callCanonicalRemote(graph, 'llm', 'listProviders'),
+      callCanonicalRemote(graph, 'llm', 'listConfigurableProviders'),
+      callCanonicalRemote(graph, 'companionProviderCatalog', 'list'),
+    ]);
+    const settings = parseSettingsDescribe(unwrapCanonicalResult(settingsResult, 'settings.describe'));
+    const activeProviders = parseActiveProviders(unwrapCanonicalResult(providersResult, 'llm.listProviders'));
+    const directory = parseConfigurableProviders(
+      unwrapCanonicalResult(directoryResult, 'llm.listConfigurableProviders'),
+    );
+    const missing = PROVIDER_SETTINGS.find(definition => !directory.has(definition.id));
+    if (missing !== undefined) throw new Error(`DSH omits required configurable provider ${missing.id}`);
+    const catalogs = parseProviderCatalogList(unwrapCanonicalResult(catalogsResult, 'companionProviderCatalog.list'));
+    const rows = providerSettingsRows(settings, activeProviders, catalogs, this.modelCatalogValue);
+    const refs = [...new Set(rows.map(row => row.credential.ref))];
+    const credentialsResult = await callCanonicalRemote(graph, 'credentials', 'describe', refs);
+    const credentials = parseCredentialDescriptions(
+      unwrapCanonicalResult(credentialsResult, 'credentials.describe'), refs,
+    );
+    return {
+      writable: settings.writable,
+      modelPolicyRevision: settings.namespaces.get(MODEL_POLICY_NAMESPACE)?.revision ?? 0,
+      providers: rows.map(row => ({
+        ...row,
+        credential: { ref: row.credential.ref, ...credentials.get(row.credential.ref)! },
+      })),
+    };
+  }
+
+  /** Writes one provider's canonical DSH settings and optional one-way credential value. */
+  async updateProviderSettings(update: DshProviderSettingsUpdate): Promise<DshProviderSettingsSnapshot> {
+    const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === update.provider);
+    if (definition === undefined) throw new Error('The requested provider is not managed by this Preview');
+    const graph = this.requireCanonical().graph;
+    const before = await this.providerSettings();
+    const ops: unknown[] = definition.kind === 'catalog'
+      ? [update.enabled
+        ? { op: 'set', path: ['providers', definition.id, 'apiKeyEnv'], value: definition.credentialRef }
+        : { op: 'unset', path: ['providers', definition.id] }]
+      : [
+        { op: 'set', path: ['enabled'], value: update.enabled },
+        ...(definition.kind === 'wrapper'
+          ? [update.baseURL === undefined || update.baseURL.trim() === ''
+            ? { op: 'unset', path: ['baseURL'] }
+            : { op: 'set', path: ['baseURL'], value: update.baseURL.trim() }]
+          : []),
+      ];
+    unwrapCanonicalResult(
+      await callCanonicalRemote(graph, 'settings', 'mutate', definition.namespace, ops, update.revision),
+      'settings.mutate',
+    );
+    const apiKey = update.apiKey?.trim();
+    if (apiKey !== undefined && apiKey.length > 0) {
+      const credentialRef = definition.kind === 'catalog'
+        ? definition.credentialRef
+        : before.providers.find(provider => provider.id === definition.id)?.credential.ref;
+      if (credentialRef === undefined) throw new Error('DSH omitted the provider credential reference before saving');
+      unwrapCanonicalResult(
+        await callCanonicalRemote(graph, 'credentials', 'set', credentialRef, apiKey),
+        'credentials.set',
+      );
+    }
+    await this.refreshModelCatalog();
+    return this.providerSettings();
+  }
+
+  /** Verifies one saved wrapper endpoint and credential through its catalog and account operations. */
+  async testProviderConnection(provider: string): Promise<DshProviderConnectionTest> {
+    const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === provider);
+    if (definition?.kind !== 'wrapper') throw new Error('Connection testing is available only for wrapper providers');
+    const graph = this.requireCanonical().graph;
+    const catalogValue = unwrapCanonicalResult(await callCanonicalRemote(
+      graph, 'companionProviderCatalog', 'refresh', provider,
+    ), 'companionProviderCatalog.refresh');
+    const catalog = parseProviderCatalogList([catalogValue]).get(provider);
+    if (catalog === undefined) throw new Error('DSH omitted the tested provider catalog');
+    parseProviderAccountSnapshot(unwrapCanonicalResult(await callCanonicalRemote(
+      graph, 'companionProviderAccounts', 'refresh', provider,
+    ), 'companionProviderAccounts.refresh'));
+    await this.refreshModelCatalog();
+    await this.publishProviderAccounts();
+    return { snapshot: await this.providerSettings(), modelCount: catalog.models.filter(model => !model.hidden).length };
+  }
+
+  /** Writes one exact Companion model-policy override and republishes the DSH model catalog. */
+  async setProviderModelEnabled(
+    provider: string,
+    model: string,
+    enabled: boolean,
+    expectedRevision: number,
+  ): Promise<DshProviderSettingsSnapshot> {
+    return this.setProviderModelsEnabled(provider, [model], enabled, expectedRevision);
+  }
+
+  /** Writes several exact Companion model-policy overrides in one revision-fenced DSH mutation. */
+  async setProviderModelsEnabled(
+    provider: string,
+    models: readonly string[],
+    enabled: boolean,
+    expectedRevision: number,
+  ): Promise<DshProviderSettingsSnapshot> {
+    if (!PROVIDER_SETTINGS.some(candidate => candidate.id === provider)
+      || models.length === 0 || models.length > 1_000 || new Set(models).size !== models.length
+      || models.some(model => model.length === 0)) throw new Error('The requested provider models are invalid');
+    unwrapCanonicalResult(await callCanonicalRemote(
+      this.requireCanonical().graph,
+      'settings',
+      'mutate',
+      MODEL_POLICY_NAMESPACE,
+      models.map(model => ({
+        op: 'set', path: ['providers', provider, 'models', model], value: enabled ? 'enabled' : 'disabled',
+      })),
+      expectedRevision,
+    ), 'settings.mutate');
+    await this.refreshModelCatalog();
+    return this.providerSettings();
+  }
+
   /** Selects one DSH-owned permission preset for this Session. */
   async selectPermission(preset: string): Promise<void> {
     const selection = this.permissionSelectionValue;
@@ -792,6 +1141,14 @@ export class DshClient {
   private requireCanonical(): CanonicalState {
     if (this.canonical === undefined) throw new Error('Managed DSH Client is disposed');
     return this.canonical;
+  }
+
+  private async refreshModelCatalog(): Promise<void> {
+    const result = await callCanonicalRemote(this.requireCanonical().graph, 'session', 'modelCatalog');
+    const catalog = parseModelCatalog(unwrapCanonicalResult(result, 'session.modelCatalog'));
+    this.modelCatalogValue = catalog;
+    this.modelLabels = modelLabelMap(catalog);
+    this.sink.modelCatalog(catalog);
   }
 
   private async publishProviderAccounts(settleRefreshing = true): Promise<void> {
