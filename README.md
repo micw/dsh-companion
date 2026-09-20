@@ -2,7 +2,7 @@
 
 DSH Companion is an independent VS Code integration built on DeepSeek Harness. It is not affiliated with or endorsed by DeepSeek.
 
-The project is an early proof of concept. It provides a restorable native chat editor over DSH sessions and an internal Linux Managed Runtime build. Approvals, queue controls, Session management, and Session Changes remain under development. See [features.md](features.md) for the current product surface and known limits.
+The project is an early proof of concept. It provides a restorable native chat editor, a DSH-backed Session sidebar, and an internal Linux Managed Runtime build. Approvals, queue controls, advanced Session management, and Session Changes remain under development. See [features.md](features.md) for the current product surface and known limits.
 
 ## Development
 

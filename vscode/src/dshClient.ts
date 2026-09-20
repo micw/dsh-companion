@@ -234,6 +234,26 @@ export interface DshProviderConnectionTest {
   readonly modelCount: number;
 }
 
+export interface DshSessionListEntry {
+  readonly sessionId: string;
+  readonly title: string;
+  readonly cwd?: string;
+  readonly running: boolean;
+  readonly completed: boolean;
+  readonly blank: boolean;
+  readonly updatedAt: number;
+}
+
+export interface DshSessionListSnapshot {
+  readonly phase: 'pending' | 'ready';
+  readonly sessions: readonly DshSessionListEntry[];
+}
+
+export interface DshSessionSearchResult {
+  readonly items: readonly (DshSessionListEntry & { readonly snippet: string })[];
+  readonly hasMore: boolean;
+}
+
 export interface DshPermissionSelection {
   readonly options: readonly {
     readonly value: string;
@@ -325,6 +345,8 @@ interface CanonicalClientGraph {
     open(sessionId: string): void;
     binding(sessionId: string): CanonicalBinding | undefined;
     subagentAddress(sessionId: string): unknown;
+    refresh(): Promise<void>;
+    search(query: string, signal: AbortSignal): Promise<unknown>;
   };
   readonly remote: Record<string, unknown>;
   readonly connection: { readonly state: ObservableValue };
@@ -789,6 +811,79 @@ export class TurnStats {
       ...(ttftMs === undefined ? {} : { ttftMs }),
       ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
     };
+  }
+}
+
+/** Maintains the canonical live DSH Session list without opening a chat stream. */
+export class DshSessionBrowser {
+  private disposed = false;
+
+  private constructor(
+    private readonly graph: CanonicalClientGraph,
+    private readonly unsubscribe: () => void,
+  ) {}
+
+  /** Connects one list-only canonical Client graph and reports every list change. */
+  static async connect(
+    cookie: string,
+    clientModule: string,
+    onDidChange: () => void,
+    origin: string = DSH_ORIGIN,
+  ): Promise<DshSessionBrowser> {
+    await rpc(cookie, 'session/list', { _request: {} }, origin);
+    const module = await importExternalModule(pathToFileURL(clientModule).href);
+    const Client = isRecord(module)
+      ? module.DshWebClient ?? (isRecord(module.default) ? module.default.DshWebClient : undefined)
+      : undefined;
+    const connect = (typeof Client === 'function' || isRecord(Client))
+      ? Reflect.get(Client, 'connect')
+      : undefined;
+    if (typeof connect !== 'function') throw new Error('Managed DSH Client module has an invalid API');
+    const graphValue: unknown = await assembleCanonicalClient(connect, Client, { origin, cookie });
+    if (!isCanonicalClientGraph(graphValue)) throw new Error('Managed DSH Client returned an invalid object graph');
+    const graph = graphValue;
+    return new DshSessionBrowser(graph, graph.sessions.list.subscribe(onDidChange));
+  }
+
+  /** Returns a detached, validated root-Session list in canonical DSH order. */
+  snapshot(): DshSessionListSnapshot {
+    return parseSessionListSnapshot(this.graph.sessions.list.getSnapshot());
+  }
+
+  /** Refreshes the Host-authoritative Session list. */
+  async refresh(): Promise<void> {
+    await this.graph.sessions.refresh();
+  }
+
+  /** Searches current user and Assistant message content without opening matching Sessions. */
+  async search(query: string, signal: AbortSignal): Promise<DshSessionSearchResult> {
+    const normalized = query.trim();
+    if (normalized.length === 0) return { items: [], hasMore: false };
+    const value = unwrapCanonicalResult(
+      await this.graph.sessions.search(normalized, signal), 'session.search',
+    );
+    if (!isRecord(value) || !Array.isArray(value.items) || typeof value.hasMore !== 'boolean') {
+      throw new Error('DSH Client returned invalid Session search results');
+    }
+    const sessions = new Map(this.snapshot().sessions.map(session => [session.sessionId, session]));
+    const seen = new Set<string>();
+    const items: (DshSessionListEntry & { snippet: string })[] = [];
+    for (const item of value.items) {
+      if (!isRecord(item) || typeof item.sessionId !== 'string' || typeof item.snippet !== 'string'
+        || seen.has(item.sessionId)) throw new Error('DSH Client returned an invalid Session search result');
+      seen.add(item.sessionId);
+      const session = sessions.get(item.sessionId);
+      if (session !== undefined) items.push({ ...session, snippet: item.snippet });
+    }
+    return { items, hasMore: value.hasMore };
+  }
+
+  /** Releases the Session-list subscription and canonical Client graph. */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.unsubscribe();
+    await this.graph.dispose();
   }
 }
 
@@ -1779,6 +1874,7 @@ function isCanonicalClientGraph(value: unknown): value is CanonicalClientGraph {
   return isRecord(value) && isRecord(value.sessions) && isObservable(value.sessions.list)
     && typeof value.sessions.create === 'function' && typeof value.sessions.open === 'function'
     && typeof value.sessions.binding === 'function' && typeof value.sessions.subagentAddress === 'function'
+    && typeof value.sessions.refresh === 'function' && typeof value.sessions.search === 'function'
     && isRecord(value.remote) && typeof value.remote.$mount === 'function'
     && isRecord(value.connection) && isObservable(value.connection.state)
     && typeof value.dispose === 'function';
@@ -1838,6 +1934,40 @@ function canonicalSessionIds(value: unknown): ReadonlySet<string> {
     throw new Error('DSH Client returned an invalid Session list');
   }
   return new Set(value.ids);
+}
+
+/** Validates and detaches the canonical Client Session-list projection. */
+export function parseSessionListSnapshot(value: unknown): DshSessionListSnapshot {
+  if (!isRecord(value) || (value.phase !== 'pending' && value.phase !== 'ready')
+    || !Array.isArray(value.ids) || !isRecord(value.byId)) {
+    throw new Error('DSH Client returned an invalid Session list');
+  }
+  const seen = new Set<string>();
+  const sessions: DshSessionListEntry[] = [];
+  for (const id of value.ids) {
+    const row = typeof id === 'string' ? value.byId[id] : undefined;
+    if (typeof id !== 'string' || id.length === 0 || seen.has(id) || !isRecord(row)
+      || row.id !== id || typeof row.displayTitle !== 'string' || row.displayTitle.length === 0
+      || typeof row.running !== 'boolean' || typeof row.blank !== 'boolean'
+      || typeof row.updatedAt !== 'number' || !Number.isSafeInteger(row.updatedAt) || row.updatedAt < 0
+      || (row.completed !== undefined && typeof row.completed !== 'boolean')
+      || (row.cwd !== undefined && typeof row.cwd !== 'string')
+      || (row.origin !== undefined && row.origin !== 'subagent')) {
+      throw new Error('DSH Client returned an invalid Session list entry');
+    }
+    seen.add(id);
+    if (row.origin === 'subagent') continue;
+    sessions.push({
+      sessionId: id,
+      title: row.displayTitle,
+      running: row.running,
+      completed: row.completed === true,
+      blank: row.blank,
+      updatedAt: row.updatedAt,
+      ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
+    });
+  }
+  return { phase: value.phase, sessions };
 }
 
 function canonicalQueueItem(value: unknown, aliases: ReadonlyMap<string, string>): DshQueuedPrompt {

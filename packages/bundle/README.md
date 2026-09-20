@@ -1,6 +1,6 @@
 # @dsh-companion/bundle
 
-Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
+Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, enables the durable derived Session full-text index on first search, and mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
 
 ## Model Experience
 

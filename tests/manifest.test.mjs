@@ -14,11 +14,26 @@ test('source manifests keep the neutral internal version', () => {
   assert.equal(manifest.version, '0.0.0');
 });
 
-test('the extension contributes chat, Web UI, and managed-runtime stop commands', () => {
+test('the extension contributes the Session sidebar, chat, Web UI, and managed-runtime commands', () => {
   assert.deepEqual(manifest.contributes.commands, [
     {
       command: 'dshCompanion.newChatEditor',
       title: 'DSH: New Chat Editor',
+      icon: '$(add)',
+    },
+    {
+      command: 'dshCompanion.openSession',
+      title: 'DSH: Open Session',
+    },
+    {
+      command: 'dshCompanion.refreshSessions',
+      title: 'DSH: Refresh Sessions',
+      icon: '$(refresh)',
+    },
+    {
+      command: 'dshCompanion.searchSessions',
+      title: 'DSH: Search Sessions',
+      icon: '$(search)',
     },
     {
       command: 'dshCompanion.openDevelopmentWebUi',
@@ -32,7 +47,14 @@ test('the extension contributes chat, Web UI, and managed-runtime stop commands'
   assert.deepEqual(manifest.activationEvents, [
     'onCommand:dshCompanion.newChatEditor',
     'onCommand:dshCompanion.openDevelopmentWebUi',
+    'onCommand:dshCompanion.searchSessions',
     'onCommand:dshCompanion.stopManagedRuntime',
+    'onView:dshCompanion.sessions',
     'onWebviewPanel:dshCompanion.chatEditor',
   ]);
+  assert.deepEqual(manifest.contributes.views.dshCompanion, [{
+    id: 'dshCompanion.sessions', name: 'Sessions', type: 'webview',
+  }]);
+  assert.equal(manifest.contributes.viewsContainers.activitybar[0].id, 'dshCompanion');
+  assert.equal(manifest.contributes.viewsWelcome, undefined);
 });

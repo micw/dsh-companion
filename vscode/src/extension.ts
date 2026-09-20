@@ -1,9 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import { DSH_ORIGIN, DshClient, DshHttpError, PACKAGED_DSH_ORIGIN, exchangeLaunchUrl } from './dshClient';
+import {
+  DSH_ORIGIN, DshClient, DshHttpError, DshSessionBrowser, PACKAGED_DSH_ORIGIN, exchangeLaunchUrl,
+} from './dshClient';
 import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
+import { SessionSidebarProvider } from './sessionTree';
 import { WebviewMessenger } from './webviewMessenger';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
@@ -98,13 +101,18 @@ interface ConnectedChat {
 }
 
 const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
+const panelsBySessionId = new Map<string, vscode.WebviewPanel>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
   const runtimeControl = connectRuntime(context);
+  const sessionTree = new SessionSidebarProvider(
+    context.extensionUri,
+    onDidChange => connectSessionBrowser(context, runtimeControl, onDidChange),
+  );
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
-  });
+  }, sessionTree, vscode.window.registerWebviewViewProvider('dshCompanion.sessions', sessionTree));
   context.subscriptions.push(
     vscode.commands.registerCommand('dshCompanion.openDevelopmentWebUi', async () => {
       try {
@@ -114,7 +122,25 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.commands.registerCommand('dshCompanion.newChatEditor', () => {
-      openChatEditor(context, runtimeControl);
+      openChatEditor(context, runtimeControl, sessionTree);
+    }),
+    vscode.commands.registerCommand('dshCompanion.openSession', async (sessionId: unknown) => {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        await vscode.window.showErrorMessage('DSH Companion received an invalid Session id.');
+        return;
+      }
+      openChatEditor(context, runtimeControl, sessionTree, sessionId);
+    }),
+    vscode.commands.registerCommand('dshCompanion.refreshSessions', async () => {
+      try {
+        await sessionTree.refresh();
+      } catch (error) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    }),
+    vscode.commands.registerCommand('dshCompanion.searchSessions', async () => {
+      await vscode.commands.executeCommand('dshCompanion.sessions.focus');
+      sessionTree.focusSearch();
     }),
     vscode.commands.registerCommand('dshCompanion.stopManagedRuntime', async () => {
       const selected = await vscode.window.showWarningMessage(
@@ -133,7 +159,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.registerWebviewPanelSerializer(CHAT_EDITOR_VIEW_TYPE, {
       async deserializeWebviewPanel(panel, state: unknown): Promise<void> {
-        configureChatEditor(context, runtimeControl, panel, isChatEditorState(state) ? state.sessionId : undefined);
+        configureChatEditor(
+          context, runtimeControl, sessionTree, panel, isChatEditorState(state) ? state.sessionId : undefined,
+        );
       },
     }),
   );
@@ -161,7 +189,14 @@ async function openWebUi(
 function openChatEditor(
   context: vscode.ExtensionContext,
   runtimeControl: Promise<RuntimeControl | undefined>,
+  sessionTree: SessionSidebarProvider,
+  sessionId?: string,
 ): void {
+  const existing = sessionId === undefined ? undefined : panelsBySessionId.get(sessionId);
+  if (existing !== undefined) {
+    existing.reveal(existing.viewColumn, false);
+    return;
+  }
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   const panel = vscode.window.createWebviewPanel(
     CHAT_EDITOR_VIEW_TYPE,
@@ -173,15 +208,17 @@ function openChatEditor(
       localResourceRoots: [mediaRoot],
     },
   );
-  configureChatEditor(context, runtimeControl, panel);
+  configureChatEditor(context, runtimeControl, sessionTree, panel, sessionId);
 }
 
 function configureChatEditor(
   context: vscode.ExtensionContext,
   runtimeControl: Promise<RuntimeControl | undefined>,
+  sessionTree: SessionSidebarProvider,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
 ): void {
+  if (restoredSessionId !== undefined) panelsBySessionId.set(restoredSessionId, panel);
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   panel.webview.options = {
     enableScripts: true,
@@ -199,8 +236,13 @@ function configureChatEditor(
   });
   panelMessengers.set(panel, messenger);
   let client: DshClient | undefined;
-  const ready = connect(context, runtimeControl, panel, restoredSessionId).then((connected) => {
+  const ready = connect(
+    context, runtimeControl, panel, restoredSessionId, () => { sessionTree.requestRefresh(); },
+  ).then((connected) => {
     client = connected.client;
+    panelsBySessionId.set(connected.client.sessionId, panel);
+    sessionTree.requestRefresh();
+    if (panel.active) sessionTree.setActiveSession(connected.client.sessionId);
     post(panel, { type: 'session', sessionId: connected.client.sessionId });
     post(panel, {
       type: 'sessionInformation',
@@ -236,12 +278,28 @@ function configureChatEditor(
     if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
   });
+  const viewState = panel.onDidChangeViewState(({ webviewPanel }) => {
+    sessionTree.setActiveSession(
+      webviewPanel.active ? client?.sessionId ?? restoredSessionId : activeCompanionSessionId(),
+    );
+  });
   panel.onDidDispose(() => {
     receive.dispose();
+    viewState.dispose();
     messenger.dispose();
     panelMessengers.delete(panel);
+    const sessionId = client?.sessionId ?? restoredSessionId;
+    if (sessionId !== undefined && panelsBySessionId.get(sessionId) === panel) panelsBySessionId.delete(sessionId);
+    sessionTree.setActiveSession(activeCompanionSessionId());
     client?.dispose();
   });
+}
+
+function activeCompanionSessionId(): string | undefined {
+  for (const [sessionId, panel] of panelsBySessionId) {
+    if (panel.active) return sessionId;
+  }
+  return undefined;
 }
 
 async function connect(
@@ -249,6 +307,7 @@ async function connect(
   runtimeControlPromise: Promise<RuntimeControl | undefined>,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
+  onSessionListChange?: () => void,
 ): Promise<ConnectedChat> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
@@ -313,7 +372,10 @@ async function connect(
     assistantTime: (time: number) => post(panel, { type: 'assistantTime', time }),
     process: (event: import('./dshClient').DshProcessEvent) => post(panel, { type: 'process', event }),
     queue: (items: readonly import('./dshClient').DshQueuedPrompt[]) => post(panel, { type: 'queue', items }),
-    running: (value: boolean) => post(panel, { type: 'running', value }),
+    running: (value: boolean) => {
+      post(panel, { type: 'running', value });
+      onSessionListChange?.();
+    },
     status: (text: string) => post(panel, { type: 'status', text }),
     submissionObserved: (requestId: string) => post(panel, { type: 'submissionObserved', requestId }),
     userCommitted: (requestId: string | undefined, text: string, time: number, turn: number) => post(panel, {
@@ -340,6 +402,37 @@ async function connect(
     client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin),
     backendVersion,
   };
+}
+
+async function connectSessionBrowser(
+  context: vscode.ExtensionContext,
+  runtimeControlPromise: Promise<RuntimeControl | undefined>,
+  onDidChange: () => void,
+): Promise<DshSessionBrowser> {
+  let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
+  let runtime = await runtimeControlPromise;
+  if (runtime === undefined) {
+    runtime = await connectRuntime(context);
+    if (runtime !== undefined) context.subscriptions.push(runtime);
+  }
+  if (runtime === undefined) throw new Error('Managed DSH runtime is unavailable');
+  if (runtime.origin !== DSH_ORIGIN && runtime.origin !== PACKAGED_DSH_ORIGIN) {
+    throw new Error(`DSH runtime origin ${runtime.origin} does not match a Companion runtime origin`);
+  }
+  if (runtime.clientModule === undefined) throw new Error('Managed DSH runtime does not provide its Client module');
+  try {
+    if (cookie !== undefined) {
+      return await DshSessionBrowser.connect(cookie, runtime.clientModule, onDidChange, runtime.origin);
+    }
+  } catch (error) {
+    if (!(error instanceof DshHttpError) || error.status !== 401) throw error;
+    await context.secrets.delete(COOKIE_SECRET_KEY);
+    cookie = undefined;
+  }
+  const launchUrl = await runtime.bootstrapUrl();
+  cookie = await exchangeLaunchUrl(launchUrl, runtime.origin);
+  await context.secrets.store(COOKIE_SECRET_KEY, cookie);
+  return DshSessionBrowser.connect(cookie, runtime.clientModule, onDidChange, runtime.origin);
 }
 
 async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {

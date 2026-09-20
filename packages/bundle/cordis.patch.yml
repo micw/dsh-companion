@@ -15,6 +15,13 @@
   config:
     enabled: false
 
+# Companion exposes message-content search in its Session sidebar. Keep the
+# derived index durable, but defer SQLite initialization until the first query.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-search.sqlite')
+    openAt: first-search
+
 - insert:
     - id: dsh-companion-preset-root
       name: '@dsh-companion/bundle'
