@@ -7,17 +7,16 @@ import {
   TurnStats,
   advanceContextPressure,
   advanceModelSelection,
-  collectPreviousPromptBatch,
   exchangeLaunchUrl,
   parseCompactionEvent,
   parseModelCatalog,
-  parseQueueItems,
 } from '../vscode/out/dshClient.js';
 
 test('the editor has output, process, persistent state, composer, send, and stop support', async () => {
   const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
   const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  const dshClient = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
   assert.match(script, /getElementById\('output'\)/);
   assert.match(script, /getElementById\('sticky-prompt'\)/);
   assert.match(script, /getElementById\('queue'\)/);
@@ -37,6 +36,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('stop'\)/);
   assert.match(script, /vscode\.getState\(\)/);
   assert.match(script, /vscode\.setState\(state\)/);
+  assert.doesNotMatch(script, /restoredScrollTop/);
+  assert.match(script, /message\.sessionId === restoredSessionId[\s\S]*requestAnimationFrame\(setOutputFollow\)/);
   assert.match(script, /disclosures: \{ \.\.\.restoredDisclosures \}/);
   assert.match(script, /root\.dataset\.disclosureId = disclosureId/);
   assert.match(script, /function applyProcessEvent/);
@@ -51,18 +52,34 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function autoGrowPrompt/);
   assert.match(script, /Math\.min\(prompt\.scrollHeight, 200\)/);
   assert.match(script, /function appendTurnSummary/);
+  assert.match(script, /function appendTurnSummary[\s\S]*activeAssistantMessage\.append\(footer\);[\s\S]*followOutput\(\)/);
   assert.match(script, /function usageControl/);
   assert.match(script, /function timingControl/);
   assert.match(script, /function closeStatControls/);
   assert.match(script, /function renderQueue/);
   assert.match(script, /function requestOlderHistory/);
+  assert.match(script, /function resetTranscript/);
   assert.match(script, /function beginHistoryPrepend/);
   assert.match(script, /output\.scrollTop = previous\.scrollTop \+ output\.scrollHeight - previous\.scrollHeight/);
   assert.match(script, /function updateStickyPrompt/);
   assert.match(script, /function setStickyPrompt/);
   assert.match(script, /output\.getBoundingClientRect\(\)/);
   assert.match(script, /stickyPromptTarget\.scrollIntoView/);
+  assert.match(script, /function markUserScrollIntent/);
+  assert.match(script, /function finishPointerInteraction/);
+  assert.match(script, /function setOutputSticky/);
+  assert.match(script, /function updateScrollButton/);
+  assert.match(script, /scrollBottom\.addEventListener\('click', scrollToLatestOutput\)/);
+  assert.match(script, /function scrollToLatestOutput[\s\S]*behavior: 'smooth'/);
+  assert.match(script, /stickyPromptJump\.addEventListener[\s\S]*setOutputSticky\(true\)[\s\S]*scrollIntoView/);
+  assert.match(script, /output\.contains\(selection\.anchorNode\)/);
+  assert.match(script, /output\.scrollHeight - output\.scrollTop - output\.clientHeight < 64/);
+  assert.match(script, /scrollMode = nearBottom \? 'follow' : 'sticky'/);
+  assert.match(script, /scrollMode === 'sticky' && nearBottom && !bottomLatchSuppressed/);
+  assert.match(script, /scrollMode !== 'follow' \|\| userScrollIntent \|\| pointerScrolling/);
+  assert.match(script, /output\.addEventListener\('wheel', markUserScrollIntent/);
   assert.match(script, /message\.type === 'userCommitted'/);
+  assert.match(script, /message\.type === 'submissionObserved'/);
   assert.match(script, /event\.key !== 'Escape'/);
   assert.match(script, /Usage \$\{compactTokens\(total\)\} tok/);
   assert.match(script, /Number\(usage\.reasoningTokens\) > 0/);
@@ -73,6 +90,10 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.message\.assistant pre/);
   assert.match(style, /#output \{[\s\S]*padding: 24px 20px/);
   assert.match(style, /#sticky-prompt \{[\s\S]*position: absolute/);
+  assert.match(style, /#sticky-prompt-jump \{[\s\S]*border-radius: 50%/);
+  assert.match(style, /#scroll-bottom \{[\s\S]*position: absolute/);
+  assert.match(style, /#scroll-bottom \{[\s\S]*background: var\(--vscode-button-background\)/);
+  assert.match(style, /#sticky-prompt-jump svg,[\s\S]*#scroll-bottom svg/);
   assert.match(style, /\.message\.assistant blockquote \{[\s\S]*border-radius: 6px/);
   assert.match(style, /\.stat-panel/);
   assert.match(style, /\.stat-trigger \{[\s\S]*background: transparent/);
@@ -84,8 +105,17 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.compaction-activity/);
   assert.match(style, /#status\[data-running='true'\]::before/);
   assert.match(extension, /rows="1"/);
+  assert.match(extension, /id="sticky-prompt-jump"[\s\S]*<svg[^>]+><path d="M3\.5 10/);
+  assert.match(extension, /id="scroll-bottom"[\s\S]*<svg[^>]+><path d="m3\.5 6/);
   assert.match(extension, /Ask DSH Companion… \(Enter sends, Shift\+Enter = newline\)/);
   assert.match(extension, /isSelectModelMessage/);
+  assert.match(extension, /runtime\.clientModule/);
+  assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context\)/);
+  assert.match(extension, /Managed DSH runtime is unavailable/);
+  assert.doesNotMatch(extension, /showInputBox|Paste the launch URL/);
+  assert.match(dshClient, /connectCanonical/);
+  assert.match(dshClient, /connection\.state\.subscribe/);
+  assert.doesNotMatch(dshClient, /remote\.mux|new WebSocket|Handwritten DSH/);
 });
 
 test('the development connection is fixed to the running DSH origin', () => {
@@ -132,77 +162,6 @@ test('turn statistics aggregate usage and timing across attempts', () => {
     ttftMs: 100,
     tokensPerSecond: 30,
   });
-});
-
-test('the control queue preserves host order, request identity, and placement', () => {
-  assert.deepEqual(parseQueueItems([
-    {
-      id: 'message-1',
-      rpcId: 'request-1',
-      placement: 'queued',
-      message: { content: [{ type: 'text', text: 'first' }] },
-    },
-    {
-      id: 'message-2',
-      placement: 'steering',
-      message: { content: [{ type: 'text', text: 'second' }] },
-    },
-  ]), [
-    { id: 'message-1', requestId: 'request-1', text: 'first', placement: 'queued' },
-    { id: 'message-2', text: 'second', placement: 'steering' },
-  ]);
-});
-
-test('history paging continues to and trims at the next older human-prompt Turn', async () => {
-  const requests = [];
-  const pages = [
-    {
-      records: [
-        historyRecord(80, 'user/message', { source: { kind: 'plugin' }, content: [] }),
-        historyRecord(90, 'assistant/message', { message: { content: [] } }),
-      ],
-      hasMore: true,
-    },
-    {
-      records: [
-        historyRecord(40, 'assistant/message', { message: { content: [] } }),
-        historyRecord(50, 'turn/start', { turn: 3 }),
-        historyRecord(51, 'user/message', { source: { kind: 'user' }, content: [] }),
-        historyRecord(70, 'turn/end', { turn: 3 }),
-      ],
-      hasMore: false,
-    },
-  ];
-  const batch = await collectPreviousPromptBatch(100, 140, async (beforeSeq, throughSeq) => {
-    requests.push({ beforeSeq, throughSeq });
-    return pages.shift();
-  });
-
-  assert.deepEqual(requests, [
-    { beforeSeq: 100, throughSeq: 140 },
-    { beforeSeq: 80, throughSeq: 140 },
-  ]);
-  assert.deepEqual(batch.records.map((record) => record.event.seq), [50, 51, 70, 80, 90]);
-  assert.equal(batch.hasMore, true);
-});
-
-test('history paging stops at the beginning when no older human prompt exists', async () => {
-  const batch = await collectPreviousPromptBatch(10, 20, async () => ({
-    records: [historyRecord(0, 'turn/start', { turn: 1 })],
-    hasMore: false,
-  }));
-  assert.deepEqual(batch.records.map((record) => record.event.seq), [0]);
-  assert.equal(batch.hasMore, false);
-});
-
-test('history paging rejects a page that does not move its cursor backwards', async () => {
-  await assert.rejects(
-    collectPreviousPromptBatch(10, 20, async () => ({
-      records: [historyRecord(10, 'turn/start', { turn: 1 })],
-      hasMore: true,
-    })),
-    /made no backwards progress/,
-  );
 });
 
 test('the DSH model catalog preserves provider-owned effort metadata and order', () => {
@@ -303,29 +262,20 @@ test('tabs restore through the serializer and Stop uses DSH session cancellation
   assert.match(client, /restoredSessionId \?\?/);
   assert.match(client, /reasoningDisclosureId/);
   assert.match(client, /context:\$\{String\(event\.seq\)\}/);
-  assert.match(client, /'session\/modelCatalog'/);
-  assert.match(client, /endpoint: 'session\/control'/);
-  assert.match(client, /'session\/page'/);
-  assert.match(client, /'session\/selectModel'/);
-  assert.match(client, /'commands\/list'/);
-  assert.match(client, /'commands\/execute'/);
-  assert.match(client, /submittedAttachments: \[\]/);
-  assert.match(client, /frame\.key === 'modelSelection'/);
-  assert.match(client, /frame\.key === 'contextPressure'/);
-  assert.match(client, /collectPreviousPromptBatch/);
-  assert.match(client, /function parseQueueItems/);
+  assert.match(client, /callCanonicalRemote\(graph, 'session', 'modelCatalog'/);
+  assert.match(client, /binding\.session\.beginSubmission/);
+  assert.match(client, /binding\.session\.loadOlder/);
+  assert.match(client, /callCanonicalRemote\(this\.requireCanonical\(\)\.graph, 'session', 'selectModel'/);
+  assert.match(client, /projections\.faceOf\('modelSelection'\)/);
+  assert.match(client, /projections\.faceOf\('contextPressure'\)/);
   assert.match(client, /function modelLabelMap/);
-  assert.match(client, /'session\/cancel'/);
+  assert.match(client, /binding\.session\.cancel/);
   assert.match(client, /retaining pending DSH inbox work/);
 });
 
-test('launch authentication rejects another origin before connecting', async () => {
+test('managed launch authentication rejects another origin before connecting', async () => {
   await assert.rejects(
     exchangeLaunchUrl('http://127.0.0.1:9999/?token=wrong'),
     /Expected the launch URL printed by DSH/,
   );
 });
-
-function historyRecord(seq, type, data) {
-  return { type: 'event', event: { seq, type, time: seq, data } };
-}

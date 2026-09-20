@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import WebSocket from 'ws';
+import { pathToFileURL } from 'node:url';
 
 /** Fixed development DSH Web origin. */
 export const DSH_ORIGIN = 'http://127.0.0.1:3081';
@@ -118,6 +118,7 @@ export type DshCompactionEvent =
   | { readonly type: 'end'; readonly id: string; readonly time: number; readonly error?: string };
 
 export interface DshOutputSink {
+  reset(): void;
   history(role: 'user' | 'assistant' | 'error', text: string, time?: number): void;
   historyPrependStart(): void;
   historyPrependEnd(): void;
@@ -135,6 +136,7 @@ export interface DshOutputSink {
   queue(items: readonly DshQueuedPrompt[]): void;
   running(value: boolean): void;
   status(text: string): void;
+  submissionObserved(requestId: string): void;
   userCommitted(requestId: string | undefined, text: string, time: number, turn: number): void;
 }
 
@@ -153,6 +155,58 @@ interface RpcFailure {
 
 type RpcResult<T> = RpcSuccess<T> | RpcFailure;
 
+interface ObservableValue {
+  getSnapshot(): unknown;
+  subscribe(listener: () => void): () => void;
+}
+
+interface CanonicalSession extends ObservableValue {
+  readonly sessionId: string;
+  readonly projections: { faceOf(key: string): ObservableValue };
+  beginSubmission(input: {
+    mode: 'queue' | 'steer';
+    text: string;
+    attachments: readonly unknown[];
+    onRetire?: (retirement: { readonly reason: 'observed' | 'failed' }) => void;
+  }): { requestId: string; abandon(): void };
+  prompt(
+    content: readonly { readonly type: 'text'; readonly text: string }[],
+    mode: 'queue' | 'steer',
+    signal?: AbortSignal,
+    requestId?: string,
+  ): Promise<unknown>;
+  cancel(): Promise<unknown>;
+  loadOlder(): Promise<void>;
+}
+
+interface CanonicalBinding {
+  readonly session: CanonicalSession;
+  readonly eventSource: ObservableValue;
+}
+
+interface CanonicalClientGraph {
+  readonly sessions: {
+    readonly list: ObservableValue;
+    create(options?: { cwd?: string }): Promise<string>;
+    open(sessionId: string): void;
+    binding(sessionId: string): CanonicalBinding | undefined;
+    subagentAddress(sessionId: string): unknown;
+  };
+  readonly remote: Record<string, unknown>;
+  readonly connection: { readonly state: ObservableValue };
+  dispose(): Promise<void>;
+}
+
+interface CanonicalState {
+  readonly graph: CanonicalClientGraph;
+  readonly binding: CanonicalBinding;
+  readonly disposers: (() => void)[];
+  readonly requestAliases: Map<string, string>;
+  assistantAttemptId?: string;
+}
+
+let canonicalAssemblyQueue: Promise<void> = Promise.resolve();
+
 interface UsageSample {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -162,16 +216,6 @@ interface UsageSample {
   readonly reasoningTokens?: number;
   readonly route?: string;
   readonly decodeMs?: number;
-}
-
-interface DshHistoryPage {
-  readonly records: readonly unknown[];
-  readonly hasMore: boolean;
-}
-
-export interface PreviousPromptBatch {
-  readonly records: readonly unknown[];
-  readonly hasMore: boolean;
 }
 
 /** Validates one DSH model catalog and returns detached display data. */
@@ -270,36 +314,6 @@ export function parseCompactionEvent(value: unknown): DshCompactionEvent | undef
   return undefined;
 }
 
-/** Reads a contiguous older batch that starts at the nearest available human-prompt Turn. */
-export async function collectPreviousPromptBatch(
-  beforeSeq: number,
-  throughSeq: number,
-  readPage: (beforeSeq: number, throughSeq: number) => Promise<DshHistoryPage>,
-): Promise<PreviousPromptBatch> {
-  let cursor = beforeSeq;
-  let hasMore = true;
-  let records: readonly unknown[] = [];
-  while (hasMore) {
-    const page = await readPage(cursor, throughSeq);
-    const pageRecords = validHistoryRecords(page.records);
-    if (pageRecords.length === 0) return { records, hasMore: false };
-    records = [...pageRecords, ...records];
-    hasMore = page.hasMore;
-    const nextCursor = historyRecordSeq(pageRecords[0]);
-    if (nextCursor >= cursor) throw new Error('DSH Session history paging made no backwards progress');
-    cursor = nextCursor;
-    const promptIndex = findLastRecordIndex(records, isHumanPromptRecord);
-    if (promptIndex < 0) continue;
-    const turnStartIndex = findLastRecordIndex(records, (record, index) => (
-      index <= promptIndex && isTurnStartRecord(record)
-    ));
-    if (turnStartIndex < 0 && hasMore) continue;
-    const start = turnStartIndex < 0 ? 0 : turnStartIndex;
-    return { records: records.slice(start), hasMore: hasMore || start > 0 };
-  }
-  return { records, hasMore: false };
-}
-
 export class TurnStats {
   private readonly stepStarts = new Map<number, number>();
   private readonly firstTokens = new Map<number, number>();
@@ -357,63 +371,31 @@ export class TurnStats {
   }
 }
 
-/** Minimal client for one Session on the fixed development DSH instance. */
+/** Projects one canonical DSH Client Session supplied by the managed Runtime. */
 export class DshClient {
-  private readonly socket: WebSocket;
-  private readonly streamId = randomUUID();
-  private readonly controlStreamId = randomUUID();
   readonly sessionId: string;
-  private disposed = false;
   private hasLiveAssistantText = false;
   private lastReportedError: string | undefined;
   private currentTurn = 0;
   private currentStep = 0;
   private turnStats: TurnStats | undefined;
-  private historyThroughSeq = -1;
-  private historyBaseSeq = 0;
-  private historyHasMore = false;
-  private loadingOlder: Promise<void> | undefined;
-  private receiveQueue = Promise.resolve();
   private readonly modelLabels: ReadonlyMap<string, string>;
   private modelSelectionState: DshModelSelectionState;
   private contextPressureState: DshContextPressureState = { watermark: -1 };
   private readonly activeCompactions = new Set<string>();
   private readonly activeCompactionCommands = new Set<string>();
-  private streamReadyResolve: (() => void) | undefined;
-  private streamReadyReject: ((error: Error) => void) | undefined;
+  private canonical: CanonicalState | undefined;
 
   private constructor(
-    private readonly cookie: string,
     sessionId: string,
     private readonly sink: DshOutputSink,
     private readonly modelCatalogValue: DshModelCatalog,
+    canonical: CanonicalState,
   ) {
     this.sessionId = sessionId;
     this.modelLabels = modelLabelMap(modelCatalogValue);
     this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
-    const websocketUrl = new URL('/api/remote.mux', DSH_ORIGIN);
-    websocketUrl.protocol = 'ws:';
-    this.socket = new WebSocket(websocketUrl, {
-      headers: { cookie },
-      origin: DSH_ORIGIN,
-    });
-    this.socket.on('message', (data) => {
-      this.receiveQueue = this.receiveQueue
-        .then(() => this.receive(String(data)))
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.rejectStreamReady(error instanceof Error ? error : new Error(message));
-          this.sink.status(message);
-        });
-    });
-    this.socket.on('close', () => {
-      this.rejectStreamReady(new Error('DSH closed the Session stream before it became ready'));
-      if (!this.disposed) this.sink.status('Disconnected');
-    });
-    this.socket.on('error', (error) => {
-      this.rejectStreamReady(error);
-      if (!this.disposed) this.sink.status(`Connection error: ${error.message}`);
-    });
+    this.canonical = canonical;
   }
 
   /** Creates or restores a Session and opens its live event stream. */
@@ -421,51 +403,106 @@ export class DshClient {
     cookie: string,
     cwd: string | undefined,
     sink: DshOutputSink,
-    restoredSessionId?: string,
+    restoredSessionId: string | undefined,
+    clientModule: string,
   ): Promise<DshClient> {
     sink.status('Connecting to DSH…');
     await rpc(cookie, 'session/list', { _request: {} });
-    const modelCatalog = parseModelCatalog(await rpc(cookie, 'session/modelCatalog', {}));
-    const sessionId = restoredSessionId ?? (await rpc<{ sessionId: string }>(cookie, 'session/create', {
-        request: cwd === undefined ? {} : { cwd },
-      })).sessionId;
-    const commands: unknown = await rpc(cookie, 'commands/list', { agentId: sessionId });
-    if (!Array.isArray(commands) || !commands.every((command) => (
-      isRecord(command) && typeof command.name === 'string'
-    ))) throw new Error('DSH returned an invalid command catalog');
-    const client = new DshClient(cookie, sessionId, sink, modelCatalog);
-    sink.modelCatalog(modelCatalog);
-    sink.modelSelection(modelCatalog.default);
-    sink.compactAvailable(commands.some((command) => command.name === 'compact'));
-    await client.open();
-    sink.status('Connected');
-    return client;
+    return DshClient.connectCanonical(cookie, cwd, sink, restoredSessionId, clientModule);
+  }
+
+  private static async connectCanonical(
+    cookie: string,
+    cwd: string | undefined,
+    sink: DshOutputSink,
+    restoredSessionId: string | undefined,
+    clientModule: string,
+  ): Promise<DshClient> {
+    const module = await importExternalModule(pathToFileURL(clientModule).href);
+    const Client = isRecord(module)
+      ? module.DshWebClient ?? (isRecord(module.default) ? module.default.DshWebClient : undefined)
+      : undefined;
+    const connect = (typeof Client === 'function' || isRecord(Client))
+      ? Reflect.get(Client, 'connect')
+      : undefined;
+    if (typeof connect !== 'function') {
+      throw new Error('Managed DSH Client module has an invalid API');
+    }
+    const graphValue: unknown = await assembleCanonicalClient(connect, Client, { origin: DSH_ORIGIN, cookie });
+    if (!isCanonicalClientGraph(graphValue)) throw new Error('Managed DSH Client returned an invalid object graph');
+    const graph = graphValue;
+    try {
+      const catalogResult = await callCanonicalRemote(graph, 'session', 'modelCatalog');
+      const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
+      const sessionId = restoredSessionId ?? await graph.sessions.create(cwd === undefined ? {} : { cwd });
+      if (restoredSessionId !== undefined && !canonicalSessionIds(graph.sessions.list.getSnapshot()).has(sessionId)) {
+        throw new Error(`DSH Session ${sessionId} is not available`);
+      }
+      graph.sessions.open(sessionId);
+      const binding: unknown = graph.sessions.binding(sessionId);
+      if (!isCanonicalBinding(binding)) {
+        throw new Error(`DSH did not create a valid Client binding for Session ${sessionId}`);
+      }
+      const commands = graph.sessions.subagentAddress(sessionId) === undefined
+        ? unwrapCommandCatalog(await callCanonicalRemote(graph, 'commands', 'list', sessionId))
+        : [];
+      if (!Array.isArray(commands) || !commands.every((command) => (
+        isRecord(command) && typeof command.name === 'string'
+      ))) throw new Error('DSH returned an invalid command catalog');
+      const client = new DshClient(sessionId, sink, modelCatalog, {
+        graph,
+        binding,
+        disposers: [],
+        requestAliases: new Map(),
+      });
+      sink.modelCatalog(modelCatalog);
+      sink.modelSelection(modelCatalog.default);
+      sink.compactAvailable(commands.some((command) => command.name === 'compact'));
+      await client.openCanonical();
+      sink.status('Connected');
+      return client;
+    } catch (error) {
+      await graph.dispose();
+      throw error;
+    }
   }
 
   /** Sends one text prompt to this editor's Session. */
   async prompt(text: string, requestId: string): Promise<void> {
     this.lastReportedError = undefined;
-    await rpc(this.cookie, 'session/prompt', {
-      request: {
-        requestId,
-        sessionId: this.sessionId,
-        mode: 'queue',
-        content: [{ type: 'text', text }],
-        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    const canonical = this.requireCanonical();
+    const submission = canonical.binding.session.beginSubmission({
+      mode: 'queue',
+      text,
+      attachments: [],
+      onRetire: (retirement) => {
+        if (retirement.reason === 'observed') this.sink.submissionObserved(requestId);
       },
     });
+    canonical.requestAliases.set(submission.requestId, requestId);
+    const result = await canonical.binding.session.prompt(
+      [{ type: 'text', text }], 'queue', undefined, submission.requestId,
+    );
+    try {
+      unwrapCanonicalResult(result, 'session.prompt');
+    } catch (error) {
+      canonical.requestAliases.delete(submission.requestId);
+      throw error;
+    }
   }
 
   /** Cancels the active turn while retaining pending DSH inbox work. */
   async cancel(): Promise<void> {
-    await rpc(this.cookie, 'session/cancel', { request: { sessionId: this.sessionId } });
+    unwrapCanonicalResult(await this.requireCanonical().binding.session.cancel(), 'session.cancel');
   }
 
   /** Selects one DSH provider, model, and optional reasoning effort for this Session. */
   async selectModel(selection: DshModelSelection): Promise<void> {
-    const value: unknown = await rpc(this.cookie, 'session/selectModel', {
-      request: { sessionId: this.sessionId, ...selection },
+    const result = await callCanonicalRemote(this.requireCanonical().graph, 'session', 'selectModel', {
+      sessionId: this.sessionId,
+      ...selection,
     });
+    const value = unwrapCanonicalResult(result, 'session.selectModel');
     if (!isRecord(value) || !isRecord(value.selected)) {
       throw new Error('DSH returned an invalid model-selection response');
     }
@@ -474,120 +511,182 @@ export class DshClient {
 
   /** Runs DSH's canonical argument-free `/compact` command for this Session. */
   async compact(): Promise<DshCompactResult> {
-    const value: unknown = await rpc(this.cookie, 'commands/execute', {
-      agentId: this.sessionId,
-      line: '/compact',
-      submittedAttachments: [],
-    });
-    if (!isRecord(value) || typeof value.commandId !== 'string' || !isRecord(value.result)
-      || !['success', 'error'].includes(String(value.result.kind))
-      || (value.result.text !== undefined && typeof value.result.text !== 'string')) {
-      throw new Error('DSH returned an invalid compact command response');
-    }
-    return {
-      kind: value.result.kind as DshCompactResult['kind'],
-      ...(value.result.text === undefined ? {} : { text: value.result.text }),
-    };
+    const result = await callCanonicalRemote(
+      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, '/compact', [],
+    );
+    return parseCompactResult(unwrapCanonicalResult(result, 'commands.execute'));
   }
 
   /** Loads enough older DSH history to expose the next human prompt above the current window. */
   loadOlder(): Promise<void> {
-    if (!this.historyHasMore) return Promise.resolve();
-    if (this.loadingOlder !== undefined) return this.loadingOlder;
-    const loading = this.loadOlderBatch().finally(() => {
-      if (this.loadingOlder === loading) this.loadingOlder = undefined;
-    });
-    this.loadingOlder = loading;
-    return loading;
+    return this.requireCanonical().binding.session.loadOlder();
   }
 
   dispose(): void {
-    this.disposed = true;
-    if (this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ type: 'cancel', streamId: this.streamId }));
-      this.socket.send(JSON.stringify({ type: 'cancel', streamId: this.controlStreamId }));
-    }
-    this.socket.close();
-  }
-
-  private open(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.streamReadyResolve = resolve;
-      this.streamReadyReject = reject;
-      this.socket.once('open', () => {
-        this.socket.send(JSON.stringify({
-          type: 'open',
-          streamId: this.streamId,
-          endpoint: 'session/follow',
-          payload: {
-            args: {
-              request: {
-                address: { kind: 'session', sessionId: this.sessionId },
-                maxMessages: 50,
-                assistantStream: true,
-              },
-            },
-          },
-        }));
-        this.socket.send(JSON.stringify({
-          type: 'open',
-          streamId: this.controlStreamId,
-          endpoint: 'session/control',
-          payload: { args: {} },
-        }));
-      });
+    const canonical = this.canonical;
+    if (canonical === undefined) return;
+    for (const dispose of canonical.disposers.splice(0)) dispose();
+    void canonical.graph.dispose().catch(() => {
+      console.warn('DSH Client disposal did not settle cleanly');
     });
+    this.canonical = undefined;
   }
 
-  private async receive(text: string): Promise<void> {
-    let message: unknown;
-    try {
-      message = JSON.parse(text);
-    } catch {
-      this.sink.status('DSH sent an invalid stream frame');
-      return;
-    }
-    if (!isRecord(message)) return;
-    if (message.streamId === this.controlStreamId) {
-      if (message.type === 'item' && isRecord(message.value)) this.receiveControlFrame(message.value);
-      return;
-    }
-    if (message.streamId !== this.streamId) return;
-    if (message.type === 'error' && isRecord(message.error)) {
-      const error = new Error(`DSH stream error: ${String(message.error.message ?? 'unknown error')}`);
-      this.rejectStreamReady(error);
-      this.sink.status(error.message);
-      return;
-    }
-    if (message.type !== 'item' || !isRecord(message.value)) return;
-    await this.receiveFollowFrame(message.value);
-    this.resolveStreamReady();
+  private requireCanonical(): CanonicalState {
+    if (this.canonical === undefined) throw new Error('Managed DSH Client is disposed');
+    return this.canonical;
   }
 
-  private receiveControlFrame(frame: Record<string, unknown>): void {
-    if (frame.type === 'baseline' && isRecord(frame.value) && isRecord(frame.value.queues)
-      && isRecord(frame.value.projections)) {
-      this.sink.queue(parseQueueItems(frame.value.queues[this.sessionId]));
-      const projection = frame.value.projections[this.sessionId];
-      if (projection !== undefined) this.receiveProjectionBlock(projection);
+  private async openCanonical(): Promise<void> {
+    const canonical = this.requireCanonical();
+    const session = canonical.binding.session;
+    const projectSession = (): void => {
+      const snapshot = session.getSnapshot();
+      if (!isRecord(snapshot) || !Array.isArray(snapshot.queue) || typeof snapshot.running !== 'boolean'
+        || typeof snapshot.hasMore !== 'boolean' || typeof snapshot.openState !== 'string') {
+        throw new Error('DSH Client returned an invalid Session snapshot');
+      }
+      this.sink.queue(snapshot.queue.map((item) => canonicalQueueItem(item, canonical.requestAliases)));
+      this.sink.running(snapshot.running);
+      this.sink.historyState(snapshot.hasMore);
+    };
+    const projectEvents = (): void => { this.receiveCanonicalWindow(canonical.binding.eventSource.getSnapshot()); };
+    const modelProjection = session.projections.faceOf('modelSelection');
+    const contextProjection = session.projections.faceOf('contextPressure');
+    const projectModel = (): void => {
+      this.acceptModelSelection(modelProjection.getSnapshot(), this.modelSelectionState.watermark + 1);
+    };
+    const projectContext = (): void => {
+      this.acceptContextPressure(contextProjection.getSnapshot(), this.contextPressureState.watermark + 1);
+    };
+    const projectConnection = (): void => {
+      const state = canonical.graph.connection.state.getSnapshot();
+      if (state === 'connecting') this.sink.status('Reconnecting to DSH…');
+      if (state === 'disconnected') this.sink.status('Disconnected; retrying…');
+      if (state === 'connected') this.sink.status('Connected');
+    };
+    canonical.disposers.push(
+      session.subscribe(projectSession),
+      canonical.binding.eventSource.subscribe(projectEvents),
+      modelProjection.subscribe(projectModel),
+      contextProjection.subscribe(projectContext),
+      canonical.graph.connection.state.subscribe(projectConnection),
+    );
+    projectSession();
+    projectEvents();
+    projectModel();
+    projectContext();
+    projectConnection();
+    await waitForCanonicalSession(session);
+  }
+
+  private receiveCanonicalWindow(value: unknown): void {
+    if (!isRecord(value) || !Array.isArray(value.entries) || !isRecord(value.change)
+      || typeof value.hasMore !== 'boolean') {
+      throw new Error('DSH Client returned an invalid event window');
+    }
+    const change = value.change;
+    if (change.kind === 'append' && Array.isArray(change.entries)) {
+      for (const entry of change.entries) this.receiveCanonicalEntry(entry, false);
       return;
     }
-    if (frame.type === 'queue' && frame.sessionId === this.sessionId) {
-      this.sink.queue(parseQueueItems(frame.items));
+    if (change.kind === 'prepend' && Array.isArray(change.entries)) {
+      const saved = this.saveParserPosition();
+      this.sink.historyPrependStart();
+      try {
+        for (const entry of change.entries) this.receiveCanonicalEntry(entry, true, true);
+      } finally {
+        this.restoreParserPosition(saved);
+        this.sink.historyPrependEnd();
+      }
       return;
     }
-    if (frame.type === 'projection' && frame.sessionId === this.sessionId && typeof frame.seq === 'number') {
-      if (frame.key === 'modelSelection') this.acceptModelSelection(frame.value, frame.seq);
-      if (frame.key === 'contextPressure') this.acceptContextPressure(frame.value, frame.seq);
+    if (change.kind === 'settle-assistant' && isRecord(change.entry)) {
+      if (this.canonical !== undefined) this.canonical.assistantAttemptId = undefined;
+      this.receiveCanonicalEntry(change.entry, false);
+      return;
+    }
+    if (change.kind !== 'replace' && change.kind !== 'settle-assistant') {
+      throw new Error('DSH Client returned an invalid event-window change');
+    }
+    this.retireCanonicalSubmissions(value.entries);
+    this.resetParser();
+    this.sink.reset();
+    for (const entry of value.entries) this.receiveCanonicalEntry(entry, true);
+    this.sink.compacting(this.compactionActive());
+    this.sink.historyState(value.hasMore);
+  }
+
+  private receiveCanonicalEntry(entry: unknown, fromSnapshot: boolean, older = false): void {
+    if (!isRecord(entry) || !isRecord(entry.event)) return;
+    if (entry.type === 'event') {
+      this.receiveHistoryRecord(entry, fromSnapshot, older);
+      return;
+    }
+    const event = entry.event;
+    if (entry.type !== 'transient' || event.type !== 'assistant/live-chunk' || !isRecord(event.data)
+      || typeof event.data.attemptId !== 'string' || typeof event.data.turn !== 'number'
+      || typeof event.data.step !== 'number' || !isRecord(event.data.chunk)) return;
+    const canonical = this.canonical;
+    if (canonical === undefined) return;
+    this.currentTurn = event.data.turn;
+    this.currentStep = event.data.step;
+    if (canonical.assistantAttemptId !== event.data.attemptId) {
+      canonical.assistantAttemptId = event.data.attemptId;
+      this.sink.assistantStart();
+    }
+    this.receiveAssistantChunk(event.data.chunk, event.time);
+  }
+
+  private retireCanonicalSubmissions(entries: readonly unknown[]): void {
+    const canonical = this.canonical;
+    if (canonical === undefined || canonical.requestAliases.size === 0) return;
+    let turn = 0;
+    for (const entry of entries) {
+      if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) continue;
+      const event = entry.event;
+      if (!isRecord(event.data)) continue;
+      const data = event.data;
+      if (event.type === 'turn/start' && typeof data.turn === 'number') turn = data.turn;
+      if (event.type !== 'user/message' || !isRecord(data.source)
+        || typeof data.source.rpcId !== 'string') continue;
+      const alias = canonical.requestAliases.get(data.source.rpcId);
+      if (alias === undefined) continue;
+      canonical.requestAliases.delete(data.source.rpcId);
+      this.sink.userCommitted(
+        alias,
+        contentText(data.content),
+        typeof event.time === 'number' ? event.time : Date.now(),
+        turn,
+      );
     }
   }
 
-  private receiveProjectionBlock(value: unknown): void {
-    if (!isRecord(value) || !Number.isSafeInteger(value.asOfSeq) || !isRecord(value.values)) {
-      throw new Error('DSH returned an invalid Session projection baseline');
-    }
-    this.acceptModelSelection(value.values.modelSelection, value.asOfSeq as number);
-    this.acceptContextPressure(value.values.contextPressure, value.asOfSeq as number);
+  private saveParserPosition() {
+    return {
+      currentTurn: this.currentTurn,
+      currentStep: this.currentStep,
+      turnStats: this.turnStats,
+      hasLiveAssistantText: this.hasLiveAssistantText,
+    };
+  }
+
+  private restoreParserPosition(saved: ReturnType<DshClient['saveParserPosition']>): void {
+    this.currentTurn = saved.currentTurn;
+    this.currentStep = saved.currentStep;
+    this.turnStats = saved.turnStats;
+    this.hasLiveAssistantText = saved.hasLiveAssistantText;
+  }
+
+  private resetParser(): void {
+    this.currentTurn = 0;
+    this.currentStep = 0;
+    this.turnStats = undefined;
+    this.hasLiveAssistantText = false;
+    this.lastReportedError = undefined;
+    this.activeCompactions.clear();
+    this.activeCompactionCommands.clear();
+    if (this.canonical !== undefined) this.canonical.assistantAttemptId = undefined;
   }
 
   private acceptModelSelection(projection: unknown, watermark: number): void {
@@ -607,117 +706,6 @@ export class DshClient {
     if (next === this.contextPressureState) return;
     this.contextPressureState = next;
     this.sink.contextPressure(next.current);
-  }
-
-  private resolveStreamReady(): void {
-    const resolve = this.streamReadyResolve;
-    this.streamReadyResolve = undefined;
-    this.streamReadyReject = undefined;
-    resolve?.();
-  }
-
-  private rejectStreamReady(error: Error): void {
-    const reject = this.streamReadyReject;
-    this.streamReadyResolve = undefined;
-    this.streamReadyReject = undefined;
-    reject?.(error);
-  }
-
-  private async receiveFollowFrame(frame: Record<string, unknown>): Promise<void> {
-    if (frame.type === 'snapshot' && Array.isArray(frame.records)) {
-      if (!Number.isSafeInteger(frame.cursor) || (frame.cursor as number) < -1
-        || typeof frame.hasMore !== 'boolean' || !isRecord(frame.projections)) {
-        throw new Error('DSH returned an invalid Session history snapshot');
-      }
-      this.receiveProjectionBlock(frame.projections);
-      const records = validHistoryRecords(frame.records);
-      const lastRecord = records.at(-1);
-      this.historyThroughSeq = typeof frame.cursor === 'number'
-        ? frame.cursor
-        : lastRecord === undefined ? -1 : historyRecordSeq(lastRecord);
-      this.historyBaseSeq = records[0] === undefined ? 0 : historyRecordSeq(records[0]);
-      this.historyHasMore = frame.hasMore === true;
-      let openingRecords: readonly unknown[] = records;
-      if (this.historyHasMore) {
-        const older = await this.readPreviousPromptBatch(this.historyBaseSeq);
-        openingRecords = [...older.records, ...openingRecords];
-        this.historyHasMore = older.hasMore;
-        if (older.records[0] !== undefined) this.historyBaseSeq = historyRecordSeq(older.records[0]);
-      }
-      for (const record of openingRecords) this.receiveHistoryRecord(record, true);
-      this.sink.compacting(this.compactionActive());
-      if (isRecord(frame.assistantStream) && isRecord(frame.assistantStream.activeAttempt)
-        && Array.isArray(frame.assistantStream.activeAttempt.stream)) {
-        if (typeof frame.assistantStream.activeAttempt.turn === 'number') {
-          this.currentTurn = frame.assistantStream.activeAttempt.turn;
-        }
-        if (typeof frame.assistantStream.activeAttempt.step === 'number') {
-          this.currentStep = frame.assistantStream.activeAttempt.step;
-        }
-        this.sink.assistantStart();
-        for (const item of frame.assistantStream.activeAttempt.stream) {
-          if (isRecord(item) && item.type === 'chunk' && isRecord(item.chunk)) {
-            this.receiveAssistantChunk(item.chunk, item.time);
-          }
-        }
-      }
-      this.sink.historyState(this.historyHasMore);
-      return;
-    }
-    if (frame.type === 'assistant-stream' && isRecord(frame.frame)) {
-      if (frame.frame.type === 'start') {
-        if (typeof frame.frame.turn === 'number') this.currentTurn = frame.frame.turn;
-        if (typeof frame.frame.step === 'number') this.currentStep = frame.frame.step;
-        this.sink.assistantStart();
-        return;
-      }
-      if (frame.frame.type === 'chunk' && isRecord(frame.frame.chunk)) {
-        this.receiveAssistantChunk(frame.frame.chunk, frame.frame.time);
-      }
-    }
-    if (frame.type === 'event') this.receiveHistoryRecord(frame, false);
-  }
-
-  private async loadOlderBatch(): Promise<void> {
-    const batch = await this.readPreviousPromptBatch(this.historyBaseSeq);
-    if (batch.records.length > 0) {
-      const saved = {
-        currentTurn: this.currentTurn,
-        currentStep: this.currentStep,
-        turnStats: this.turnStats,
-        hasLiveAssistantText: this.hasLiveAssistantText,
-      };
-      this.sink.historyPrependStart();
-      try {
-        for (const record of batch.records) this.receiveHistoryRecord(record, true, true);
-      } finally {
-        this.currentTurn = saved.currentTurn;
-        this.currentStep = saved.currentStep;
-        this.turnStats = saved.turnStats;
-        this.hasLiveAssistantText = saved.hasLiveAssistantText;
-        this.sink.historyPrependEnd();
-      }
-      this.historyBaseSeq = historyRecordSeq(batch.records[0]);
-    }
-    this.historyHasMore = batch.hasMore;
-    this.sink.historyState(this.historyHasMore);
-  }
-
-  private readPreviousPromptBatch(beforeSeq: number): Promise<PreviousPromptBatch> {
-    return collectPreviousPromptBatch(beforeSeq, this.historyThroughSeq, async (pageBeforeSeq, throughSeq) => {
-      const page: unknown = await rpc(this.cookie, 'session/page', {
-        request: {
-          address: { kind: 'session', sessionId: this.sessionId },
-          throughSeq,
-          beforeSeq: pageBeforeSeq,
-          maxMessages: 50,
-        },
-      });
-      if (!isRecord(page) || !Array.isArray(page.records) || typeof page.hasMore !== 'boolean') {
-        throw new Error('DSH returned an invalid Session history page');
-      }
-      return { records: validHistoryRecords(page.records), hasMore: page.hasMore };
-    });
   }
 
   private receiveAssistantChunk(chunk: Record<string, unknown>, time: unknown): void {
@@ -769,7 +757,7 @@ export class DshClient {
       && isRecord(event.data.header.config)) {
       const { provider, model } = event.data.header.config;
       this.turnStats?.selectRoute(provider, model);
-      if (!older && typeof provider === 'string' && typeof model === 'string') {
+      if (!older && !fromSnapshot && typeof provider === 'string' && typeof model === 'string') {
         this.sink.status(`${this.modelLabels.get(`${provider}\0${model}`) ?? `${provider}/${model}`} responding…`);
       }
       return;
@@ -840,9 +828,13 @@ export class DshClient {
       } else if (fromSnapshot) {
         emitContent(this.sink, 'user', event.data.content, event.time);
       } else {
-        const requestId = isRecord(event.data.source) && typeof event.data.source.rpcId === 'string'
+        const canonicalRequestId = isRecord(event.data.source) && typeof event.data.source.rpcId === 'string'
           ? event.data.source.rpcId
           : undefined;
+        const requestId = canonicalRequestId === undefined
+          ? undefined
+          : this.canonical?.requestAliases.get(canonicalRequestId) ?? canonicalRequestId;
+        if (canonicalRequestId !== undefined) this.canonical?.requestAliases.delete(canonicalRequestId);
         this.sink.userCommitted(
           requestId,
           contentText(event.data.content),
@@ -997,6 +989,129 @@ async function rpc<T = unknown>(cookie: string, endpoint: string, args: object):
   const result = envelope.result as unknown as RpcResult<T>;
   if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
   return result.value;
+}
+
+const importExternalModule = new Function('specifier', 'return import(specifier)') as (
+  specifier: string,
+) => Promise<unknown>;
+
+function assembleCanonicalClient(
+  connect: (...args: unknown[]) => unknown,
+  receiver: unknown,
+  options: { readonly origin: string; readonly cookie: string },
+): Promise<unknown> {
+  const assembly = canonicalAssemblyQueue.then(() => Reflect.apply(connect, receiver, [options]));
+  canonicalAssemblyQueue = assembly.then(() => undefined, () => undefined);
+  return assembly;
+}
+
+function isCanonicalClientGraph(value: unknown): value is CanonicalClientGraph {
+  return isRecord(value) && isRecord(value.sessions) && isObservable(value.sessions.list)
+    && typeof value.sessions.create === 'function' && typeof value.sessions.open === 'function'
+    && typeof value.sessions.binding === 'function' && typeof value.sessions.subagentAddress === 'function'
+    && isRecord(value.remote)
+    && isRecord(value.connection) && isObservable(value.connection.state)
+    && typeof value.dispose === 'function';
+}
+
+function isObservable(value: unknown): value is ObservableValue {
+  return isRecord(value) && typeof value.getSnapshot === 'function' && typeof value.subscribe === 'function';
+}
+
+function isCanonicalBinding(value: unknown): value is CanonicalBinding {
+  return isRecord(value) && isObservable(value.eventSource) && isRecord(value.session)
+    && typeof value.session.sessionId === 'string' && isObservable(value.session)
+    && isRecord(value.session.projections) && typeof value.session.projections.faceOf === 'function'
+    && typeof value.session.beginSubmission === 'function' && typeof value.session.prompt === 'function'
+    && typeof value.session.cancel === 'function' && typeof value.session.loadOlder === 'function';
+}
+
+async function callCanonicalRemote(
+  graph: CanonicalClientGraph,
+  namespaceName: string,
+  methodName: string,
+  ...args: unknown[]
+): Promise<unknown> {
+  const namespace = graph.remote[namespaceName];
+  if (!isRecord(namespace) || typeof namespace[methodName] !== 'function') {
+    throw new Error(`Managed DSH Client omits ${namespaceName}.${methodName}`);
+  }
+  return Reflect.apply(namespace[methodName], namespace, args);
+}
+
+function unwrapCanonicalResult(value: unknown, operation: string): unknown {
+  if (!isRecord(value) || typeof value.ok !== 'boolean') {
+    throw new Error(`DSH returned an invalid ${operation} result`);
+  }
+  if (value.ok) return value.value;
+  if (!isRecord(value.error) || typeof value.error.code !== 'string' || typeof value.error.message !== 'string') {
+    throw new Error(`DSH returned an invalid ${operation} failure`);
+  }
+  throw new Error(`${value.error.code}: ${value.error.message}`);
+}
+
+function unwrapCommandCatalog(value: unknown): unknown {
+  if (isRecord(value) && value.ok === false && isRecord(value.error)
+    && value.error.code === 'session/agent-busy') return [];
+  return unwrapCanonicalResult(value, 'commands.list');
+}
+
+function canonicalSessionIds(value: unknown): ReadonlySet<string> {
+  if (!isRecord(value) || !Array.isArray(value.ids)
+    || value.ids.some((item) => typeof item !== 'string')) {
+    throw new Error('DSH Client returned an invalid Session list');
+  }
+  return new Set(value.ids);
+}
+
+function canonicalQueueItem(value: unknown, aliases: ReadonlyMap<string, string>): DshQueuedPrompt {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.preview !== 'string'
+    || !['queued', 'steering', 'context'].includes(String(value.placement))
+    || (value.rpcId !== undefined && typeof value.rpcId !== 'string')) {
+    throw new Error('DSH Client returned an invalid queue item');
+  }
+  return {
+    id: value.id,
+    text: typeof value.text === 'string' ? value.text : value.preview,
+    placement: value.placement as DshQueuedPrompt['placement'],
+    ...(value.rpcId === undefined ? {} : { requestId: aliases.get(value.rpcId) ?? value.rpcId }),
+  };
+}
+
+async function waitForCanonicalSession(session: CanonicalSession): Promise<void> {
+  await new Promise<void>((resolveReady, rejectReady) => {
+    const timeout = setTimeout(() => {
+      dispose();
+      rejectReady(new Error('Timed out opening the DSH Client Session'));
+    }, 30_000);
+    const inspect = (): void => {
+      const snapshot = session.getSnapshot();
+      if (!isRecord(snapshot)) return;
+      if (snapshot.openState === 'open') {
+        clearTimeout(timeout);
+        dispose();
+        resolveReady();
+      } else if (snapshot.openState === 'error') {
+        clearTimeout(timeout);
+        dispose();
+        rejectReady(new Error('DSH Client could not open the Session'));
+      }
+    };
+    const dispose = session.subscribe(inspect);
+    inspect();
+  });
+}
+
+function parseCompactResult(value: unknown): DshCompactResult {
+  if (!isRecord(value) || typeof value.commandId !== 'string' || !isRecord(value.result)
+    || !['success', 'error'].includes(String(value.result.kind))
+    || (value.result.text !== undefined && typeof value.result.text !== 'string')) {
+    throw new Error('DSH returned an invalid compact command response');
+  }
+  return {
+    kind: value.result.kind as DshCompactResult['kind'],
+    ...(value.result.text === undefined ? {} : { text: value.result.text }),
+  };
 }
 
 function parseModelSelection(value: unknown): DshModelSelection {
@@ -1181,22 +1296,6 @@ function contentText(content: unknown): string {
     .join('\n');
 }
 
-export function parseQueueItems(value: unknown): readonly DshQueuedPrompt[] {
-  if (!Array.isArray(value)) return [];
-  const items: DshQueuedPrompt[] = [];
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.id !== 'string' || !isRecord(item.message)
-      || !['queued', 'steering', 'context'].includes(String(item.placement))) continue;
-    items.push({
-      id: item.id,
-      ...(typeof item.rpcId === 'string' ? { requestId: item.rpcId } : {}),
-      text: contentText(item.message.content),
-      placement: item.placement as DshQueuedPrompt['placement'],
-    });
-  }
-  return items;
-}
-
 function toolSummary(name: string, detail: string): string {
   try {
     const value: unknown = JSON.parse(detail);
@@ -1214,43 +1313,6 @@ function toolSummary(name: string, detail: string): string {
 function reasoningDisclosureId(turn: number, step: number, blockIndex: unknown): string {
   const index = typeof blockIndex === 'number' ? blockIndex : 0;
   return `turn:${String(turn)}:reasoning:${String(step)}:${String(index)}`;
-}
-
-function validHistoryRecords(value: readonly unknown[]): readonly unknown[] {
-  for (const record of value) {
-    if (!isRecord(record) || record.type !== 'event' || !isRecord(record.event)
-      || !Number.isSafeInteger(record.event.seq) || !isRecord(record.event.data)) {
-      throw new Error('DSH returned an invalid Session history record');
-    }
-  }
-  return value;
-}
-
-function historyRecordSeq(record: unknown): number {
-  if (!isRecord(record) || !isRecord(record.event) || !Number.isSafeInteger(record.event.seq)) {
-    throw new Error('DSH returned a Session history record without a sequence');
-  }
-  return record.event.seq as number;
-}
-
-function isHumanPromptRecord(record: unknown): boolean {
-  return isRecord(record) && isRecord(record.event) && record.event.type === 'user/message'
-    && isRecord(record.event.data) && isRecord(record.event.data.source)
-    && record.event.data.source.kind === 'user';
-}
-
-function isTurnStartRecord(record: unknown): boolean {
-  return isRecord(record) && isRecord(record.event) && record.event.type === 'turn/start';
-}
-
-function findLastRecordIndex(
-  records: readonly unknown[],
-  predicate: (record: unknown, index: number) => boolean,
-): number {
-  for (let index = records.length - 1; index >= 0; index--) {
-    if (predicate(records[index], index)) return index;
-  }
-  return -1;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

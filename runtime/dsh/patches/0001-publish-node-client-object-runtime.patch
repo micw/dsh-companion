@@ -1,0 +1,1243 @@
+diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml
+new file mode 100644
+index 0000000000..6ec263a87d
+--- /dev/null
++++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml
+@@ -0,0 +1,6 @@
++# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
++# side as of the last confirmed-consistent state. Both languages carry equal authority;
++# after editing either side, bring the other along and re-record with:
++#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md
++2026-09-14-non-browser-client-object-runtime.md: e7eddf2baf073eba6fc5bcbb83e8845bda38d7b9
++2026-09-14-non-browser-client-object-runtime.zh.md: 44b0c2c0c386895c2c219326b2f675e77d23790b
+diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md
+new file mode 100644
+index 0000000000..e7eddf2baf
+--- /dev/null
++++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md
+@@ -0,0 +1,52 @@
++# Agent Note: Reuse the Client object graph in non-browser product shells
++
++Status: implemented
++
++English | [中文](2026-09-14-non-browser-client-object-runtime.zh.md)
++
++## Problem
++
++The Web Client's Connection, generated Remote assembly, and Session objects own physical recovery, logical stream reopening, gap repair, paging, queue reconciliation, projection ordering, and submission retirement. A non-browser editor integration that handwrites the Web wire and reimplements those state machines creates a second Client Harness whose behavior can diverge from DSH.
++
++The published `/client` artifacts are dynamic browser module-table rows rather than Node.js ESM modules. Importing them directly from a Node product shell executes a `window.__ModuleLoader__` registration, while mounting source entries independently makes the shell reconstruct DSH's private plugin graph and transport ordering.
++
++## Decision
++
++`@deepseek-ai/dsh-api-client-runtime` is the Node.js ESM entry for non-browser product shells connecting to an authenticated loopback DSH Web Host. It bundles the existing Client implementations and generated Remote contributions into one library artifact, mounts the Typert registry, Connection, Gateway, API Remotes, and Session Controller in their Cordis graph, and returns the canonical `connection`, `remote`, and `sessions` faces. It loads no React or presentation plugins.
++
++The caller supplies the exact loopback origin and the authority-bound browser cookie. The runtime maps Connection's internal HTTP targets to that origin, adds the cookie and matching Origin header, and gives `RemoteStreamMuxClient` an authenticated `ws` socket factory for `/api/remote.mux`. Connection still mints every RPC identity; Gateway still owns multiplexing and logical streams; Session Controller still owns Session list, queue, projection, follow, paging, and reconciliation behavior.
++
++`RemoteStreamMuxClient` therefore accepts an optional exact URL and socket factory. Browser construction remains the default and uses the page authority plus global WebSocket. The configurable physical constructor does not expose Remote stream frames or move logical-stream ownership into the shell.
++
++The runtime temporarily installs the existing shell transport hook while the Connection plugin mounts. It rejects overlapping graph assembly during that interval and removes the hook before other plugins mount. Connected runtimes are independent after construction. Disposal tears down the complete Cordis root and then closes the shell-owned stream mux.
++
++File upload remains unavailable in this Node runtime because the existing implementation owns browser Blob Worker and XMLHttpRequest behavior. The runtime provides an explicit unavailable service so Session object composition remains complete without pretending to upload.
++
++## Ownership
++
++| Owner | Responsibility |
++|---|---|
++| Product shell | DSH process lifecycle, launch-token exchange, cookie secret storage, and UI projection |
++| API Client Runtime | Node carrier construction and complete React-free Client graph lifecycle |
++| Connection | RPC identity, unary envelopes, generation state, and retry policy |
++| API Gateway | physical mux behavior, logical streams, cancellation, and generated Remote dispatch |
++| Session Controller Client | list races, Session identities, queue mirrors, projections, pending submissions, history windows, paging, and gap repair |
++| DSH Host | authoritative Agent, Session, queue, approval, command, and persistence behavior |
++
++## Verification
++
++A Client-package composition spec starts real HTTP and WebSocket fixture carriers, requires cookie and Origin headers on both channels, opens the forwarded-event generation and Session control baseline, obtains a ready empty Session list, exercises the unavailable upload face, and disposes twice. The same spec covers authority, cookie, cancellation, partial-assembly cleanup, and overlapping assembly refusal. Gateway coverage constructs the mux through an explicit shell URL and socket factory. A built-library smoke connects the packaged artifact to `dsh web` before a product consumes the npm path.
++
++## Alternatives considered
++
++**Let each product shell implement the Web wire.** This duplicates rpcId correlation, Remote stream multiplexing, recovery, Session paging, queue ordering, and projection races. DSH would remain the Host authority while no longer owning the behavior that makes its Client projection coherent.
++
++**Publish every browser `/client` entry as a second Node artifact.** A shell would still need to know the complete plugin roster, activation order, transport hook lifetime, and required placeholder services. One assembly package keeps that composition inside DSH and permits internal package rearrangement without changing every shell.
++
++**Use the automation SDK profile instead of the Web Client objects.** The SDK owns request-scoped automation turns over stdio and does not project the Web Session list, live control baselines, paged event windows, pending submissions, or approval interactions required by an interactive editor.
++
++**Import DSH Web presentation packages.** This would couple an editor to React, Slots, browser navigation, and DSH's visual composition. The shell needs canonical data objects and operations, not the Web UI.
++
++## Consequences
++
++Non-browser product shells can replace handwritten Session transport and synchronization incrementally while retaining their own presentation. The npm artifact is larger because it closes over generated codecs and the Client object implementations, but the shell no longer selects or versions those internals independently. Cookie authentication and loopback Web deployment remain required. Node file upload needs a separate carrier implementation before shells can expose attachments. The runtime's Session service retains Web navigation concepts such as `current`, while shells may open and retain several Session bindings and keep tab selection in their own presentation state.
+diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md
+new file mode 100644
+index 0000000000..44b0c2c0c3
+--- /dev/null
++++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md
+@@ -0,0 +1,52 @@
++# Agent Note: 在非浏览器产品 shell 中复用 Client 对象 graph
++
++Status: implemented
++
++[English](2026-09-14-non-browser-client-object-runtime.md) | 中文
++
++## 问题
++
++Web Client 的 Connection、生成 Remote assembly 与 Session 对象拥有物理恢复、逻辑 stream 重开、gap repair、分页、queue reconciliation、projection ordering 与 submission retirement。非浏览器编辑器集成若手写 Web wire 并重新实现这些状态机，就会形成第二套 Client Harness，其行为可能偏离 DSH。
++
++已发布的 `/client` artifact 是动态浏览器 module-table row，而不是 Node.js ESM module。Node 产品 shell 直接导入它们会执行 `window.__ModuleLoader__` 注册；独立挂载 source entry 则要求 shell 重建 DSH 的私有插件 graph 与 transport ordering。
++
++## 决策
++
++`@deepseek-ai/dsh-api-client-runtime` 是非浏览器产品 shell 连接已认证 loopback DSH Web Host 的 Node.js ESM entry。它把现有 Client 实现与生成 Remote contribution 打包为一个 library artifact，在 Cordis graph 中挂载 Typert registry、Connection、Gateway、API Remotes 与 Session Controller，并返回规范 `connection`、`remote` 与 `sessions` face。它不加载 React 或表示插件。
++
++调用方提供精确 loopback origin 与 authority-bound browser cookie。runtime 将 Connection 的内部 HTTP 目标映射到该 origin，添加 cookie 与匹配的 Origin header，并为 `/api/remote.mux` 向 `RemoteStreamMuxClient` 提供已认证的 `ws` socket factory。Connection 仍生成每个 RPC identity；Gateway 仍拥有 multiplexing 与逻辑 stream；Session Controller 仍拥有 Session list、queue、projection、follow、paging 与 reconciliation 行为。
++
++因此，`RemoteStreamMuxClient` 接受可选的精确 URL 与 socket factory。浏览器构造仍是默认值，并使用页面 authority 与全局 WebSocket。可配置物理构造器不公开 Remote stream frame，也不把逻辑 stream ownership 移入 shell。
++
++runtime 在 Connection 插件挂载期间临时安装现有 shell transport hook。它拒绝该时间段内重叠的 graph assembly，并在挂载其他插件前移除 hook。构造完成后，已连接的 runtime 相互独立。dispose 会拆除完整 Cordis root，再关闭 shell 自有的 stream mux。
++
++由于现有实现拥有浏览器 Blob Worker 与 XMLHttpRequest 行为，此 Node runtime 暂不提供文件上传。runtime 提供显式 unavailable service，使 Session 对象组合保持完整，但不伪装上传能力。
++
++## Ownership
++
++| Owner | 职责 |
++|---|---|
++| 产品 shell | DSH 进程 lifecycle、launch-token 交换、cookie secret 存储与 UI projection |
++| API Client Runtime | Node carrier 构造与完整无 React Client graph lifecycle |
++| Connection | RPC identity、单次调用 envelope、generation state 与 retry policy |
++| API Gateway | 物理 mux 行为、逻辑 stream、取消与生成 Remote dispatch |
++| Session Controller Client | list race、Session identity、queue mirror、projection、pending submission、history window、分页与 gap repair |
++| DSH Host | 权威 Agent、Session、queue、approval、command 与 persistence 行为 |
++
++## 验证
++
++Client 包 composition spec 启动真实 HTTP 与 WebSocket fixture carrier，要求两个通道都携带 cookie 与 Origin header，打开 forwarded-event generation 与 Session control baseline，得到 ready 的空 Session list，执行 unavailable upload face，并两次 dispose。同一 spec 覆盖 authority、cookie、取消、部分 assembly cleanup 与重叠 assembly 拒绝。Gateway 覆盖通过显式 shell URL 与 socket factory 构造 mux。built-library smoke 在产品消费 npm 路径前把已打包 artifact 连接到 `dsh web`。
++
++## 考虑过的替代方案
++
++**让每个产品 shell 实现 Web wire。** 这会复制 rpcId correlation、Remote stream multiplexing、恢复、Session 分页、queue ordering 与 projection race。DSH 仍是 Host authority，却不再拥有保证其 Client projection 一致性的行为。
++
++**将每个浏览器 `/client` entry 发布为第二个 Node artifact。** shell 仍需了解完整插件 roster、activation order、transport hook lifetime 与必需 placeholder service。单一 assembly 包把这些组合保留在 DSH 内部，并允许内部包重排而不改变每个 shell。
++
++**使用 automation SDK profile 代替 Web Client 对象。** SDK 拥有 stdio 上 request-scoped automation turn，但不投影交互式编辑器所需的 Web Session list、live control baseline、分页 event window、pending submission 或 approval interaction。
++
++**导入 DSH Web 表示包。** 这会把编辑器与 React、Slots、浏览器导航和 DSH visual composition 耦合。shell 需要规范数据对象与操作，而不是 Web UI。
++
++## 后果
++
++非浏览器产品 shell 可以逐步替换手写 Session transport 与同步，同时保留自己的表示层。由于 npm artifact 闭包包含生成 codec 与 Client 对象实现，其体积更大，但 shell 不再独立选择或版本化这些内部组件。仍要求 cookie 认证与 loopback Web deployment。shell 暴露 attachment 前需要单独的 Node 文件上传 carrier。runtime 的 Session service 保留 `current` 等 Web navigation 概念，而 shell 可以打开并保留多个 Session binding，并在自己的表示状态中保存 tab selection。
+diff --git a/apps/cli/tests/web-auth.e2e.ts b/apps/cli/tests/web-auth.e2e.ts
+index 05889c8d32..ba02cb3f81 100644
+--- a/apps/cli/tests/web-auth.e2e.ts
++++ b/apps/cli/tests/web-auth.e2e.ts
+@@ -2,6 +2,7 @@
+
+ import type { ChildProcess } from 'node:child_process'
+ import { spawn } from 'node:child_process'
++import { existsSync } from 'node:fs'
+ import { stat } from 'node:fs/promises'
+ import { request as httpRequest } from 'node:http'
+ import { createRequire } from 'node:module'
+@@ -15,6 +16,7 @@ import { describe, expect, it } from 'vitest'
+
+ const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+ const DSH_SOURCE_BIN = join(REPO_ROOT, 'apps/cli/src/bin.ts')
++const BUILT_CLIENT_RUNTIME = join(REPO_ROOT, 'packages/api/client-runtime/lib/index.js')
+ const TSX_LOADER = pathToFileURL(createRequire(join(REPO_ROOT, 'package.json')).resolve('tsx')).href
+
+ interface RunningWeb {
+@@ -180,6 +182,20 @@ describe('dsh web authentication through the real CLI', () => {
+       expect(setCookie).not.toContain('Secure')
+       const cookie = setCookie.split(';', 1)[0]!
+
++      if (existsSync(BUILT_CLIENT_RUNTIME)) {
++        const built = await import(pathToFileURL(BUILT_CLIENT_RUNTIME).href) as {
++          DshWebClient: {
++            connect(options: { origin: string; cookie: string }): Promise<{
++              sessions: { list: { getSnapshot(): { phase: string } } }
++              dispose(): Promise<void>
++            }>
++          }
++        }
++        const client = await built.DshWebClient.connect({ origin: firstUrl.origin, cookie })
++        expect(client.sessions.list.getSnapshot().phase).toBe('ready')
++        await client.dispose()
++      }
++
+       const authenticated = await describeSettings(port, firstUrl.host, cookie)
+       expect(authenticated.status).toBe(200)
+       const authenticatedBody = JSON.parse(authenticated.body) as unknown
+diff --git a/docs/config-catalog.i18n.yaml b/docs/config-catalog.i18n.yaml
+index d3235e1203..4b1f9a962c 100644
+--- a/docs/config-catalog.i18n.yaml
++++ b/docs/config-catalog.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write docs/config-catalog.md
+-config-catalog.md: 79878fc8daaa5ba3e64d4ffb27d279ff172b6749
+-config-catalog.zh.md: f254241618d280acaf738cc011ba1f7c5a2b6b21
++config-catalog.md: 330d51a92c50e05691df180676146f55cf78de21
++config-catalog.zh.md: 53619e92523a8e652a739525eb47d3df15df0e9e
+diff --git a/docs/config-catalog.md b/docs/config-catalog.md
+index 79878fc8da..330d51a92c 100644
+--- a/docs/config-catalog.md
++++ b/docs/config-catalog.md
+@@ -3553,6 +3553,7 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
+
+ - `@deepseek-ai/dsh-agent-loop-testkit` ([`packages/test-support/agent-loop-testkit/src/index.ts`](../packages/test-support/agent-loop-testkit/src/index.ts))
+ - `@deepseek-ai/dsh-anonymous-user-id` ([`packages/identity/anonymous-user-id/src/index.ts`](../packages/identity/anonymous-user-id/src/index.ts))
++- `@deepseek-ai/dsh-api-client-runtime` ([`packages/api/client-runtime/src/index.ts`](../packages/api/client-runtime/src/index.ts))
+ - `@deepseek-ai/dsh-app-boot` ([`packages/boot/app-boot/src/index.ts`](../packages/boot/app-boot/src/index.ts))
+ - `@deepseek-ai/dsh-atomic-write` ([`packages/util/atomic-write/src/index.ts`](../packages/util/atomic-write/src/index.ts))
+ - `@deepseek-ai/dsh-base` ([`packages/bundle/base/src/index.ts`](../packages/bundle/base/src/index.ts))
+diff --git a/docs/config-catalog.zh.md b/docs/config-catalog.zh.md
+index f254241618..53619e9252 100644
+--- a/docs/config-catalog.zh.md
++++ b/docs/config-catalog.zh.md
+@@ -3554,6 +3554,7 @@ export interface Config {
+
+ - `@deepseek-ai/dsh-agent-loop-testkit`（[`packages/test-support/agent-loop-testkit/src/index.ts`](../packages/test-support/agent-loop-testkit/src/index.ts)）
+ - `@deepseek-ai/dsh-anonymous-user-id`（[`packages/identity/anonymous-user-id/src/index.ts`](../packages/identity/anonymous-user-id/src/index.ts)）
++- `@deepseek-ai/dsh-api-client-runtime`（[`packages/api/client-runtime/src/index.ts`](../packages/api/client-runtime/src/index.ts)）
+ - `@deepseek-ai/dsh-app-boot`（[`packages/boot/app-boot/src/index.ts`](../packages/boot/app-boot/src/index.ts)）
+ - `@deepseek-ai/dsh-atomic-write`（[`packages/util/atomic-write/src/index.ts`](../packages/util/atomic-write/src/index.ts)）
+ - `@deepseek-ai/dsh-base`（[`packages/bundle/base/src/index.ts`](../packages/bundle/base/src/index.ts)）
+diff --git a/docs/subsystems/web-client.i18n.yaml b/docs/subsystems/web-client.i18n.yaml
+index 213853f56d..0730c2249e 100644
+--- a/docs/subsystems/web-client.i18n.yaml
++++ b/docs/subsystems/web-client.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write docs/subsystems/web-client.md
+-web-client.md: 7e7f483131585dc66c45dbb147d40e848f40d6d1
+-web-client.zh.md: 603af505dbd1fc6e2f9fd3bf9542ce19cb63732f
++web-client.md: c028f253e93d3098e19b3cedba22bad4470991d0
++web-client.zh.md: 8c5d9ba4be8c3059d02a9119a9d8dacad57e8b77
+diff --git a/docs/subsystems/web-client.md b/docs/subsystems/web-client.md
+index 7e7f483131..c028f253e9 100644
+--- a/docs/subsystems/web-client.md
++++ b/docs/subsystems/web-client.md
+@@ -31,6 +31,8 @@ The Connection owns request correlation, the `/api` carrier, trust checks, exact
+
+ The internal `$events` logical stream is the Connection generation source. Its opening `ready` frame carries the Host home used for path display and establishes the generation after Host listeners are attached, before any controller begins a baseline read. `ctx.remote.$on()` delivers allowlisted ordinary events to the root Client Context and scoped waterfall events to the resolved Session Context; a waterfall listener returns a result, calls `next()`, or rejects.
+
++Non-browser Node.js product shells use [`dsh-api-client-runtime`](../../packages/api/client-runtime/README.md) to assemble this same Connection, Gateway, generated Remote, and Session object graph over an authenticated loopback Web Host without loading React or presentation plugins. The shell owns cookie storage and projects the returned observables into its UI; DSH retains synchronization and recovery ownership.
++
+ ## Client models
+
+ Each API controller package owns a paired Host and Client face. The Host side owns authoritative mutation and stream production. The Client side owns an identity-stable, React-free model over the same generated wire types and exposes observable snapshots plus commands. UI packages consume these Client services and do not reproduce transport state in component stores.
+diff --git a/docs/subsystems/web-client.zh.md b/docs/subsystems/web-client.zh.md
+index 603af505db..8c5d9ba4be 100644
+--- a/docs/subsystems/web-client.zh.md
++++ b/docs/subsystems/web-client.zh.md
+@@ -31,6 +31,8 @@ Connection 拥有 request correlation、`/api` carrier、trust check、精确 Fe
+
+ 内部 `$events` logical stream 是 Connection generation source。它的 opening `ready` frame 携带用于路径显示的 Host home，并在 Host listener 已挂载、任何 controller 开始 baseline read 之前建立 generation。`ctx.remote.$on()` 把 allowlist 内的普通 event 交付给 root Client Context，并把 scoped waterfall event 交付给已解析的 Session Context；waterfall listener 可以返回结果、调用 `next()` 或拒绝。
+
++非浏览器 Node.js 产品 shell 使用 [`dsh-api-client-runtime`](../../packages/api/client-runtime/README.zh.md)，在已认证的 loopback Web Host 之上装配相同的 Connection、Gateway、生成 Remote 与 Session 对象 graph，而不加载 React 或表示插件。shell 拥有 cookie 存储并将返回的 observable 投影到自己的 UI；DSH 保留同步与恢复 ownership。
++
+ ## Client models
+
+ 每个 API controller 包都拥有配对的 Host face 与 Client face。Host 侧拥有权威 mutation 与 stream 生产；Client 侧基于相同的生成 wire type 维护 identity 稳定、与 React 无关的 model，并公开 observable snapshot 与 command。UI 包消费这些 Client service，不在 component store 中复制 transport state。
+diff --git a/packages/api/README.i18n.yaml b/packages/api/README.i18n.yaml
+index c876cc751b..cf278ed263 100644
+--- a/packages/api/README.i18n.yaml
++++ b/packages/api/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/api/README.md
+-README.md: 5bc878fa53b9ad0c3795c13e9442274b98820190
+-README.zh.md: 814113f405b3d5c40f74b529bff57d0aa2a9c77f
++README.md: 4d1a52ba6977c907475a18d416962baf7b99fadb
++README.zh.md: 38798bd546f6a5f00d076aa2d94eff6a6a814deb
+diff --git a/packages/api/README.md b/packages/api/README.md
+index 5bc878fa53..4d1a52ba69 100644
+--- a/packages/api/README.md
++++ b/packages/api/README.md
+@@ -26,6 +26,7 @@ The packages below provide the Remote layer; the package READMEs own the exhaust
+
+ | Package | Role | ctx key |
+ |---|---|---|
++| [`client-runtime/`](client-runtime/README.md) | Assembles the React-free generated Remote and Session object graph for authenticated Node.js product shells. | returned `connection`, `remote`, and `sessions` faces |
+ | [`remotes/`](remotes/README.md) | Chooses which Host capabilities and events the Client can consume. | — |
+ | [`gateway/`](gateway/README.md) | Carries typed unary calls, multiplexed streams, and forwarded Host events. | `ctx.typertGateway` / `ctx.remote` |
+ | [`session-controller/`](session-controller/README.md) | Owns Session commands, history streams, live control state, and Agent/Session identity policy. | `ctx.sessionController` / `ctx.remote.session` |
+diff --git a/packages/api/README.zh.md b/packages/api/README.zh.md
+index 814113f405..38798bd546 100644
+--- a/packages/api/README.zh.md
++++ b/packages/api/README.zh.md
+@@ -26,6 +26,7 @@ kind: "package-group"
+
+ | 包 | 职责 | ctx key |
+ |---|---|---|
++| [`client-runtime/`](client-runtime/README.zh.md) | 为已认证的 Node.js 产品 shell 装配无 React 的生成 Remote 与 Session 对象 graph。 | 返回的 `connection`、`remote` 与 `sessions` face |
+ | [`remotes/`](remotes/README.zh.md) | 决定 Client 可以消费哪些 Host 能力与事件。 | — |
+ | [`gateway/`](gateway/README.zh.md) | 承载带类型的单次调用、多路复用 stream 与转发的 Host 事件。 | `ctx.typertGateway` / `ctx.remote` |
+ | [`session-controller/`](session-controller/README.zh.md) | 拥有 Session 命令、历史 stream、实时控制状态与 Agent/Session 身份策略。 | `ctx.sessionController` / `ctx.remote.session` |
+diff --git a/packages/api/client-runtime/README.i18n.yaml b/packages/api/client-runtime/README.i18n.yaml
+new file mode 100644
+index 0000000000..cfa85f5761
+--- /dev/null
++++ b/packages/api/client-runtime/README.i18n.yaml
+@@ -0,0 +1,6 @@
++# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
++# side as of the last confirmed-consistent state. Both languages carry equal authority;
++# after editing either side, bring the other along and re-record with:
++#   pnpm run verify-translation-pairing --write packages/api/client-runtime/README.md
++README.md: bb02f80d8a78bf03f7d251e67cca8dd0b5826b4b
++README.zh.md: 82aaf14b1c21fe49d96ea7e99a0c642e67164171
+diff --git a/packages/api/client-runtime/README.md b/packages/api/client-runtime/README.md
+new file mode 100644
+index 0000000000..bb02f80d8a
+--- /dev/null
++++ b/packages/api/client-runtime/README.md
+@@ -0,0 +1,93 @@
++---
++description: "React-free DSH Web Client runtime for non-browser product shells consuming the canonical Remote and Session object layers."
++kind: "package-reference"
++---
++
++# @deepseek-ai/dsh-api-client-runtime
++
++English | [中文](README.zh.md)
++
++## Summary
++
++`dsh-api-client-runtime` connects a Node.js product shell to an authenticated loopback DSH Web Host and assembles the same generated Remote namespaces, Connection recovery, Session list, Session objects, queue mirrors, projection stores, and history journals used by the browser Client. It loads no React or DSH Web presentation packages. Use it when an editor or desktop shell presents DSH data independently but must not reproduce DSH transport and Session synchronization behavior.
++
++## Table of Contents
++
++- [Use this package](#use-this-package)
++- [Further Exploration](#further-exploration)
++- [Dev Note](#dev-note)
++- [Model Experience](#model-experience)
++- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
++
++-----
++
++<a id="use-this-package"></a>
++## Use this package
++
++Exchange the launch URL through the Host root route, retain the returned authority-bound cookie in the product shell's secret store, then connect:
++
++```text
++const client = await DshWebClient.connect({
++  origin: 'http://127.0.0.1:3080',
++  cookie,
++})
++
++await client.sessions.refresh()
++const sessionId = await client.sessions.create({ cwd: '/workspace' })
++client.sessions.open(sessionId)
++const binding = client.sessions.binding(sessionId)
++
++// Subscribe to binding.session and binding.eventSource.
++
++await client.dispose()
++```
++
++`client.sessions` is the canonical `ClientSessions` service face. Each `SessionFace` owns pending-submission echoes, the authoritative queue mirror, prompt and cancellation commands, projection values, and history-window paging. `SessionBinding.eventSource` publishes the contiguous durable and live event window for shell-owned transcript projection. `client.remote` exposes generated namespaces for operations not present on `SessionFace`, and `client.connection` exposes generation and recovery state.
++
++The runtime maps DSH's internal Client HTTP targets onto the supplied origin, adds the supplied cookie and matching Origin header, and creates the authenticated multiplexed Remote WebSocket through `ws`. Connection generations, logical stream reopening, baseline replacement, and Session gap repair remain owned by their existing packages. The runtime temporarily installs the transport hook only while mounting the Connection plugin and rejects concurrent graph assembly in one process; independent connected runtimes may coexist after construction.
++
++<a id="further-exploration"></a>
++## Further Exploration
++
++- [Web Client architecture](../../../docs/subsystems/web-client.md) — ownership from Connection through Client models and presentation.
++- [API Gateway](../../../docs/api-gateway.md) — generated Remote calls, logical streams, and Connection generations.
++- [Session Controller](../session-controller/README.md) — Session list, queue, projection, follow, and paging behavior.
++- [Connection](../../client/connection/README.md) — browser authentication and physical recovery.
++
++<a id="dev-note"></a>
++### Dev Note
++
++<details>
++<summary>Working context for maintainers — click to expand</summary>
++
++None.
++
++</details>
++
++<a id="model-experience"></a>
++## Model Experience
++
++### Delegated Host operations
++
++#### What the model sees
++
++The package adds no model input. A caller may invoke already-defined Host operations through the returned `SessionFace` and `client.remote` faces.
++
++#### Token effect
++
++Zero direct tokens; the invoked Host operation owns any request content.
++
++#### KV Cache effect
++
++No direct invalidation; the invoked Host operation owns any request-prefix change.
++
++## Known Limitations and Deferred Work
++
++<a id="known-limitations-and-deferred-work"></a>
++
++- The runtime accepts only an IPv4 loopback HTTP origin and the Web Host's authority-bound cookie authentication.
++- File upload is unavailable; text prompts, Session history, queue control, commands, and generated Remote calls remain available.
++- The package assembles one complete Client graph per call. A product shell that needs process-wide connection sharing across isolated UI runtimes must own that higher-level lifecycle.
++- The Web Client's persisted current-navigation cell is disabled automatically because Node.js has no `localStorage`; product shells own presentation selection and restore state.
++
++**Runtime invariant:** No companion is published. The package assembles existing services without retaining an independent observation of their state; its owned relation is the authenticated Node carrier exercised through HTTP/WebSocket composition coverage.
+diff --git a/packages/api/client-runtime/README.zh.md b/packages/api/client-runtime/README.zh.md
+new file mode 100644
+index 0000000000..82aaf14b1c
+--- /dev/null
++++ b/packages/api/client-runtime/README.zh.md
+@@ -0,0 +1,93 @@
++---
++description: "供非浏览器产品 shell 使用规范 Remote 与 Session 对象层的无 React DSH Web Client runtime。"
++kind: "package-reference"
++---
++
++# @deepseek-ai/dsh-api-client-runtime
++
++[English](README.md) | 中文
++
++## 概述
++
++`dsh-api-client-runtime` 将 Node.js 产品 shell 连接到已认证的 loopback DSH Web Host，并装配浏览器 Client 所用的同一组生成 Remote namespace、Connection 恢复、Session 列表、Session 对象、queue mirror、projection store 与历史 journal。它不加载 React 或 DSH Web 表示包。当编辑器或桌面 shell 独立呈现 DSH 数据、但不得复刻 DSH transport 与 Session 同步行为时使用它。
++
++## 目录
++
++- [使用此包](#use-this-package)
++- [延伸阅读](#further-exploration)
++- [开发备注](#dev-note)
++- [模型体验](#model-experience)
++- [已知限制与延期工作](#known-limitations-and-deferred-work)
++
++-----
++
++<a id="use-this-package"></a>
++## 使用此包
++
++通过 Host 根路由交换 launch URL，将返回的 authority-bound cookie 保存在产品 shell 的 secret store 中，然后连接：
++
++```text
++const client = await DshWebClient.connect({
++  origin: 'http://127.0.0.1:3080',
++  cookie,
++})
++
++await client.sessions.refresh()
++const sessionId = await client.sessions.create({ cwd: '/workspace' })
++client.sessions.open(sessionId)
++const binding = client.sessions.binding(sessionId)
++
++// Subscribe to binding.session and binding.eventSource.
++
++await client.dispose()
++```
++
++`client.sessions` 是规范的 `ClientSessions` service face。每个 `SessionFace` 拥有 pending submission echo、权威 queue mirror、prompt 与 cancellation 命令、projection 值和历史窗口分页。`SessionBinding.eventSource` 发布连续的 durable/live event 窗口，供 shell 自有的 transcript 投影使用。`client.remote` 暴露 `SessionFace` 之外操作的生成 namespace，`client.connection` 暴露 generation 与恢复状态。
++
++runtime 将 DSH 内部 Client HTTP 目标映射到所提供的 origin，添加所提供的 cookie 与匹配的 Origin header，并通过 `ws` 创建已认证的多路复用 Remote WebSocket。Connection generation、逻辑 stream 重开、baseline 替换与 Session gap repair 仍由现有包拥有。runtime 仅在挂载 Connection 插件期间临时安装 transport hook，并拒绝同一进程中的并发 graph 装配；构造完成后可以并存多个独立连接的 runtime。
++
++<a id="further-exploration"></a>
++## 延伸阅读
++
++- [Web Client 架构](../../../docs/subsystems/web-client.zh.md)——从 Connection 到 Client model 和表示的 ownership。
++- [API Gateway](../../../docs/api-gateway.zh.md)——生成 Remote 调用、逻辑 stream 与 Connection generation。
++- [Session Controller](../session-controller/README.zh.md)——Session 列表、queue、projection、follow 与分页行为。
++- [Connection](../../client/connection/README.zh.md)——浏览器认证与物理恢复。
++
++<a id="dev-note"></a>
++### 开发备注
++
++<details>
++<summary>维护者的工作上下文——点击展开</summary>
++
++无。
++
++</details>
++
++<a id="model-experience"></a>
++## 模型体验
++
++### 委托的 Host 操作
++
++#### 模型看到什么
++
++此包不添加模型输入。调用方可以通过返回的 `SessionFace` 与 `client.remote` face 调用已定义的 Host 操作。
++
++#### Token 影响
++
++零直接 token；被调用的 Host 操作拥有任何 request 内容。
++
++#### KV Cache 影响
++
++无直接 invalidation；被调用的 Host 操作拥有任何 request-prefix 变化。
++
++## 已知限制与延期工作
++
++<a id="known-limitations-and-deferred-work"></a>
++
++- runtime 仅接受 IPv4 loopback HTTP origin 与 Web Host 的 authority-bound cookie 认证。
++- 文件上传不可用；文本 prompt、Session 历史、queue 控制、命令与生成 Remote 调用仍然可用。
++- 此包每次调用装配一个完整 Client graph。需要在隔离 UI runtime 之间共享进程级 Connection 的产品 shell 必须拥有更高层 lifecycle。
++- Node.js 没有 `localStorage`，因此 Web Client 持久化的当前导航 cell 会自动禁用；产品 shell 拥有表示层选择与恢复状态。
++
++**Runtime invariant：**不发布 companion。此包装配现有 service，不保留对其状态的独立观察；它拥有的关系是已认证 Node carrier，并由 HTTP/WebSocket composition coverage 验证。
+diff --git a/packages/api/client-runtime/package.json b/packages/api/client-runtime/package.json
+new file mode 100644
+index 0000000000..184ebaf0c6
+--- /dev/null
++++ b/packages/api/client-runtime/package.json
+@@ -0,0 +1,53 @@
++{
++  "name": "@deepseek-ai/dsh-api-client-runtime",
++  "description": "React-free DSH Web Client object graph for non-browser product shells",
++  "version": "0.1.5-rc.2",
++  "publishConfig": {
++    "access": "public"
++  },
++  "repository": {
++    "type": "git",
++    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
++    "directory": "packages/api/client-runtime"
++  },
++  "type": "module",
++  "main": "lib/index.js",
++  "types": "lib/types/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./lib/types/index.d.ts",
++      "default": "./lib/index.js"
++    },
++    "./package.json": "./package.json"
++  },
++  "files": [
++    "lib/index.js",
++    "lib/types/**/*.d.ts"
++  ],
++  "scripts": {
++    "bundle": "tsdown"
++  },
++  "license": "MIT",
++  "dependencies": {
++    "@deepseek-ai/dsh-api-gateway": "workspace:^",
++    "@deepseek-ai/dsh-api-remotes": "workspace:^",
++    "@deepseek-ai/dsh-api-session-controller": "workspace:^",
++    "@deepseek-ai/dsh-client-connection": "workspace:^",
++    "@deepseek-ai/dsh-client-file-upload": "workspace:^",
++    "@deepseek-ai/dsh-typert-registry": "workspace:^",
++    "ws": "^8.21.0"
++  },
++  "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:^"
++  },
++  "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:^",
++    "@deepseek-ai/dsh-api-gateway": "workspace:^",
++    "@deepseek-ai/dsh-api-remotes": "workspace:^",
++    "@deepseek-ai/dsh-api-session-controller": "workspace:^",
++    "@deepseek-ai/dsh-client-connection": "workspace:^",
++    "@deepseek-ai/dsh-client-file-upload": "workspace:^",
++    "@deepseek-ai/dsh-typert-registry": "workspace:^",
++    "@types/ws": "^8.18.1"
++  }
++}
+diff --git a/packages/api/client-runtime/src/index.ts b/packages/api/client-runtime/src/index.ts
+new file mode 100644
+index 0000000000..47b2c11178
+--- /dev/null
++++ b/packages/api/client-runtime/src/index.ts
+@@ -0,0 +1,210 @@
++/**
++ * React-free DSH Web Client runtime for non-browser product shells. It composes
++ * the generated Remote graph and canonical Session object layer over an
++ * authenticated HTTP/WebSocket carrier without loading the Web UI.
++ *
++ * @module @deepseek-ai/dsh-api-client-runtime
++ */
++import { Context } from '@deepseek-ai/cordis'
++import WebSocket from 'ws'
++import {
++  apply as applyConnection,
++  inject as connectionInject,
++  type ClientTransportHooks,
++  type ConnectionHandle,
++} from '@deepseek-ai/dsh-client-connection/client'
++import {
++  apply as applyTypert,
++  inject as typertInject,
++} from '@deepseek-ai/dsh-typert-registry/client'
++import {
++  apply as applyGateway,
++  inject as gatewayInject,
++  REMOTE_STREAM_MUX_PATH,
++  RemoteStreamMuxClient,
++} from '@deepseek-ai/dsh-api-gateway/client'
++import {
++  apply as applyRemotes,
++  inject as remotesInject,
++  type ClientRemote,
++} from '@deepseek-ai/dsh-api-remotes/client'
++import {
++  apply as applySessions,
++  inject as sessionsInject,
++  type ISessions,
++} from '@deepseek-ai/dsh-api-session-controller/client'
++import type { FileUploadService } from '@deepseek-ai/dsh-client-file-upload/client'
++
++export type {
++  BeginSubmissionInput,
++  ISession,
++  ISessions,
++  PendingSubmission,
++  QueuedMessage,
++  SessionBinding,
++  SessionEventChange,
++  SessionEventLike,
++  SessionEventLikeEntry,
++  SessionEventSource,
++  SessionEventWindow,
++  SessionFace,
++  SessionListState,
++  SessionSnapshot,
++} from '@deepseek-ai/dsh-api-session-controller/client'
++export type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client'
++export type { ConnectionHandle, ConnectionState } from '@deepseek-ai/dsh-client-connection/client'
++
++/** Inputs for one authenticated DSH Web Client object graph. */
++export interface DshWebClientOptions {
++  /** Exact loopback HTTP origin of the DSH Web Host. */
++  readonly origin: string
++  /** Authority-bound cookie obtained through the DSH launch-token exchange. */
++  readonly cookie: string
++  /** Optional cancellation while the first Connection generation becomes ready. */
++  readonly signal?: AbortSignal
++}
++
++/**
++ * One independently disposable, React-free Client graph. Session, queue,
++ * paging, projection, and reconnect behavior comes from DSH's canonical Client
++ * objects; product shells project their observable values into their own UI.
++ */
++export class DshWebClient {
++  private disposed = false
++
++  private constructor(
++    private readonly ctx: Context,
++    private readonly streamMux: RemoteStreamMuxClient,
++    /** Canonical Session list and Session object owner. */
++    readonly sessions: ISessions,
++    /** Generated Remote namespaces for capabilities outside SessionFace. */
++    readonly remote: ClientRemote,
++    /** Physical Connection generation and recovery state. */
++    readonly connection: ConnectionHandle,
++    /** File-upload service; unavailable until this runtime gains a Node body carrier. */
++    readonly fileUpload: FileUploadService,
++  ) {}
++
++  /**
++   * Connect to one authenticated DSH Web Host and assemble its Client object graph.
++   * @param options - Host authority, browser-session cookie, and optional cancellation.
++   * @returns a ready Client whose first Session-list baseline has settled.
++   */
++  static async connect(options: DshWebClientOptions): Promise<DshWebClient> {
++    const origin = requireLoopbackOrigin(options.origin)
++    if (options.cookie.length === 0 || /[\r\n]/u.test(options.cookie)) {
++      throw new Error('DSH Web Client requires a non-empty single-line cookie')
++    }
++    options.signal?.throwIfAborted()
++    const clientGlobal = globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks }
++    if (clientGlobal.__DSH_TRANSPORT__ !== undefined) {
++      throw new Error('A DSH Client transport is already being assembled in this process')
++    }
++
++    const streamUrl = new URL(REMOTE_STREAM_MUX_PATH, origin)
++    streamUrl.protocol = 'ws:'
++    const streamMux = new RemoteStreamMuxClient({
++      url: streamUrl.href,
++      createSocket: url => new WebSocket(url, {
++        headers: { cookie: options.cookie },
++        origin,
++      }) as unknown as globalThis.WebSocket,
++    })
++    const transport: ClientTransportHooks = {
++      ownsHost: true,
++      fetch: async (input, init) => {
++        const target = new URL(`${input.pathname}${input.search}`, origin)
++        const headers = new Headers(init.headers)
++        headers.set('cookie', options.cookie)
++        headers.set('origin', origin)
++        return fetch(target, { ...init, headers })
++      },
++      openStream: (endpoint, payload, signal) => {
++        streamMux.start()
++        return streamMux.open(endpoint, payload, signal)
++      },
++    }
++
++    const ctx = new Context()
++    try {
++      clientGlobal.__DSH_TRANSPORT__ = transport
++      await mount(ctx, typertInject, applyTypert)
++      await mount(ctx, connectionInject, applyConnection)
++      delete clientGlobal.__DSH_TRANSPORT__
++      await mount(ctx, gatewayInject, applyGateway)
++      await mount(ctx, remotesInject, applyRemotes)
++      const unavailableUpload: FileUploadService = {
++        available: false,
++        upload: () => Promise.reject(new Error('File upload is not available in this Client runtime')),
++      }
++      await mount(ctx, [], (uploadCtx) => { uploadCtx.provide('fileUpload', unavailableUpload) })
++      await mount(ctx, sessionsInject, applySessions)
++      const connection = ctx.get('connection') as ConnectionHandle
++      await waitForGeneration(connection, options.signal)
++      const sessions = ctx.get('sessions') as ISessions
++      await sessions.refresh()
++      return new DshWebClient(
++        ctx,
++        streamMux,
++        sessions,
++        ctx.get('remote') as ClientRemote,
++        connection,
++        unavailableUpload,
++      )
++    } catch (error) {
++      delete clientGlobal.__DSH_TRANSPORT__
++      await Promise.allSettled([ctx.fiber.dispose(), streamMux.close()])
++      throw error
++    }
++  }
++
++  /** Release every Session stream, Remote generation, and physical carrier. */
++  async dispose(): Promise<void> {
++    if (this.disposed) return
++    this.disposed = true
++    await this.ctx.fiber.dispose()
++    await this.streamMux.close()
++  }
++}
++
++async function mount(
++  ctx: Context,
++  inject: readonly string[],
++  apply: (ctx: Context) => unknown,
++): Promise<void> {
++  const fiber = ctx.plugin({ inject: [...inject], apply })
++  await fiber.await()
++}
++
++function requireLoopbackOrigin(value: string): string {
++  const url = new URL(value)
++  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/'
++    || url.search !== '' || url.hash !== '') {
++    throw new Error('DSH Web Client origin must be an HTTP IPv4 loopback origin')
++  }
++  return url.origin
++}
++
++function waitForGeneration(connection: ConnectionHandle, signal?: AbortSignal): Promise<void> {
++  signal?.throwIfAborted()
++  return new Promise((resolve, reject) => {
++    const connected = (): void => {
++      if (connection.generation.getSnapshot() === undefined) return
++      cleanup()
++      resolve()
++    }
++    const dispose = connection.generation.subscribe(connected)
++    const aborted = (): void => {
++      cleanup()
++      reject(signal?.reason instanceof Error
++        ? signal.reason
++        : new Error('DSH Client connection aborted', { cause: signal?.reason }))
++    }
++    const cleanup = (): void => {
++      dispose()
++      signal?.removeEventListener('abort', aborted)
++    }
++    signal?.addEventListener('abort', aborted, { once: true })
++    connected()
++  })
++}
+diff --git a/packages/api/client-runtime/tests/runtime.client.spec.ts b/packages/api/client-runtime/tests/runtime.client.spec.ts
+new file mode 100644
+index 0000000000..b9e7a33ced
+--- /dev/null
++++ b/packages/api/client-runtime/tests/runtime.client.spec.ts
+@@ -0,0 +1,164 @@
++import { createServer, type Server } from 'node:http'
++import type { AddressInfo } from 'node:net'
++import { afterEach, describe, expect, it } from 'vitest'
++import { WebSocketServer, type RawData } from 'ws'
++import { DshWebClient } from '../src/index.ts'
++import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection/client'
++
++interface FixtureHost {
++  readonly origin: string
++  readonly server: Server
++  readonly sockets: WebSocketServer
++  readonly requests: Array<{ readonly path: string; readonly cookie?: string; readonly origin?: string }>
++}
++
++const hosts: FixtureHost[] = []
++
++afterEach(async () => {
++  delete (globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks }).__DSH_TRANSPORT__
++  for (const host of hosts.splice(0)) {
++    for (const client of host.sockets.clients) client.terminate()
++    await new Promise<void>((resolve, reject) => {
++      host.sockets.close(() => {
++        host.server.close((error) => { if (error === undefined) resolve(); else reject(error) })
++      })
++    })
++  }
++})
++
++async function fixtureHost(options: { readonly malformedReady?: boolean } = {}): Promise<FixtureHost> {
++  const requests: FixtureHost['requests'][number][] = []
++  const server = createServer((request, response) => {
++    const chunks: Buffer[] = []
++    request.on('data', (chunk: Buffer) => { chunks.push(chunk) })
++    request.on('end', () => {
++      requests.push({
++        path: request.url ?? '',
++        ...(request.headers.cookie === undefined ? {} : { cookie: request.headers.cookie }),
++        ...(request.headers.origin === undefined ? {} : { origin: request.headers.origin }),
++      })
++      const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { rpcId: string; method: string }
++      const value = envelope.method === 'session/list' ? { items: [] } : undefined
++      response.writeHead(200, { 'content-type': 'application/json' })
++      response.end(JSON.stringify({
++        type: 'server-response',
++        rpcId: envelope.rpcId,
++        result: { ok: true, value },
++      }))
++    })
++  })
++  const sockets = new WebSocketServer({ noServer: true })
++  server.on('upgrade', (request, socket, head) => {
++    requests.push({
++      path: request.url ?? '',
++      ...(request.headers.cookie === undefined ? {} : { cookie: request.headers.cookie }),
++      ...(request.headers.origin === undefined ? {} : { origin: request.headers.origin }),
++    })
++    sockets.handleUpgrade(request, socket, head, (client) => { sockets.emit('connection', client, request) })
++  })
++  sockets.on('connection', (client) => {
++    client.on('message', (data) => {
++      const request = JSON.parse(webSocketText(data)) as { type: string; streamId: string; endpoint?: string }
++      if (request.type !== 'open') return
++      if (request.endpoint === '$events') {
++        client.send(JSON.stringify({
++          type: 'item',
++          streamId: request.streamId,
++          value: options.malformedReady
++            ? { type: 'invalid' }
++            : { type: 'ready', clientId: 'fixture-client', host: { home: '/fixture' } },
++        }))
++      }
++      if (request.endpoint === 'session/control') {
++        client.send(JSON.stringify({
++          type: 'item',
++          streamId: request.streamId,
++          value: { type: 'baseline', value: { queues: {}, jobs: {}, projections: {} } },
++        }))
++      }
++    })
++  })
++  await new Promise<void>((resolve, reject) => {
++    server.once('error', reject)
++    server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve() })
++  })
++  const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
++  const host = { origin, server, sockets, requests }
++  hosts.push(host)
++  return host
++}
++
++function webSocketText(data: RawData): string {
++  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
++  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
++  return data.toString('utf8')
++}
++
++describe('DshWebClient', () => {
++  it('assembles the canonical Remote and Session object graph over authenticated Node carriers', async () => {
++    const host = await fixtureHost()
++    const client = await DshWebClient.connect({ origin: host.origin, cookie: 'dsh_session=fixture' })
++    try {
++      expect(client.connection.state.getSnapshot()).toBe('connected')
++      expect(client.sessions.list.getSnapshot()).toMatchObject({ phase: 'ready', ids: [] })
++      expect(client.remote.$host).toEqual({ home: '/fixture', isLoopback: true })
++      expect(client.fileUpload.available).toBe(false)
++      await expect(client.fileUpload.upload('session' as never, new Uint8Array())).rejects
++        .toThrow('not available')
++      expect(host.requests).toContainEqual({
++        path: '/api/remote.mux',
++        cookie: 'dsh_session=fixture',
++        origin: host.origin,
++      })
++      expect(host.requests).toContainEqual({
++        path: '/api/session/list',
++        cookie: 'dsh_session=fixture',
++        origin: host.origin,
++      })
++    } finally {
++      await client.dispose()
++      await client.dispose()
++    }
++  })
++
++  it('rejects non-loopback authorities, malformed cookies, and pre-aborted assembly', async () => {
++    await expect(DshWebClient.connect({
++      origin: 'https://example.com', cookie: 'session=value',
++    })).rejects.toThrow('loopback')
++    await expect(DshWebClient.connect({
++      origin: 'http://127.0.0.1:3080', cookie: 'bad\ncookie',
++    })).rejects.toThrow('single-line cookie')
++    const controller = new AbortController()
++    controller.abort(new Error('cancelled before assembly'))
++    await expect(DshWebClient.connect({
++      origin: 'http://127.0.0.1:3080', cookie: 'session=value', signal: controller.signal,
++    })).rejects.toThrow('cancelled before assembly')
++  })
++
++  it('rejects overlapping transport assembly without replacing its owner', async () => {
++    const global = globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks }
++    const owned = { ownsHost: true } as ClientTransportHooks
++    global.__DSH_TRANSPORT__ = owned
++    await expect(DshWebClient.connect({
++      origin: 'http://127.0.0.1:3080', cookie: 'session=value',
++    })).rejects.toThrow('already being assembled')
++    expect(global.__DSH_TRANSPORT__).toBe(owned)
++  })
++
++  it.each([
++    { reason: new Error('opening cancelled'), message: 'opening cancelled' },
++    { reason: 'fixture cancellation', message: 'DSH Client connection aborted' },
++  ])('aborts a failed opening generation and releases partial assembly: $message', async ({ reason, message }) => {
++    const host = await fixtureHost({ malformedReady: true })
++    const controller = new AbortController()
++    const timer = setTimeout(() => { controller.abort(reason) }, 50)
++    await expect(DshWebClient.connect({
++      origin: host.origin,
++      cookie: 'dsh_session=fixture',
++      signal: controller.signal,
++    })).rejects.toThrow(message)
++    clearTimeout(timer)
++    expect((globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks })
++      .__DSH_TRANSPORT__).toBeUndefined()
++  })
++})
+diff --git a/packages/api/client-runtime/tsconfig.json b/packages/api/client-runtime/tsconfig.json
+new file mode 100644
+index 0000000000..73a2065ad0
+--- /dev/null
++++ b/packages/api/client-runtime/tsconfig.json
+@@ -0,0 +1,33 @@
++{
++  "extends": "../../../tsconfig.base.client.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "lib/types"
++  },
++  "include": [
++    "src"
++  ],
++  "references": [
++    {
++      "path": "../../../vendor/cordis"
++    },
++    {
++      "path": "../../typert/registry"
++    },
++    {
++      "path": "../../client/connection/tsconfig.client.json"
++    },
++    {
++      "path": "../gateway/tsconfig.client.json"
++    },
++    {
++      "path": "../remotes/tsconfig.client.json"
++    },
++    {
++      "path": "../../client/file-upload/tsconfig.client.json"
++    },
++    {
++      "path": "../session-controller/tsconfig.client.json"
++    }
++  ]
++}
+diff --git a/packages/api/client-runtime/tsdown.config.ts b/packages/api/client-runtime/tsdown.config.ts
+new file mode 100644
+index 0000000000..12f64e6f2a
+--- /dev/null
++++ b/packages/api/client-runtime/tsdown.config.ts
+@@ -0,0 +1,25 @@
++import { isBuiltin } from 'node:module'
++import type { UserConfig } from 'tsdown'
++import { clientOnly } from '../../client/tsdown.client.ts'
++
++const config: UserConfig = {
++  name: '@deepseek-ai/dsh-api-client-runtime',
++  entry: ['lib/types/index.js'],
++  outDir: 'lib',
++  format: ['esm'],
++  platform: 'node',
++  target: 'es2024',
++  fixedExtension: false,
++  dts: false,
++  clean: false,
++  deps: {
++    neverBundle: specifier => isBuiltin(specifier)
++      || specifier === '@deepseek-ai/cordis'
++      || specifier === 'ws',
++    alwaysBundle: specifier => !isBuiltin(specifier)
++      && specifier !== '@deepseek-ai/cordis'
++      && specifier !== 'ws',
++  },
++}
++
++export default clientOnly([config])
+diff --git a/packages/api/gateway/README.i18n.yaml b/packages/api/gateway/README.i18n.yaml
+index 6e013ff43d..d7e939c54e 100644
+--- a/packages/api/gateway/README.i18n.yaml
++++ b/packages/api/gateway/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/api/gateway/README.md
+-README.md: a234189cfff09bae894de14dada607a357b398fd
+-README.zh.md: 067adbdbe06db8fb4caec323db0361d13f6309a7
++README.md: 4b6233dd66ecd488e64b514fd8145457e3ed1e3c
++README.zh.md: 6ac6a61f161b41857216b2576c6cf928cadca24b
+diff --git a/packages/api/gateway/README.md b/packages/api/gateway/README.md
+index a234189cff..4b6233dd66 100644
+--- a/packages/api/gateway/README.md
++++ b/packages/api/gateway/README.md
+@@ -32,7 +32,7 @@ The Host entry registers a trusted-host interceptor on Connection's shared `/api
+
+ A cancellation-aware Remote method declares `signal: AbortSignal` as its final Host parameter. The signal is descriptor metadata rather than a wire argument: Connection supplies it to the Gateway, and the Gateway injects it after decoded business parameters. SRC recognizes the reserved final name, while strict generation additionally requires the global `AbortSignal` type.
+
+-A stream Remote uses `@Remote({ mode: 'stream' })` and returns an `Iterable` or `AsyncIterable`. `ctx.typertGateway.stream()` applies the same endpoint, argument, lookup, and cancellation checks as unary invocation, then validates each yielded item with the generated result codec. The Client opens the Gateway-owned `/api/remote.mux` WebSocket when its plugin activates and keeps it connected while idle. Connection owns the retry schedule; before each retry it asks the mux to cancel any candidate or active socket and make exactly one fresh physical attempt. The Host sends Ping control frames at the configured `websocketHeartbeatIntervalMs` interval (two seconds by default), and the browser answers Pong at the WebSocket protocol layer, so idle network intermediaries see traffic without any Remote stream frame. A socket that has not answered the previous Ping is terminated at the next interval. Independently cancellable logical streams share that socket; an in-process Connection carrier provides equivalent streams directly without opening it.
++A stream Remote uses `@Remote({ mode: 'stream' })` and returns an `Iterable` or `AsyncIterable`. `ctx.typertGateway.stream()` applies the same endpoint, argument, lookup, and cancellation checks as unary invocation, then validates each yielded item with the generated result codec. The Client opens the Gateway-owned `/api/remote.mux` WebSocket when its plugin activates and keeps it connected while idle. Connection owns the retry schedule; before each retry it asks the mux to cancel any candidate or active socket and make exactly one fresh physical attempt. The Host sends Ping control frames at the configured `websocketHeartbeatIntervalMs` interval (two seconds by default), and the browser answers Pong at the WebSocket protocol layer, so idle network intermediaries see traffic without any Remote stream frame. A socket that has not answered the previous Ping is terminated at the next interval. Independently cancellable logical streams share that socket; an in-process Connection carrier provides equivalent streams directly without opening it. `RemoteStreamMuxClient` accepts an exact URL and socket factory when a non-browser product shell owns authority-bound socket construction.
+
+ Host composition can register one application event source through `registerRemoteEvents()`. Gateway reserves the internal `$events` logical endpoint for that source, accepts only empty `args`, and aborts streams opened by the registration when the source is withdrawn. API Remotes owns the event selection, argument validation, per-Client queues, and the Host home sent in the opening `{ type: 'ready', clientId, host: { home } }` frame. Its source factory attaches incremental listeners synchronously, so the Client publishes the generation and starts baseline reads only after incremental delivery is ready.
+
+diff --git a/packages/api/gateway/README.zh.md b/packages/api/gateway/README.zh.md
+index 067adbdbe0..6ac6a61f16 100644
+--- a/packages/api/gateway/README.zh.md
++++ b/packages/api/gateway/README.zh.md
+@@ -32,7 +32,7 @@ Connection 可用时，Host 入口会在 Connection 共享的 `/api` FetchHandle
+
+ 支持取消的 Remote 方法会把 `signal: AbortSignal` 声明为最后一个 Host 参数。signal 是 descriptor 元数据，而不是 wire 参数：Connection 将它提供给 Gateway，Gateway 则在已解码的业务参数之后注入它。SRC 识别这个保留的末位参数名，严格生成还要求它具有全局 `AbortSignal` 类型。
+
+-流式 Remote 使用 `@Remote({ mode: 'stream' })` 并返回 `Iterable` 或 `AsyncIterable`。`ctx.typertGateway.stream()` 执行与一元调用相同的 endpoint、参数、lookup 和取消校验，再用生成的 result codec 校验每个产出项。Client 插件激活时打开 Gateway 自有的 `/api/remote.mux` WebSocket，并让它在空闲时保持连接。Connection 拥有重试调度；每次 retry 前，它要求 mux 取消候选或活动 socket，并且只做一次全新的物理连接尝试。Host 按配置的 `websocketHeartbeatIntervalMs` 间隔（默认 2 秒）发送 Ping 控制帧，浏览器在 WebSocket 协议层自动回复 Pong，使空闲网络中间层持续看到流量，而不新增 Remote stream frame。若 socket 尚未回复上一次 Ping，Host 会在下一间隔终止它。可独立取消的逻辑流共享这条连接；进程内 Connection 载体直接提供等价的流，不打开该 WebSocket。
++流式 Remote 使用 `@Remote({ mode: 'stream' })` 并返回 `Iterable` 或 `AsyncIterable`。`ctx.typertGateway.stream()` 执行与一元调用相同的 endpoint、参数、lookup 和取消校验，再用生成的 result codec 校验每个产出项。Client 插件激活时打开 Gateway 自有的 `/api/remote.mux` WebSocket，并让它在空闲时保持连接。Connection 拥有重试调度；每次 retry 前，它要求 mux 取消候选或活动 socket，并且只做一次全新的物理连接尝试。Host 按配置的 `websocketHeartbeatIntervalMs` 间隔（默认 2 秒）发送 Ping 控制帧，浏览器在 WebSocket 协议层自动回复 Pong，使空闲网络中间层持续看到流量，而不新增 Remote stream frame。若 socket 尚未回复上一次 Ping，Host 会在下一间隔终止它。可独立取消的逻辑流共享这条连接；进程内 Connection 载体直接提供等价的流，不打开该 WebSocket。当非浏览器产品 shell 拥有绑定 authority 的 socket 构造时，`RemoteStreamMuxClient` 接受精确 URL 与 socket factory。
+
+ Host 组合可通过 `registerRemoteEvents()` 注册唯一的应用事件 source。Gateway 为它保留内部 `$events` logical endpoint，只接受空 `args`，并在 source 撤回时中止该注册打开的 stream。事件名单、参数校验、每 Client 队列及 opening `{ type: 'ready', clientId, host: { home } }` frame 中的 Host home 由 API Remotes 拥有。source factory 在返回 iterable 前同步挂好增量 listener，因此 Client 只在增量投递就绪后发布 generation 并开始 baseline 读取。
+
+diff --git a/packages/api/gateway/src/client/index.ts b/packages/api/gateway/src/client/index.ts
+index 853fc4242f..7827f65dc3 100644
+--- a/packages/api/gateway/src/client/index.ts
++++ b/packages/api/gateway/src/client/index.ts
+@@ -32,7 +32,9 @@ import {
+   type RemoteStreamOptions,
+ } from './remote-stream.ts'
+
+-export { RemoteStreamCarrierError } from './stream-client.ts'
++export { RemoteStreamCarrierError, RemoteStreamMuxClient } from './stream-client.ts'
++export type { RemoteStreamMuxClientOptions } from './stream-client.ts'
++export { REMOTE_STREAM_MUX_PATH } from '../stream-protocol.ts'
+ export { RemoteJournalStream } from './journal-stream.ts'
+ export type {
+   RemoteJournalChange,
+diff --git a/packages/api/gateway/src/client/stream-client.ts b/packages/api/gateway/src/client/stream-client.ts
+index 3310cfd39e..2bbc81c251 100644
+--- a/packages/api/gateway/src/client/stream-client.ts
++++ b/packages/api/gateway/src/client/stream-client.ts
+@@ -30,6 +30,14 @@ interface SocketWaiter {
+   reject(error: unknown): void
+ }
+
++/** Physical socket inputs for a shell-owned Remote stream carrier. */
++export interface RemoteStreamMuxClientOptions {
++  /** Exact WebSocket URL; omitted, the browser page authority supplies it. */
++  readonly url?: string
++  /** WebSocket factory; omitted, the browser global constructor is used. */
++  readonly createSocket?: (url: string) => WebSocket
++}
++
+ /** Keep one physical WebSocket and share it among independently cancellable Remote streams. */
+ export class RemoteStreamMuxClient {
+   private socket: WebSocket | undefined
+@@ -41,11 +49,16 @@ export class RemoteStreamMuxClient {
+   private running = false
+   private disposed = false
+
++  /**
++   * @param options - optional shell-owned URL and authenticated socket factory.
++   */
++  constructor(private readonly options: RemoteStreamMuxClientOptions = {}) {}
++
+   /** Ensure a physical attempt exists, following the current attempt once if needed. */
+   start(): void {
+     if (this.disposed) return
+     this.running = true
+-    if (this.socket?.readyState === WebSocket.OPEN) return
++    if (this.socket !== undefined && socketIsOpen(this.socket)) return
+     const pending = this.keepAlive
+     if (pending === undefined) this.maintain()
+     else void pending.then(() => { this.maintain() })
+@@ -113,7 +126,7 @@ export class RemoteStreamMuxClient {
+     } finally {
+       signal.removeEventListener('abort', abort)
+       this.streams.delete(streamId)
+-      if (opened && !terminal && carrier?.readyState === WebSocket.OPEN) {
++      if (opened && !terminal && carrier !== undefined && socketIsOpen(carrier)) {
+         this.send(carrier, { type: 'cancel', streamId })
+       }
+     }
+@@ -140,7 +153,8 @@ export class RemoteStreamMuxClient {
+   }
+
+   private connect(): Promise<WebSocket> {
+-    const socket = new WebSocket(remoteStreamUrl())
++    const url = this.options.url ?? remoteStreamUrl()
++    const socket = this.options.createSocket?.(url) ?? new WebSocket(url)
+     const connecting = new Promise<WebSocket>((resolve, reject) => {
+       let settled = false
+       const rejectCandidate = (error: Error): void => {
+@@ -192,7 +206,7 @@ export class RemoteStreamMuxClient {
+
+   private waitForSocket(signal: AbortSignal): Promise<WebSocket> {
+     signal.throwIfAborted()
+-    if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve(this.socket)
++    if (this.socket !== undefined && socketIsOpen(this.socket)) return Promise.resolve(this.socket)
+     if (this.disposed) return Promise.reject(new Error('api gateway: Remote stream client disposed'))
+     if (!this.running) return Promise.reject(new Error('api gateway: Remote stream client not started'))
+     return new Promise((resolve, reject) => {
+@@ -246,7 +260,7 @@ export class RemoteStreamMuxClient {
+
+   private maintain(): void {
+     if (!this.running || this.disposed) return
+-    if (this.socket?.readyState === WebSocket.OPEN || this.keepAlive !== undefined) return
++    if ((this.socket !== undefined && socketIsOpen(this.socket)) || this.keepAlive !== undefined) return
+     const revision = this.revision
+     const task = this.connect().then(
+       () => undefined,
+@@ -308,3 +322,8 @@ function remoteStreamUrl(): string {
+   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+   return url.href
+ }
++
++/** WHATWG and `ws` both define OPEN as ready-state value 1. */
++function socketIsOpen(socket: WebSocket): boolean {
++  return socket.readyState === 1
++}
+diff --git a/packages/api/gateway/tests/gateway.client.spec.ts b/packages/api/gateway/tests/gateway.client.spec.ts
+index 7fb0ec8bdc..51ca4edd9b 100644
+--- a/packages/api/gateway/tests/gateway.client.spec.ts
++++ b/packages/api/gateway/tests/gateway.client.spec.ts
+@@ -2338,6 +2338,20 @@ describe('Remote stream client carrier lifecycle', () => {
+     await client.close()
+   })
+
++  it('uses a shell-owned URL and authenticated socket factory', async () => {
++    FakeWebSocket.sockets.length = 0
++    const createSocket = vi.fn((url: string) => new FakeWebSocket(url) as unknown as WebSocket)
++    const client = new RemoteStreamMuxClient({
++      url: 'ws://127.0.0.1:3456/api/remote.mux',
++      createSocket,
++    })
++    client.start()
++    await vi.waitFor(() => { expect(createSocket).toHaveBeenCalledOnce() })
++    expect(createSocket).toHaveBeenCalledWith('ws://127.0.0.1:3456/api/remote.mux')
++    await client.close()
++    FakeWebSocket.sockets.length = 0
++  })
++
+   it('connects without a logical stream, waits for owner-driven retries, and stops permanently', async () => {
+     await withFakeWebSocket('https://harness.example', async () => {
+       FakeWebSocket.autoOpen = false
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index be1647c24b..2345e572d1 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -835,6 +835,37 @@ importers:
+         specifier: workspace:^
+         version: link:../../interaction/user-approval
+
++  packages/api/client-runtime:
++    dependencies:
++      '@deepseek-ai/dsh-api-gateway':
++        specifier: workspace:^
++        version: link:../gateway
++      '@deepseek-ai/dsh-api-remotes':
++        specifier: workspace:^
++        version: link:../remotes
++      '@deepseek-ai/dsh-api-session-controller':
++        specifier: workspace:^
++        version: link:../session-controller
++      '@deepseek-ai/dsh-client-connection':
++        specifier: workspace:^
++        version: link:../../client/connection
++      '@deepseek-ai/dsh-client-file-upload':
++        specifier: workspace:^
++        version: link:../../client/file-upload
++      '@deepseek-ai/dsh-typert-registry':
++        specifier: workspace:^
++        version: link:../../typert/registry
++      ws:
++        specifier: ^8.21.0
++        version: 8.21.0
++    devDependencies:
++      '@deepseek-ai/cordis':
++        specifier: workspace:^
++        version: link:../../../vendor/cordis
++      '@types/ws':
++        specifier: ^8.18.1
++        version: 8.18.1
++
+   packages/api/gateway:
+     dependencies:
+       '@deepseek-ai/dsh-deque':
+diff --git a/scripts/run-gates.ts b/scripts/run-gates.ts
+index 3918c87d38..b510aedd00 100644
+--- a/scripts/run-gates.ts
++++ b/scripts/run-gates.ts
+@@ -800,6 +800,7 @@ function builtBinSmokeGate(needs: string[] = ['build']): Gate {
+     'packages/code-runtime/code-runtime-worker-thread/tests/built-lib.e2e.ts',
+     'packages/session/session-persistence-jsonl/tests/built-migration-worker.e2e.ts',
+     'packages/lsp/lsp-stdio/tests/built-lib.e2e.ts',
++    'apps/cli/tests/web-auth.e2e.ts',
+   ], {
+     label: 'built-bin smoke',
+     needs,
+diff --git a/tsconfig.base.json b/tsconfig.base.json
+index 83cabd9e4a..b51e75b3ed 100644
+--- a/tsconfig.base.json
++++ b/tsconfig.base.json
+@@ -47,6 +47,7 @@
+       "@deepseek-ai/dsh-api-gateway": ["./packages/api/gateway/src/index.ts"],
+       "@deepseek-ai/dsh-api-gateway/client": ["./packages/api/gateway/src/client/index.ts"],
+       "@deepseek-ai/dsh-api-gateway/types": ["./packages/api/gateway/src/types.ts"],
++      "@deepseek-ai/dsh-api-client-runtime": ["./packages/api/client-runtime/src/index.ts"],
+       "@deepseek-ai/dsh-api-session-controller": ["./packages/api/session-controller/src/index.ts"],
+       "@deepseek-ai/dsh-api-session-controller/client": ["./packages/api/session-controller/src/client/index.ts"],
+       "@deepseek-ai/dsh-api-session-controller/types": ["./packages/api/session-controller/src/types.ts"],
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index 8ffb94127a..0bfa43f67a 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -65,6 +65,7 @@
+     { "path": "./packages/api/session-controller/tsconfig.client.json" },
+     { "path": "./packages/api/workspace-controller/tsconfig.client.json" },
+     { "path": "./packages/api/remotes/tsconfig.client.json" },
++    { "path": "./packages/api/client-runtime" },
+     { "path": "./packages/extensions/cordis-client-runner" },
+     { "path": "./packages/extensions/ui-cordis" },
+     { "path": "./packages/test-support/client-runtime" },

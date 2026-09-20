@@ -15,6 +15,10 @@ test('a non-release tag does not turn a build into a release', () => {
   assert.equal(resolveVersion(['experiment'], 'v0.14.0', '7'), '0.14.7');
 });
 
+test('development builds before the first release use the implicit 0.0 base', () => {
+  assert.equal(resolveVersion([], '', '20260908220001'), '0.0.20260908220001');
+});
+
 test('multiple release tags on one commit are rejected', () => {
   assert.throws(
     () => resolveVersion(['v0.14.0', 'v0.15.0'], 'v0.15.0', '7'),
@@ -22,7 +26,8 @@ test('multiple release tags on one commit are rejected', () => {
   );
 });
 
-test('development versions require a release base and numeric build id', () => {
+test('development versions reject an invalid release base and nonnumeric build id', () => {
   assert.throws(() => resolveVersion([], 'experiment', '7'), /no valid release tag/);
   assert.throws(() => resolveVersion([], 'v0.14.0', 'dev'), /invalid development build id/);
+  assert.throws(() => resolveVersion([], '', 'dev'), /invalid development build id/);
 });

@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import * as vscode from 'vscode';
 import { DSH_ORIGIN, DshClient, DshHttpError, exchangeLaunchUrl } from './dshClient';
 import { renderMarkdown } from './markdown';
+import { RuntimeControl } from './runtimeControl';
+import { connectRuntime } from './runtimeInstaller';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
 const COOKIE_SECRET_KEY = 'dshCompanion.developmentCookie';
@@ -43,23 +43,34 @@ interface ChatEditorState {
   readonly sessionId?: string;
 }
 
-interface DevelopmentRuntime {
-  readonly version: 1;
-  readonly origin: string;
-  readonly bootstrapUrl?: string;
-  readonly pid: number;
-  readonly startedAt: string;
-}
-
 /** Registers the DSH Companion chat editor command. */
 export function activate(context: vscode.ExtensionContext): void {
+  const runtimeControl = connectRuntime(context);
+  context.subscriptions.push({
+    dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
+  });
   context.subscriptions.push(
     vscode.commands.registerCommand('dshCompanion.newChatEditor', () => {
-      openChatEditor(context);
+      openChatEditor(context, runtimeControl);
+    }),
+    vscode.commands.registerCommand('dshCompanion.stopManagedRuntime', async () => {
+      const selected = await vscode.window.showWarningMessage(
+        'Stopping the managed DSH runtime can interrupt active agents, jobs, terminals, and schedules.',
+        { modal: true },
+        'Stop Runtime',
+      );
+      if (selected !== 'Stop Runtime') return;
+      const control = await runtimeControl;
+      if (control === undefined) {
+        await vscode.window.showInformationMessage('No managed DSH runtime is connected.');
+        return;
+      }
+      await control.stop();
+      control.dispose();
     }),
     vscode.window.registerWebviewPanelSerializer(CHAT_EDITOR_VIEW_TYPE, {
       async deserializeWebviewPanel(panel, state: unknown): Promise<void> {
-        configureChatEditor(context, panel, isChatEditorState(state) ? state.sessionId : undefined);
+        configureChatEditor(context, runtimeControl, panel, isChatEditorState(state) ? state.sessionId : undefined);
       },
     }),
   );
@@ -68,7 +79,10 @@ export function activate(context: vscode.ExtensionContext): void {
 /** Releases resources owned by editor-panel subscriptions. */
 export function deactivate(): void {}
 
-function openChatEditor(context: vscode.ExtensionContext): void {
+function openChatEditor(
+  context: vscode.ExtensionContext,
+  runtimeControl: Promise<RuntimeControl | undefined>,
+): void {
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   const panel = vscode.window.createWebviewPanel(
     CHAT_EDITOR_VIEW_TYPE,
@@ -80,11 +94,12 @@ function openChatEditor(context: vscode.ExtensionContext): void {
       localResourceRoots: [mediaRoot],
     },
   );
-  configureChatEditor(context, panel);
+  configureChatEditor(context, runtimeControl, panel);
 }
 
 function configureChatEditor(
   context: vscode.ExtensionContext,
+  runtimeControl: Promise<RuntimeControl | undefined>,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
 ): void {
@@ -100,7 +115,7 @@ function configureChatEditor(
   );
 
   let client: DshClient | undefined;
-  const ready = connect(context, panel, restoredSessionId).then((connected) => {
+  const ready = connect(context, runtimeControl, panel, restoredSessionId).then((connected) => {
     client = connected;
     post(panel, { type: 'session', sessionId: connected.sessionId });
     return connected;
@@ -127,13 +142,27 @@ function configureChatEditor(
 
 async function connect(
   context: vscode.ExtensionContext,
+  runtimeControlPromise: Promise<RuntimeControl | undefined>,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
 ): Promise<DshClient> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
-  const runtime = await readDevelopmentRuntime(context.extensionUri);
+  let runtime = await runtimeControlPromise;
+  if (runtime === undefined) {
+    runtime = await connectRuntime(context);
+    if (runtime !== undefined) context.subscriptions.push(runtime);
+  }
+  if (runtime === undefined) throw new Error('Managed DSH runtime is unavailable');
+  if (runtime.origin !== DSH_ORIGIN) {
+    throw new Error(`DSH runtime origin ${runtime.origin} does not match ${DSH_ORIGIN}`);
+  }
+  if (runtime.clientModule === undefined) throw new Error('Managed DSH runtime does not provide its Client module');
   let streamingAssistant = '';
   const sink = {
+    reset: () => {
+      streamingAssistant = '';
+      post(panel, { type: 'resetTranscript' });
+    },
     history: (role: 'user' | 'assistant' | 'error', text: string, time?: number) => post(panel, {
       type: 'message',
       role,
@@ -167,6 +196,7 @@ async function connect(
     queue: (items: readonly import('./dshClient').DshQueuedPrompt[]) => post(panel, { type: 'queue', items }),
     running: (value: boolean) => post(panel, { type: 'running', value }),
     status: (text: string) => post(panel, { type: 'status', text }),
+    submissionObserved: (requestId: string) => post(panel, { type: 'submissionObserved', requestId }),
     userCommitted: (requestId: string | undefined, text: string, time: number, turn: number) => post(panel, {
       type: 'userCommitted', requestId, text, time, turn,
     }),
@@ -174,8 +204,7 @@ async function connect(
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   try {
     if (cookie !== undefined) {
-      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId);
-      await consumeBootstrapUrl(context.extensionUri, runtime);
+      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule);
       return client;
     }
   } catch (error) {
@@ -185,59 +214,10 @@ async function connect(
   }
 
   sink.status('Authentication required');
-  const launchUrl = runtime?.bootstrapUrl ?? await vscode.window.showInputBox({
-      title: 'Connect DSH Companion',
-      prompt: `Paste the launch URL printed by the DSH instance at ${DSH_ORIGIN}`,
-      placeHolder: `${DSH_ORIGIN}/?token=…`,
-      ignoreFocusOut: true,
-    });
-  if (launchUrl === undefined) throw new Error('DSH authentication was cancelled');
+  const launchUrl = await runtime.bootstrapUrl();
   cookie = await exchangeLaunchUrl(launchUrl);
   await context.secrets.store(COOKIE_SECRET_KEY, cookie);
-  await consumeBootstrapUrl(context.extensionUri, runtime);
-  return DshClient.connect(cookie, cwd, sink, restoredSessionId);
-}
-
-async function readDevelopmentRuntime(extensionUri: vscode.Uri): Promise<DevelopmentRuntime | undefined> {
-  try {
-    const value: unknown = JSON.parse(await readFile(developmentRuntimePath(extensionUri), 'utf8'));
-    if (!isDevelopmentRuntime(value)) throw new Error('Invalid DSH development runtime state');
-    return value;
-  } catch (error) {
-    if (isFileNotFound(error)) return undefined;
-    throw error;
-  }
-}
-
-async function consumeBootstrapUrl(
-  extensionUri: vscode.Uri,
-  runtime: DevelopmentRuntime | undefined,
-): Promise<void> {
-  if (runtime?.bootstrapUrl === undefined) return;
-  const { bootstrapUrl: _bootstrapUrl, ...publicState } = runtime;
-  await writeFile(
-    developmentRuntimePath(extensionUri),
-    `${JSON.stringify(publicState, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-}
-
-function developmentRuntimePath(extensionUri: vscode.Uri): string {
-  return resolve(extensionUri.fsPath, '..', '..', '.dev', 'dsh-companion', 'runtime.json');
-}
-
-function isDevelopmentRuntime(value: unknown): value is DevelopmentRuntime {
-  return typeof value === 'object' && value !== null
-    && Reflect.get(value, 'version') === 1
-    && Reflect.get(value, 'origin') === DSH_ORIGIN
-    && Number.isSafeInteger(Reflect.get(value, 'pid'))
-    && typeof Reflect.get(value, 'startedAt') === 'string'
-    && (Reflect.get(value, 'bootstrapUrl') === undefined
-      || typeof Reflect.get(value, 'bootstrapUrl') === 'string');
-}
-
-function isFileNotFound(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+  return DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule);
 }
 
 async function submit(
@@ -395,10 +375,15 @@ function editorHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.U
 <body>
   <main id="output" aria-live="polite"></main>
   <aside id="sticky-prompt" aria-label="Current prompt" hidden>
-    <button id="sticky-prompt-jump" type="button" aria-label="Jump to prompt" title="Jump to prompt">↑</button>
+    <button id="sticky-prompt-jump" type="button" aria-label="Jump to prompt" title="Jump to prompt">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 10 8 5.5l4.5 4.5"/></svg>
+    </button>
     <span id="sticky-prompt-text"></span>
     <time id="sticky-prompt-time"></time>
   </aside>
+  <button id="scroll-bottom" type="button" aria-label="Scroll to latest output" title="Scroll to latest output" hidden>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>
+  </button>
   <section id="queue" aria-label="Pending messages" hidden></section>
   <div id="status" role="status">Connecting…</div>
   <form id="composer">

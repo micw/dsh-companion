@@ -6,30 +6,6 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 
 ## Companion work
 
-### COMP-001 — Restore paged history by a stable event anchor
-
-**Current behavior:** A restored editor tab stores a pixel scroll position, while older DSH history pages are loaded only into the current Webview lifetime.
-
-**Deferred work:** Store a stable DSH event identity and its viewport offset as presentation state, load backwards through DSH until that event is present, and then restore the offset.
-
-**Completion:** A reconstructed tab returns to the same logical transcript position after the previous Webview had loaded older history pages.
-
-### COMP-002 — Recover continuous transports and repair cursor gaps
-
-**Current behavior:** Reconstructing an editor reconnects its Follow and Control streams, but a transport interruption inside the same Webview does not continuously retry or repair durable sequence gaps.
-
-**Deferred work:** Adopt DSH's reconnect and cursor-repair behavior without introducing a second Session stream protocol.
-
-**Completion:** Follow and Control recover from physical transport loss, replace transient baselines correctly, and deliver a gap-free durable event window.
-
-### COMP-003 — Replace the handwritten DSH Wire client
-
-**Current behavior:** The proof of concept handwrites HTTP Remote envelopes and multiplexed WebSocket frames for the DSH Web protocol.
-
-**Deferred work:** Determine which published DSH Connection, Gateway, Remote, Session Controller, and Session client artifacts can replace owned transport and continuity code in the VS Code extension.
-
-**Completion:** Companion uses supported published DSH client artifacts for every capability they cover, with any remaining handwritten Wire code explicitly justified and validated.
-
 ### COMP-004 — Establish contributor relicensing terms
 
 **Current behavior:** DSH Companion is MIT-licensed and has no Contributor License Agreement.
@@ -37,6 +13,14 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 **Deferred work:** Before accepting external contributions, identify the legal project owner and adopt legally reviewed contribution terms that preserve an explicit right to sublicense and relicense contributions, including transfer to a project successor, while public releases remain MIT-licensed.
 
 **Completion:** Contribution documentation, acceptance records, and any required individual or corporate agreement are in place before the first external contribution is merged.
+
+### COMP-005 — Ship the Companion Managed Runtime
+
+**Current behavior:** Internal Linux packaging builds a pinned, patched DSH single-executable runtime, records every payload digest, and includes it in the VSIX. The Extension verifies and installs immutable versions under VS Code global storage, retains active and rollback records, starts one identity-matched independent supervisor, stores DSH data separately, and provides an explicitly confirmed runtime-stop command. Development uses the shared lifecycle owner and data home with its task-owned source runtime.
+
+**Deferred work:** Add DSH-owned idle eligibility and automatic idle shutdown, robust crash recovery, update rollback qualification across DSH data-format changes, the Companion bundle, and External DSH mode. Public signing and additional targets remain outside internal Linux packaging.
+
+**Completion:** A packaged extension starts and reconnects to one independently supervised, version-matched DSH Runtime, shares it across windows and Development Extension Hosts, stops it only through the declared idle or explicit lifecycle, and never depends on system Node.js, pnpm, or a source checkout.
 
 ## DSH dependencies
 
@@ -59,3 +43,13 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 **Needed capability:** If DSH adopts adaptive multi-stage manual compaction, its durable events or Remote frames identify each stage and publish user-facing progress without requiring Companion to infer backend control flow.
 
 **Completion:** Companion can present canonical multi-stage progress and cancellation from DSH-owned identities and state while retaining one Compact action.
+
+### DSH-003 — Report managed-runtime idle eligibility
+
+**Current behavior:** DSH exposes individual Session and capability operations but no host-wide status proving that shutdown would leave no active or time-dependent Agent, maintenance, Job, Terminal, Workflow, Subagent, Schedule, or comparable work behind.
+
+**Companion behavior:** The development supervisor tracks Extension Host leases but deliberately does not stop DSH when the last lease expires.
+
+**Needed capability:** DSH publishes one authoritative, change-observable runtime lifecycle status that distinguishes quiescent shutdown eligibility from active or time-dependent work without exposing secrets or requiring Companion to combine subsystem internals.
+
+**Completion:** The managed supervisor starts its idle deadline only after the last Companion client leaves, cancels that deadline when a client returns or DSH becomes non-quiescent, and stops DSH plus itself after the deadline expires while DSH remains shutdown-eligible.

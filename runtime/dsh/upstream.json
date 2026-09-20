@@ -1,0 +1,44 @@
+{
+  "formatVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
+    "version": "0.1.5-rc.2",
+    "tag": "dsh-v0.1.5-rc.2",
+    "commit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+    "tree": "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38"
+  },
+  "patches": [
+    {
+      "id": "node-client-object-runtime",
+      "file": "patches/0001-publish-node-client-object-runtime.patch",
+      "sha256": "e43bbf59b4b24bd47e3a97ddb7babe9d22974ab0ce06e3a8cfcf3f4fc01a1d91",
+      "assessment": "patches/node-client-object-runtime.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-api-client-runtime",
+        "@deepseek-ai/dsh-api-gateway/client"
+      ]
+    },
+    {
+      "id": "web-runtime-session-title-dependency",
+      "file": "patches/0002-close-web-runtime-session-title-dependency.patch",
+      "sha256": "2c5cc7e99d2942ab9be6f93c7409893f83f313f05fb7f7ba7d307eed66558399",
+      "assessment": "patches/web-runtime-session-title-dependency.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "dsh-python-runtime-closure",
+        "@deepseek-ai/dsh-session-title-llm"
+      ]
+    },
+    {
+      "id": "sea-compatible-preset-directory-scan",
+      "file": "patches/0003-scan-presets-with-sea-compatible-directory-stats.patch",
+      "sha256": "49cfeb1022c8cca3f627f2fcce4dac4f0016dc8e5b97317ad9f1fe22118cfc6a",
+      "assessment": "patches/sea-compatible-preset-directory-scan.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-agent-presets"
+      ]
+    }
+  ]
+}

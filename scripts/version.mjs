@@ -9,7 +9,7 @@ const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.0$/;
  * Resolves an exact release tag or a timestamped development version based on the nearest release.
  *
  * @param {string[]} exactTags Tags pointing at the commit being packaged.
- * @param {string} nearestTag Nearest reachable release tag.
+ * @param {string} nearestTag Nearest reachable release tag, or an empty string before the first release.
  * @param {string} buildId Positive numeric development-build identifier.
  * @returns {string} VS Code Marketplace-compatible version.
  */
@@ -22,12 +22,13 @@ export function resolveVersion(exactTags, nearestTag, buildId) {
     return releases[0].slice(1);
   }
 
+  if (!/^[1-9]\d*$/.test(buildId)) {
+    throw new Error(`invalid development build id ${JSON.stringify(buildId)}`);
+  }
+  if (nearestTag === '') return `0.0.${buildId}`;
   const nearest = RELEASE_TAG.exec(nearestTag);
   if (!nearest) {
     throw new Error(`no valid release tag found (got ${JSON.stringify(nearestTag)})`);
-  }
-  if (!/^[1-9]\d*$/.test(buildId)) {
-    throw new Error(`invalid development build id ${JSON.stringify(buildId)}`);
   }
   return `${nearest[1]}.${nearest[2]}.${buildId}`;
 }
@@ -50,10 +51,9 @@ function main() {
   try {
     nearestTag = git('describe', '--tags', '--match', 'v[0-9]*', '--abbrev=0');
   } catch {
-    throw new Error('no release tag is reachable from HEAD');
+    nearestTag = '';
   }
-  const buildId = process.env.DSH_COMPANION_DEV_BUILD || utcBuildId();
-  console.log(resolveVersion(exactTags, nearestTag, buildId));
+  console.log(resolveVersion(exactTags, nearestTag, utcBuildId()));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

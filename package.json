@@ -8,6 +8,9 @@
     "build": "pnpm --filter dsh-companion-vscode compile",
     "watch": "pnpm --filter dsh-companion-vscode watch",
     "test": "pnpm run build && node --test tests/*.test.mjs",
+    "runtime:verify": "node runtime/dsh/scripts/verify.mjs",
+    "runtime:prepare": "node runtime/dsh/scripts/prepare.mjs",
+    "runtime:build:linux": "node runtime/dsh/scripts/build-linux.mjs",
     "version:resolve": "node scripts/version.mjs",
     "vscode:package": "node scripts/package-vscode.mjs"
   },

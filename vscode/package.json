@@ -22,8 +22,17 @@
     "workspace"
   ],
   "main": "./out/extension.js",
+  "files": [
+    "out/**",
+    "media/**",
+    "runtime/payload/linux-x64/**",
+    "README.md",
+    "features.md",
+    "LICENSE"
+  ],
   "activationEvents": [
     "onCommand:dshCompanion.newChatEditor",
+    "onCommand:dshCompanion.stopManagedRuntime",
     "onWebviewPanel:dshCompanion.chatEditor"
   ],
   "contributes": {
@@ -31,6 +40,10 @@
       {
         "command": "dshCompanion.newChatEditor",
         "title": "DSH: New Chat Editor"
+      },
+      {
+        "command": "dshCompanion.stopManagedRuntime",
+        "title": "DSH: Stop Managed Runtime"
       }
     ]
   },
@@ -39,14 +52,12 @@
     "watch": "tsc --watch -p ./"
   },
   "dependencies": {
-    "markdown-it": "^14.1.0",
-    "ws": "^8.18.3"
+    "markdown-it": "^14.1.0"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.93.0",
-    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.10",
     "typescript": "^5.4.0"
