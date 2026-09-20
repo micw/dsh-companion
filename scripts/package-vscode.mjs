@@ -8,7 +8,9 @@ import { createVsix } from './create-vsix.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = join(root, 'vscode');
-const runtimePayload = join(root, 'build', 'runtime-payload', 'linux-x64');
+const runtimePayloadRoot = join(root, 'build', 'runtime-payload');
+const runtimePayload = join(runtimePayloadRoot, 'linux-x64');
+const preparedDshSource = join(runtimePayloadRoot, '.dsh-companion-dsh-source-linux-x64');
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -42,6 +44,7 @@ if (dshSource === undefined || dshSource.length === 0) {
 }
 
 rmSync(runtimePayload, { recursive: true, force: true });
+rmSync(preparedDshSource, { recursive: true, force: true });
 run(process.execPath, [
   join(root, 'runtime', 'dsh', 'scripts', 'build-linux.mjs'),
   '--source', resolve(root, dshSource),

@@ -16,4 +16,4 @@ None.
 
 ## Known Limitations and Deferred Work
 
-The first card displays catalog freshness, discovered models, plan, allowances, and explicit refresh. Endpoint/API-key editing and shared model-policy switches are not rendered yet. Live account push will replace manual refresh after the provider Remote gains a reconnect-safe snapshot stream. No runtime invariant companion is published because this browser-only presentation retains no Host state or independent event stream.
+The keyed Codex Wrapper Advanced and Claude Wrapper Advanced cards display connection settings, catalog freshness, discovered models, model-policy switches, plan and allowances, and explicit refresh. Live account push will replace manual refresh after the provider Remote gains a reconnect-safe snapshot stream. No runtime invariant companion is published because this browser-only presentation retains no Host state or independent event stream.

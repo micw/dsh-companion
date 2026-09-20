@@ -58,7 +58,11 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
   const lifecycleRoot = companionLifecycleRoot();
   const shared = await RuntimeControl.fromStateFile(join(lifecycleRoot, 'runtime.json'));
   if (shared?.runtimeId === 'source') return shared;
-  if (context.extensionUri.scheme !== 'file' || context.globalStorageUri.scheme !== 'file') return undefined;
+  if (context.extensionUri.scheme !== 'file') return undefined;
+  const globalStorage = runtimeStoragePath(context.globalStorageUri);
+  if (globalStorage === undefined) {
+    throw new Error(`Managed DSH runtime requires local extension storage, not ${context.globalStorageUri.scheme}:`);
+  }
   const payload = join(context.extensionUri.fsPath, 'runtime', 'payload', TARGET);
   try {
     await stat(join(payload, 'runtime-manifest.json'));
@@ -69,7 +73,7 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
   shared?.dispose();
   return activatePayload(
     payload,
-    context.globalStorageUri.fsPath,
+    globalStorage,
     context.extension.packageJSON.version,
     lifecycleRoot,
     companionDataHome(),
@@ -83,10 +87,11 @@ export function activatePayload(
   extensionVersion: unknown,
   lifecycleRoot = companionLifecycleRoot(),
   dataHome = companionDataHome(),
+  origin = PACKAGED_DSH_ORIGIN,
 ): Promise<RuntimeControl> {
   return withManagerLock(lifecycleRoot, async () => {
     const installed = await installPayload(payload, globalStorage, extensionVersion);
-    return activateInstalledRuntime(installed, globalStorage, lifecycleRoot, dataHome);
+    return activateInstalledRuntime(installed, globalStorage, lifecycleRoot, dataHome, origin);
   });
 }
 
@@ -134,6 +139,7 @@ async function activateInstalledRuntime(
   globalStorage: string,
   lifecycleRoot: string,
   dataHome: string,
+  origin: string,
 ): Promise<RuntimeControl> {
   const runtimeRoot = join(globalStorage, 'runtime');
   const stateFile = join(lifecycleRoot, 'runtime.json');
@@ -159,7 +165,7 @@ async function activateInstalledRuntime(
   let candidate: RuntimeControl | undefined;
   let activePublished = false;
   try {
-    candidate = await startSupervisor(installed, globalStorage, dataHome, stateFile, lifecycleRoot);
+    candidate = await startSupervisor(installed, globalStorage, dataHome, stateFile, lifecycleRoot, origin);
     if (active !== undefined && active.directory !== installed) {
       await writeJsonAtomic(rollbackFile, active);
     }
@@ -179,7 +185,7 @@ async function activateInstalledRuntime(
     }
     if (active !== undefined && await exists(active.directory)) {
       if (activePublished) await writeJsonAtomic(activeFile, active);
-      await startSupervisor(active.directory, globalStorage, dataHome, stateFile, lifecycleRoot)
+      await startSupervisor(active.directory, globalStorage, dataHome, stateFile, lifecycleRoot, origin)
         .catch(() => undefined);
     } else if (activePublished) {
       await rm(activeFile, { force: true });
@@ -194,6 +200,7 @@ async function startSupervisor(
   dataHome: string,
   stateFile: string,
   ownerRoot: string,
+  origin: string,
 ): Promise<RuntimeControl> {
   const manifest = await verifyPayload(installed);
   const configFile = join(ownerRoot, 'supervisor-config.json');
@@ -201,9 +208,9 @@ async function startSupervisor(
     version: 1,
     stateFile,
     command: join(installed, manifest.launch.executable),
-    args: [...manifest.launch.args, '--port', new URL(PACKAGED_DSH_ORIGIN).port],
+    args: [...manifest.launch.args, '--port', new URL(origin).port],
     cwd: globalStorage,
-    origin: PACKAGED_DSH_ORIGIN,
+    origin,
     backendVersion: `${manifest.dsh.upstreamVersion} (${manifest.dsh.upstreamCommit.slice(0, 8)}${
       manifest.dsh.modified ? ` + patches ${manifest.dsh.patchSetSha256.slice(0, 8)}` : ''
     })`,
@@ -464,4 +471,11 @@ export function companionDataHome(environment: NodeJS.ProcessEnv = process.env):
 /** Stable supervisor rendezvous and exclusive lifecycle owner directory. */
 export function companionLifecycleRoot(environment: NodeJS.ProcessEnv = process.env): string {
   return join(dirname(companionDataHome(environment)), 'runtime-owner');
+}
+
+/** Resolves VS Code's local extension-storage URIs for native runtime installation. */
+export function runtimeStoragePath(uri: Pick<vscode.Uri, 'scheme' | 'fsPath'>): string | undefined {
+  if (uri.scheme !== 'file' && uri.scheme !== 'vscode-userdata') return undefined;
+  if (!isAbsolute(uri.fsPath)) throw new Error('Managed DSH runtime storage path must be absolute');
+  return uri.fsPath;
 }

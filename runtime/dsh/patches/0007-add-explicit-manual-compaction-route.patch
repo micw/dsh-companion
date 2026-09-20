@@ -1,0 +1,542 @@
+diff --git a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.i18n.yaml b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.i18n.yaml
+index 73f3dd021b70fca1118b830af11844599f5b940d..cbe6bc7e6aea50167a966cd226696b1c856c6dc9 100644
+--- a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.i18n.yaml
++++ b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.md
+-2026-07-30-queued-manual-compaction.md: 3efd1a490148b34b0ee76800ed795dfaab280743
+-2026-07-30-queued-manual-compaction.zh.md: 2da3f494afcdb0e0db47a0adb2e2a6101f7ef2e6
++2026-07-30-queued-manual-compaction.md: 585e2c67ee4006c01cf591ff34d24c7fc5c8f2be
++2026-07-30-queued-manual-compaction.zh.md: e6d618d3aa6ec332c1b51c38de1687e3bc0dcb4c
+diff --git a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.md b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.md
+index 3efd1a490148b34b0ee76800ed795dfaab280743..585e2c67ee4006c01cf591ff34d24c7fc5c8f2be 100644
+--- a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.md
++++ b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.md
+@@ -18,7 +18,7 @@ This note extends the [compaction capability seam](2026-06-18-compaction-capabil
+ 
+ ### `/compact` is a command over a backend-independent seam
+ 
+-`@deepseek-ai/dsh-command-compact` registers one argument-free human command through `ctx.commands`. It calls the third abstract `CompactionEngine` operation, `compactNow(agent, signal)`, and maps the closed `ManualCompactionError` taxonomy (`busy | changed | summary | commit | persistence`) to direct UI results. `command/run` and `command/done` preserve the command lifecycle without entering model history or consuming a model-loop turn.
++`@deepseek-ai/dsh-command-compact` registers a human command through `ctx.commands`. `/compact` inherits the conversation route, while `/compact --provider <id> --model <id>` passes an explicit target to `compactNow(agent, signal, sourceCommandId?, target?)` for that manual summary call only. Automatic compaction remains bound to the latest durable routed request. The command maps the closed `ManualCompactionError` taxonomy (`busy | changed | summary | commit | persistence`) to direct UI results. `command/run` and `command/done` preserve the command lifecycle without entering model history or consuming a model-loop turn.
+ 
+ The command plugin tracks each real handler promise independently of the command executor's abort-aware wait. Its composite lifecycle effect unregisters `/compact` before asynchronously draining handlers that already started, so root teardown reaches quiescence only after backend close and flush work settles.
+ 
+diff --git a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.zh.md b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.zh.md
+index 2da3f494afcdb0e0db47a0adb2e2a6101f7ef2e6..e6d618d3aa6ec332c1b51c38de1687e3bc0dcb4c 100644
+--- a/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.zh.md
++++ b/.agents/notes/implemented/feature/2026-07-30-queued-manual-compaction.zh.md
+@@ -18,7 +18,7 @@ Status: implemented
+ 
+ ### `/compact` 是基于后端无关 seam 的命令
+ 
+-`@deepseek-ai/dsh-command-compact` 通过 `ctx.commands` 注册一个无参数、面向用户的命令。它调用第三个抽象 `CompactionEngine` 操作 `compactNow(agent, signal)`，并把封闭的 `ManualCompactionError` 分类体系（`busy | changed | summary | commit | persistence`）映射为直接 UI 结果。`command/run` 和 `command/done` 保留命令生命周期，同时不进入模型历史，也不消耗模型循环轮次。
++`@deepseek-ai/dsh-command-compact` 通过 `ctx.commands` 注册一个面向用户的命令。`/compact` 继承会话路由，而 `/compact --provider <id> --model <id>` 会把显式目标传给 `compactNow(agent, signal, sourceCommandId?, target?)`，且该目标只作用于本次手动摘要调用。自动压缩仍绑定到最近一次持久化的实际路由请求。该命令把封闭的 `ManualCompactionError` 分类体系（`busy | changed | summary | commit | persistence`）映射为直接 UI 结果。`command/run` 和 `command/done` 保留命令生命周期，同时不进入模型历史，也不消耗模型循环轮次。
+ 
+ 命令插件会独立跟踪每个实际处理器 promise，不依赖命令执行器的中止感知等待。其复合生命周期 effect 先注销 `/compact`，再异步等待所有已开始的处理器结算，因此根级 teardown 只有在后端的闭合与 flush 工作结算后才会完全停稳。
+ 
+diff --git a/docs/subsystems/compaction.i18n.yaml b/docs/subsystems/compaction.i18n.yaml
+index c6b7cd2682e3992ebd36a3b823d5bcc57678b035..5fda5009b94e61ab69dda74fa0808cbaf167307e 100644
+--- a/docs/subsystems/compaction.i18n.yaml
++++ b/docs/subsystems/compaction.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write docs/subsystems/compaction.md
+-compaction.md: 6a8743feac0481626f171e3926c7f924508db54a
+-compaction.zh.md: 1b8d2a2d1e47067583593ca3fae039bc78ed06f9
++compaction.md: 8caa3fe22f6ef182f07bab140c41f0d0de9fe56a
++compaction.zh.md: 3efe97bc33f9510e8b2dd64858678785ae821f2d
+diff --git a/docs/subsystems/compaction.md b/docs/subsystems/compaction.md
+index 6a8743feac0481626f171e3926c7f924508db54a..8caa3fe22f6ef182f07bab140c41f0d0de9fe56a 100644
+--- a/docs/subsystems/compaction.md
++++ b/docs/subsystems/compaction.md
+@@ -66,7 +66,7 @@ Automatic callers state why policy is running; implementations may treat confirm
+ type CompactionTrigger = 'pressure' | 'context-overflow'
+ ```
+ 
+-`CompactionEngine` exposes `compactIfNeeded(agent, trigger, signal)` for automatic `pressure` or `context-overflow` policy, `compactNow(agent, signal)` for one useful idle-session reduction even below pressure, and `compactRegion(...)` for an explicit inclusive surface range. `compactNow()` runs as agent maintenance between turns, returns `null` without writing when no useful range exists, records a standalone `turn: null` bracket before summarization, and flushes a closed attempt before later queued prompts may derive from the new surface. Every backend creates its replacement `user/message` source with `compactCheckpointSource(compactionId, sourceCommandId?)`; client and wire consumers import that constructor, `CompactionCheckpointSource`, and `isCompactCheckpointSource()` from the cordis-free `@deepseek-ai/dsh-compaction/checkpoint` subpath, while the package root re-exports them for host consumers. The required transaction identity correlates the replacement checkpoint, while the predicate keeps recognition independent of any one backend. Implementations must forward the supplied signal to summarization. The seam owns no pricing API: the singleton [`ctx.tokenMeter`](token-meter.md) directly owns estimation and replay, while `dsh-compaction-basic` owns retention, event sequencing, routed summarization calls, and their configuration.
++`CompactionEngine` exposes `compactIfNeeded(agent, trigger, signal)` for automatic `pressure` or `context-overflow` policy, `compactNow(agent, signal, sourceCommandId?, target?)` for one useful idle-session reduction even below pressure, and `compactRegion(...)` for an explicit inclusive surface range. `compactNow()` runs as agent maintenance between turns, returns `null` without writing when no useful range exists, records a standalone `turn: null` bracket before summarization, and flushes a closed attempt before later queued prompts may derive from the new surface. Its optional target selects the provider and model for that manual summary call only; automatic compaction remains bound to the latest durable routed request. Every backend creates its replacement `user/message` source with `compactCheckpointSource(compactionId, sourceCommandId?)`; client and wire consumers import that constructor, `CompactionCheckpointSource`, and `isCompactCheckpointSource()` from the cordis-free `@deepseek-ai/dsh-compaction/checkpoint` subpath, while the package root re-exports them for host consumers. The required transaction identity correlates the replacement checkpoint, while the predicate keeps recognition independent of any one backend. Implementations must forward the supplied signal to summarization. The seam owns no pricing API: the singleton [`ctx.tokenMeter`](token-meter.md) directly owns estimation and replay, while `dsh-compaction-basic` owns retention, event sequencing, routed summarization calls, and their configuration.
+ 
+ Expected manual failures use `ManualCompactionErrorCode`:
+ 
+@@ -160,13 +160,14 @@ abstract compactIfNeeded( agent: CompactionAgentContext, trigger: CompactionTrig
+  * @param agent - idle agent whose durable history should be compacted.
+  * @param signal - cancellation scoped to this compaction request.
+  * @param sourceCommandId - initiating command identity for a manual compaction.
++ * @param target - optional explicit provider/model route for this manual summary call.
+  * @returns the compaction result, or `null` when no safe useful range exists.
+  * @throws {@link ManualCompactionError} for expected busy, agent-cancellation,
+  * changed-span, summarization/shrink, commit-stage, or persistence failures;
+  * an aborted request preserves its exact abort reason. Failed attempts remain
+  * visible in the log.
+  */
+-abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, ): Promise<CompactionResult | null>
++abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, target?: ManualCompactionTarget, ): Promise<CompactionResult | null>
+ 
+ /**
+  * Forcibly compact a range of surface nodes into a single summary node.
+diff --git a/docs/subsystems/compaction.zh.md b/docs/subsystems/compaction.zh.md
+index 1b8d2a2d1e47067583593ca3fae039bc78ed06f9..3efe97bc33f9510e8b2dd64858678785ae821f2d 100644
+--- a/docs/subsystems/compaction.zh.md
++++ b/docs/subsystems/compaction.zh.md
+@@ -66,7 +66,7 @@ interface CompactionResult {
+ type CompactionTrigger = 'pressure' | 'context-overflow'
+ ```
+ 
+-`CompactionEngine` 暴露 `compactIfNeeded(agent, trigger, signal)` 以执行自动 `pressure` 或 `context-overflow` 策略，暴露 `compactNow(agent, signal)` 以便即使未达到压力也对空闲会话进行一次有效缩减，还针对显式、两端均包含的 surface 范围暴露 `compactRegion(...)`。`compactNow()` 作为轮次之间的 agent maintenance 运行；没有有效范围时返回 `null` 且不写入；在摘要前记录独立的 `turn: null` 标记对，并在后续排队提示词能够从新表层派生前 flush 已闭合尝试。每个后端都使用 `compactCheckpointSource(compactionId, sourceCommandId?)` 创建替换用 `user/message` 的源；client 与 wire 消费方从无 Cordis 的 `@deepseek-ai/dsh-compaction/checkpoint` 子路径导入该构造函数、`CompactionCheckpointSource` 和 `isCompactCheckpointSource()`，包根则为 host 消费方重新导出它们。必填的事务身份会关联替换检查点，而该判定函数使检查点识别不依赖任一特定后端。实现必须把传入的 signal 转发给摘要流程。该 seam 不拥有计价 API：单例 [`ctx.tokenMeter`](token-meter.zh.md) 直接拥有估算与回放，而 `dsh-compaction-basic` 拥有保留策略、事件排序、按路由执行的摘要调用及其配置。
++`CompactionEngine` 暴露 `compactIfNeeded(agent, trigger, signal)` 以执行自动 `pressure` 或 `context-overflow` 策略，暴露 `compactNow(agent, signal, sourceCommandId?, target?)` 以便即使未达到压力也对空闲会话进行一次有效缩减，还针对显式、两端均包含的 surface 范围暴露 `compactRegion(...)`。`compactNow()` 作为轮次之间的 agent maintenance 运行；没有有效范围时返回 `null` 且不写入；在摘要前记录独立的 `turn: null` 标记对，并在后续排队提示词能够从新表层派生前 flush 已闭合尝试。可选 target 只为本次手动摘要调用选择提供方与模型；自动压缩仍绑定到最近一次持久化的实际路由请求。每个后端都使用 `compactCheckpointSource(compactionId, sourceCommandId?)` 创建替换用 `user/message` 的源；client 与 wire 消费方从无 Cordis 的 `@deepseek-ai/dsh-compaction/checkpoint` 子路径导入该构造函数、`CompactionCheckpointSource` 和 `isCompactCheckpointSource()`，包根则为 host 消费方重新导出它们。必填的事务身份会关联替换检查点，而该判定函数使检查点识别不依赖任一特定后端。实现必须把传入的 signal 转发给摘要流程。该 seam 不拥有计价 API：单例 [`ctx.tokenMeter`](token-meter.zh.md) 直接拥有估算与回放，而 `dsh-compaction-basic` 拥有保留策略、事件排序、按路由执行的摘要调用及其配置。
+ 
+ 预期的手动失败使用 `ManualCompactionErrorCode`：
+ 
+@@ -160,13 +160,14 @@ abstract compactIfNeeded( agent: CompactionAgentContext, trigger: CompactionTrig
+  * @param agent - idle agent whose durable history should be compacted.
+  * @param signal - cancellation scoped to this compaction request.
+  * @param sourceCommandId - initiating command identity for a manual compaction.
++ * @param target - optional explicit provider/model route for this manual summary call.
+  * @returns the compaction result, or `null` when no safe useful range exists.
+  * @throws {@link ManualCompactionError} for expected busy, agent-cancellation,
+  * changed-span, summarization/shrink, commit-stage, or persistence failures;
+  * an aborted request preserves its exact abort reason. Failed attempts remain
+  * visible in the log.
+  */
+-abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, ): Promise<CompactionResult | null>
++abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, target?: ManualCompactionTarget, ): Promise<CompactionResult | null>
+ 
+ /**
+  * Forcibly compact a range of surface nodes into a single summary node.
+diff --git a/packages/compaction/command-compact/src/index.ts b/packages/compaction/command-compact/src/index.ts
+index 47657cf9b8b1609ab6ab3b7f70ab92683acacf43..c9b9fb153185b649744b5dc23cfc0e89830e98a7 100644
+--- a/packages/compaction/command-compact/src/index.ts
++++ b/packages/compaction/command-compact/src/index.ts
+@@ -5,12 +5,13 @@
+ 
+ import type { Context } from '@deepseek-ai/cordis'
+ import { ManualCompactionError } from '@deepseek-ai/dsh-compaction'
++import type { ManualCompactionTarget } from '@deepseek-ai/dsh-compaction'
+ import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+ 
+ export const name = 'command-compact'
+ export const inject = ['commands', 'compaction']
+ 
+-const USAGE = 'Usage: /compact (no arguments)'
++const USAGE = 'Usage: /compact [--provider <id> --model <id>]'
+ 
+ /** Fail loudly if a locally closed union gains an unhandled member. */
+ /* v8 ignore start -- closed-union backstop is unreachable without violating the TypeScript contract */
+@@ -54,16 +55,32 @@ function expectedFailure(error: ManualCompactionError): CommandResult {
+   }
+ }
+ 
+-/** Execute one argument-free manual compaction request. */
++/** Parse an optional explicit provider/model pair for one manual summary call. */
++function targetFromInput(rawInput: string): ManualCompactionTarget | undefined | null {
++  const input = rawInput.trim()
++  if (input.length === 0) return undefined
++  const fields = input.split(/\s+/u)
++  if (fields.length !== 4 || fields[0] !== '--provider' || fields[2] !== '--model') return null
++  const provider = fields[1]
++  const model = fields[3]
++  if (provider === undefined || model === undefined || provider.length === 0 || model.length === 0) return null
++  return { provider, model }
++}
++
++/** Execute one manual compaction request with an optional explicit summary route. */
+ async function executeCompact(
+   ctx: Context,
+   invocation: CommandInvocation,
+ ): Promise<CommandResult> {
+-  if (invocation.rawInput.trim().length > 0) {
+-    return { kind: 'error', text: USAGE }
+-  }
++  const target = targetFromInput(invocation.rawInput)
++  if (target === null) return { kind: 'error', text: USAGE }
+   try {
+-    const result = await ctx.compaction.compactNow(invocation.agent, invocation.signal, invocation.commandId)
++    const result = await ctx.compaction.compactNow(
++      invocation.agent,
++      invocation.signal,
++      invocation.commandId,
++      target,
++    )
+     if (result === null) return { kind: 'success', text: 'No compactable history yet.' }
+     return {
+       kind: 'success',
+diff --git a/packages/compaction/command-compact/tests/command-compact.spec.ts b/packages/compaction/command-compact/tests/command-compact.spec.ts
+index f2ab167d69dc786dce1949a2e768e85e195348d7..6012cda8e16c3aeddc34ba8e89a42113a102cf11 100644
+--- a/packages/compaction/command-compact/tests/command-compact.spec.ts
++++ b/packages/compaction/command-compact/tests/command-compact.spec.ts
+@@ -32,7 +32,7 @@ class StubCompactionEngine extends CompactionEngine {
+   result: CompactionResult | null = RESULT
+   failure: unknown
+   operation: (() => Promise<CompactionResult | null>) | undefined
+-  calls: { agent: ManualCompactAgentContext; signal: AbortSignal }[] = []
++  calls: { agent: ManualCompactAgentContext; signal: AbortSignal; target: Parameters<CompactionEngine['compactNow']>[3] }[] = []
+ 
+   override compactIfNeeded(
+     _agent: CompactionAgentContext,
+@@ -50,8 +50,9 @@ class StubCompactionEngine extends CompactionEngine {
+     agent: ManualCompactAgentContext,
+     signal: AbortSignal,
+     sourceCommandId?: Parameters<CompactionEngine['compactNow']>[2],
++    target?: Parameters<CompactionEngine['compactNow']>[3],
+   ): Promise<CompactionResult | null> {
+-    this.calls.push({ agent, signal })
++    this.calls.push({ agent, signal, target })
+     if (this.operation !== undefined) return this.operation()
+     return this.failure === undefined
+       ? Promise.resolve(this.result === null ? null : this.appendResult(agent, this.result, sourceCommandId))
+@@ -154,7 +155,7 @@ function expectLastLifecycle(
+ }
+ 
+ describe('@deepseek-ai/dsh-command-compact registration', () => {
+-  it('registers one argument-free command with Loader-safe exports and disposes it', async () => {
++  it('registers one manual command with Loader-safe exports and disposes it', async () => {
+     const test = await harness()
+     expect(commandCompact.name).toBe('command-compact')
+     expect(commandCompact.inject).toEqual(['commands', 'compaction'])
+@@ -182,7 +183,14 @@ describe('/compact human command', () => {
+       sourceEventSeq: RESULT.summarySeq,
+     })
+     expect(execution.commandId).toBe(expectLastLifecycle(test, '', execution.result))
+-    expect(test.compact.calls).toEqual([{ agent: test.agent, signal: controller.signal }])
++    expect(test.compact.calls).toEqual([{ agent: test.agent, signal: controller.signal, target: undefined }])
++  })
++
++  it('forwards an explicit provider and model only for this manual request', async () => {
++    const test = await harness()
++    const execution = await run(test, ' --provider claude-wrapper-advanced --model opus-4-8')
++    expect(execution.result.kind).toBe('success')
++    expect(test.compact.calls[0]?.target).toEqual({ provider: 'claude-wrapper-advanced', model: 'opus-4-8' })
+   })
+ 
+   it('returns direct no-history and argument-rejection results', async () => {
+@@ -198,7 +206,7 @@ describe('/compact human command', () => {
+     const rejected = await run(test, ' now')
+     expect(rejected.result).toEqual({
+       kind: 'error',
+-      text: 'Usage: /compact (no arguments)',
++      text: 'Usage: /compact [--provider <id> --model <id>]',
+     })
+     expect(rejected.commandId).toBe(expectLastLifecycle(test, ' now', rejected.result))
+     expect(test.compact.calls).toHaveLength(1)
+diff --git a/packages/compaction/compaction-basic/src/index.ts b/packages/compaction/compaction-basic/src/index.ts
+index 7a6ce3dabae76f9545ce9ad53815613084c553c7..0fe9da3003e19252112a5b837f7141079a3a7e9f 100644
+--- a/packages/compaction/compaction-basic/src/index.ts
++++ b/packages/compaction/compaction-basic/src/index.ts
+@@ -7,7 +7,7 @@
+ import { Context } from '@deepseek-ai/cordis'
+ import z from '@deepseek-ai/schemastery'
+ import { CompactionEngine, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
+-import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compaction'
++import type { CompactionResult, CompactionTrigger, ManualCompactionTarget } from '@deepseek-ai/dsh-compaction'
+ import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
+ import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
+ import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+@@ -238,12 +238,13 @@ export class BasicCompactionEngine extends CompactionEngine {
+     input: SummarizationInput,
+     agent: Agent,
+     signal?: AbortSignal,
++    targetOverride?: ManualCompactionTarget,
+   ): Promise<SummaryResult> {
+-    const target = conversationTarget(agent)
++    const target = targetOverride ?? conversationTarget(agent)
+     const config = target === undefined
+       ? this.config
+       : resolveTargetPolicy(this.config, target)
+-    return summarizeWithLlm(this.ctx, config, input, agent, signal)
++    return summarizeWithLlm(this.ctx, config, input, agent, signal, targetOverride)
+   }
+ 
+   /**
+@@ -364,12 +365,14 @@ export class BasicCompactionEngine extends CompactionEngine {
+    * @param agent - idle agent whose next-turn admission this call reserves.
+    * @param signal - cancellation scoped to this compaction request.
+    * @param sourceCommandId - initiating command identity for presentation correlation.
++   * @param target - optional explicit route for this manual summary call.
+    * @returns the committed result, or `null` when no safe useful range exists.
+    */
+   override compactNow(
+     agent: Agent,
+     signal: AbortSignal,
+     sourceCommandId?: CommandId,
++    target?: ManualCompactionTarget,
+   ): Promise<CompactionResult | null> {
+     signal.throwIfAborted()
+     try {
+@@ -384,7 +387,7 @@ export class BasicCompactionEngine extends CompactionEngine {
+           )
+           if (range === null) return null
+           return await compactSurfaceRegion(
+-            this.regionDependencies(),
++            this.regionDependencies(target),
+             agent.session,
+             range.start,
+             range.end,
+@@ -421,10 +424,10 @@ export class BasicCompactionEngine extends CompactionEngine {
+   }
+ 
+   /** Bind the effective token meter and dynamically dispatched summarizer hook. */
+-  private regionDependencies(): { meter: TokenMeter; summarize: RegionSummarize } {
++  private regionDependencies(target?: ManualCompactionTarget): { meter: TokenMeter; summarize: RegionSummarize } {
+     return {
+       meter: this.ctx.tokenMeter,
+-      summarize: (input, owner, abort) => this.summarize(input, owner, abort),
++      summarize: (input, owner, abort) => this.summarize(input, owner, abort, target),
+     }
+   }
+ }
+diff --git a/packages/compaction/compaction-basic/src/summarizer.ts b/packages/compaction/compaction-basic/src/summarizer.ts
+index 5fe259a756d57e604d1bacd6d6957ca8e7ff6c29..acb5384c92af3b418e362402fe581396763a41fc 100644
+--- a/packages/compaction/compaction-basic/src/summarizer.ts
++++ b/packages/compaction/compaction-basic/src/summarizer.ts
+@@ -10,6 +10,7 @@ import type {
+   ContentBlock, FinishReason, GenerateOptions, Message, TokenUsage, ToolSchema,
+ } from '@deepseek-ai/dsh-llm'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
++import type { ManualCompactionTarget } from '@deepseek-ai/dsh-compaction'
+ 
+ interface SummaryConfig {
+   readonly summarizationProvider: string
+@@ -114,6 +115,7 @@ export type SummaryResult = {
+  * @param input - replayed conversation prefix (system, tools, and leading messages) to condense.
+  * @param agent - supplies routed-model history, fallback model, and session id.
+  * @param signal - optional cancellation forwarded to the adapter.
++ * @param targetOverride - explicit route requested for one manual compaction.
+  * @returns safe text-only summary blocks and the exact call envelope and output.
+  */
+ export async function summarizeWithLlm(
+@@ -122,6 +124,7 @@ export async function summarizeWithLlm(
+   input: SummarizationInput,
+   agent: Agent,
+   signal?: AbortSignal,
++  targetOverride?: ManualCompactionTarget,
+ ): Promise<SummaryResult> {
+   const latest = agent.session.requestHeader()?.config
+   const configured = config.summarizationProvider.length === 0
+@@ -133,7 +136,7 @@ export async function summarizeWithLlm(
+     && agent.options.model.length > 0
+     ? { provider: agent.options.provider, model: agent.options.model }
+     : undefined
+-  const target = configured ?? latest ?? agentTarget
++  const target = targetOverride ?? configured ?? latest ?? agentTarget
+   if (target === undefined) {
+     throw new Error(
+       'no provider/model available for summarization: set both BasicCompactionConfig summarization fields, route one request, or set both AgentOptions fields',
+diff --git a/packages/compaction/compaction-basic/tests/compaction-basic.spec.ts b/packages/compaction/compaction-basic/tests/compaction-basic.spec.ts
+index bd6a48af66bef11cb2313e6a2f475886619e1563..0fee3bb01bb643d91241d249a204e22dc4bae155 100644
+--- a/packages/compaction/compaction-basic/tests/compaction-basic.spec.ts
++++ b/packages/compaction/compaction-basic/tests/compaction-basic.spec.ts
+@@ -12,7 +12,7 @@ import {
+   resolveConfig,
+   resolveTargetPolicy,
+ } from '@deepseek-ai/dsh-compaction-basic/src/config.ts'
+-import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
++import type { CompactionResult, ManualCompactionTarget } from '@deepseek-ai/dsh-compaction'
+ import LlmRuntime, { createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, createSystemMessage, createToolResultMessage, LlmAdapter , createMessage } from '@deepseek-ai/dsh-llm'
+ import type {
+   ContentBlock,
+@@ -1230,6 +1230,7 @@ class ExposedCompactionEngine extends BasicCompactionEngine {
+     input: SummarizationInput,
+     owner: Agent,
+     signal?: AbortSignal,
++    target?: ManualCompactionTarget,
+   ): Promise<{
+     summary: ContentBlock[]
+     rawOutput?: ContentBlock[]
+@@ -1238,7 +1239,7 @@ class ExposedCompactionEngine extends BasicCompactionEngine {
+     maxTokens?: number
+     usage?: TokenUsage
+   }> {
+-    return this.summarize(input, owner, signal)
++    return this.summarize(input, owner, signal, target)
+   }
+ }
+ 
+@@ -1329,6 +1330,24 @@ describe('default one-shot summarizer', () => {
+     expect(instruction?.type === 'text' ? instruction.text : '').toContain('## Primary Request and Intent')
+   })
+ 
++  it('uses an explicit manual target ahead of configured and routed summary targets', async () => {
++    const { ctx, compact } = await summarizerHarness([{ type: 'text', text: 'configured summary' }], undefined, MODEL, {
++      auto: false,
++      summarizationProvider: MODEL,
++      summarizationModel: MODEL,
++    })
++    const selected = new ScriptedAdapter([{ type: 'text', text: 'selected summary' }])
++    ctx.llm.registerAdapter(['selected-provider'], selected)
++    const output = await compact.runSummarize(
++      promptInput('history'),
++      agent(conversation(1), MODEL),
++      SIGNAL,
++      { provider: 'selected-provider', model: 'selected-model' },
++    )
++    expect(output).toMatchObject({ provider: 'selected-provider', model: 'selected-model' })
++    expect(selected.lastOptions).toMatchObject({ provider: 'selected-provider', model: 'selected-model', purpose: 'compaction' })
++  })
++
+   it('replays the conversation prefix and appends the instruction as the final message', async () => {
+     const { adapter, compact } = await summarizerHarness([{ type: 'text', text: 'summary' }])
+     const tools = [{ name: 'do_thing', description: 'd', parameters: { type: 'object' } }]
+diff --git a/packages/compaction/compaction/src/index.ts b/packages/compaction/compaction/src/index.ts
+index cfbdd42209d2855c4af67278461527a99c5dd3fe..975a9ac9f420f0601481eb28da49b0b7466e2a6d 100644
+--- a/packages/compaction/compaction/src/index.ts
++++ b/packages/compaction/compaction/src/index.ts
+@@ -10,9 +10,9 @@
+ import { Context, Service } from '@deepseek-ai/cordis'
+ import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
+ import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
+-import type { CompactionResult } from './types.ts'
++import type { CompactionResult, ManualCompactionTarget } from './types.ts'
+ 
+-export type { CompactionResult } from './types.ts'
++export type { CompactionResult, ManualCompactionTarget } from './types.ts'
+ export { CompactionId } from './brand.ts'
+ export { toolPairingBalancedAfter, toolPairingBalancedBefore } from './tool-pairing.ts'
+ // The checkpoint source constructor and predicate are declared on the cordis-free
+@@ -130,6 +130,7 @@ export abstract class CompactionEngine extends Service {
+    * @param agent - idle agent whose durable history should be compacted.
+    * @param signal - cancellation scoped to this compaction request.
+    * @param sourceCommandId - initiating command identity for a manual compaction.
++   * @param target - optional explicit provider/model route for this manual summary call.
+    * @returns the compaction result, or `null` when no safe useful range exists.
+    * @throws {@link ManualCompactionError} for expected busy, agent-cancellation,
+    * changed-span, summarization/shrink, commit-stage, or persistence failures;
+@@ -140,6 +141,7 @@ export abstract class CompactionEngine extends Service {
+     agent: ManualCompactAgentContext,
+     signal: AbortSignal,
+     sourceCommandId?: CommandId,
++    target?: ManualCompactionTarget,
+   ): Promise<CompactionResult | null>
+ 
+   /**
+diff --git a/packages/compaction/compaction/src/types.ts b/packages/compaction/compaction/src/types.ts
+index 5a7d12c1b21a9ed55287a1935a3f8104d30722b9..c5888ef4748bfaca74ee22331bd41f2db64886cd 100644
+--- a/packages/compaction/compaction/src/types.ts
++++ b/packages/compaction/compaction/src/types.ts
+@@ -90,6 +90,12 @@ declare module '@deepseek-ai/dsh-session/types' {
+   }
+ }
+ 
++/** Explicit provider/model route for one manual compaction summary call. */
++export interface ManualCompactionTarget {
++  readonly provider: string
++  readonly model: string
++}
++
+ /** Result of a successful compaction operation. */
+ export interface CompactionResult {
+   /** Stable identity shared by this compaction's complete durable lifecycle. */
+diff --git a/packages/extensions/tool-cordis/src/api-catalog.ts b/packages/extensions/tool-cordis/src/api-catalog.ts
+index 1ed6529b4b29c4b56ccfd600776f368e02db1a53..477607e1c3c592ab62209fe2f2dbf62b83161d84 100644
+--- a/packages/extensions/tool-cordis/src/api-catalog.ts
++++ b/packages/extensions/tool-cordis/src/api-catalog.ts
+@@ -714,9 +714,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+         returns: 'the compaction result, or `null` if no compaction was needed.',
+       },
+       {
+-        signature: 'abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, ): Promise<CompactionResult | null>',
++        signature: 'abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, target?: ManualCompactionTarget, ): Promise<CompactionResult | null>',
+         description: 'Explicitly compact useful history even below automatic pressure thresholds. Implementations synchronously start an idle task before any asynchronous work, select a useful range without writing on a no-op, then append a standalone `compaction/start` before summarization. That durable marker is the compaction lock until one `compaction/end` attempt. Later waking prompts remain accepted in FIFO order and start only after the optional durability checkpoint and idle-task settlement. Context injected while the summary runs may sit between the marker pair; only the selected span must remain stable.',
+-        parameters: [{ name: 'agent', description: 'idle agent whose durable history should be compacted.' }, { name: 'signal', description: 'cancellation scoped to this compaction request.' }, { name: 'sourceCommandId', description: 'initiating command identity for a manual compaction.' }],
++        parameters: [{ name: 'agent', description: 'idle agent whose durable history should be compacted.' }, { name: 'signal', description: 'cancellation scoped to this compaction request.' }, { name: 'sourceCommandId', description: 'initiating command identity for a manual compaction.' }, { name: 'target', description: 'optional explicit provider/model route for this manual summary call.' }],
+         returns: 'the compaction result, or `null` when no safe useful range exists.',
+         throws: ['{@link ManualCompactionError} for expected busy, agent-cancellation, changed-span, summarization/shrink, commit-stage, or persistence failures; an aborted request preserves its exact abort reason. Failed attempts remain visible in the log.'],
+       },
+@@ -4288,7 +4288,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'GenerateOptions',
+-    declaration: 'export interface GenerateOptions {\n    provider: string;\n    model: string;\n    reasoningEffort?: ReasoningEffortId;\n    messages: Message[];\n    system?: string;\n    tools?: ToolSchema[];\n    temperature?: number;\n    maxTokens?: number;\n    stop?: string[];\n    signal?: AbortSignal;\n    sessionId?: Branded<\'SessionId\'>;\n    purpose?: \'compaction\' | \'session-title\';\n}',
++    declaration: 'export interface GenerateOptions {\n    provider: string;\n    model: string;\n    reasoningEffort?: ReasoningEffortId;\n    messages: Message[];\n    system?: string;\n    tools?: ToolSchema[];\n    temperature?: number;\n    maxTokens?: number;\n    stop?: string[];\n    signal?: AbortSignal;\n    sessionId?: Branded<\'SessionId\'>;\n    turnId?: LlmTurnId;\n    purpose?: \'compaction\' | \'session-title\';\n}',
+   },
+   {
+     name: 'GenericCallView',
+@@ -4562,6 +4562,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'LlmRuntime',
+     declaration: 'export class LlmRuntime extends TypertRemoteService {\n    constructor(ctx: Context);\n    registerAdapter(providers: string[], adapter: LlmAdapter): AdapterRegistrationHandle;\n    @Remote\n    listProviders(): LlmProviderInfo[];\n    registerConfigurableProviders(entries: readonly LlmConfigurableProvider[]): DirectoryRegistrationHandle;\n    @Remote\n    listConfigurableProviders(): LlmConfigurableProvider[];\n    registerModelDiscovery(settingsNs: string, discover: (request: LlmModelDiscoveryRequest, signal?: AbortSignal) => Promise<readonly LlmDiscoveredModel[]>): () => void;\n    async discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest, signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;\n    @Remote(\'discoverModels\')\n    async remoteDiscoverModels(settingsNs: string, request: LlmModelDiscoveryRequest, signal: AbortSignal): Promise<LlmDiscoveredModel[]>;\n    providerRetryPolicy(provider: string): ResolvedRetryPolicy;\n    imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined;\n    fileRequestText(ref: FileAttachmentRef): string;\n    async listModels(provider: string): Promise<LlmModelInfo[]>;\n    async resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;\n    async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>;\n    async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall>;\n    stream(options: GenerateOptions) /* …truncated — full shape in source */',
+   },
++  {
++    name: 'LlmTurnId',
++    declaration: 'export type LlmTurnId = Branded<\'LlmTurnId\'>;',
++  },
+   {
+     name: 'LspHover',
+     declaration: 'export interface LspHover {\n    readonly contents: string;\n    readonly range?: LspRange;\n}',
+@@ -4606,6 +4610,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'ManualCompactAgentContext',
+     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
+   },
++  {
++    name: 'ManualCompactionTarget',
++    declaration: 'export interface ManualCompactionTarget {\n    readonly provider: string;\n    readonly model: string;\n}',
++  },
+   {
+     name: 'Message',
+     declaration: 'export interface Message {\n    readonly id: MessageId;\n    readonly role: \'system\' | \'user\' | \'assistant\';\n    readonly content: ContentBlock[];\n    readonly source: MessageSource;\n}',
+@@ -4700,7 +4708,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'ModelCallAccounting',
+-    declaration: 'export interface ModelCallAccounting {\n    readonly costs: readonly ModelCallCost[];\n}',
++    declaration: 'export interface ModelCallAccounting {\n    readonly scope: \'call\' | \'turn\';\n    readonly costs: readonly ModelCallCost[];\n}',
+   },
+   {
+     name: 'ModelCallCost',
+@@ -4750,6 +4758,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'ModelReasoningEffort',
+     declaration: 'export interface ModelReasoningEffort {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n}',
+   },
++  {
++    name: 'ModelStatus',
++    declaration: 'export type ModelStatus = {\n    [K in keyof ModelStatusMap]: {\n        readonly kind: K;\n    } & ModelStatusMap[K];\n}[keyof ModelStatusMap];',
++  },
++  {
++    name: 'ModelStatusMap',
++    declaration: 'export interface ModelStatusMap {\n    \'reasoning-token-progress\': {\n        readonly deltaTokens: number;\n        readonly basis: \'reported\' | \'estimated\';\n    };\n}',
++  },
+   {
+     name: 'MonetaryAmount',
+     declaration: 'export interface MonetaryAmount {\n    readonly currency: string;\n    readonly nanos: number;\n}',
+@@ -5124,7 +5140,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'SessionEventMap',
+-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'system/message\': {\n        turn: number;\n        step: number;\n        message: SystemMessage;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        stream: AssistantStreamRecord[];\n        usage?: TokenUsage;\n        accounting?: ModelCallAccounting;\n        interrupted?: true;\n    };\n    \'assistant/attempt\': {\n        turn: number;\n        step: number;\n        stream: AssistantStreamRecord[];\n        accounting?: ModelCallAccounting;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: ToolCallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n        startsSeries?: true;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': {\n        inherited?: true;\n    };\n}',
++    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'system/message\': {\n        turn: number;\n        step: number;\n        message: SystemMessage;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        stream: AssistantStreamRecord[];\n        usage?: TokenUsage;\n        accounting?: ModelCallAccounting;\n        statuses?: readonly TimedModelStatus[];\n        interrupted?: true;\n    };\n    \'assistant/attempt\': {\n        turn: number;\n        step: number;\n        stream: AssistantStreamRecord[];\n        accounting?: ModelCallAccounting;\n        statuses?: readonly TimedModelStatus[];\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: ToolCallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n        startsSeries?: true;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\' /* …truncated — full shape in source */',
+   },
+   {
+     name: 'SessionEventMetadataFilter',
+@@ -5724,7 +5740,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+   },
+   {
+     name: 'StreamChunk',
+-    declaration: 'export type StreamChunk = {\n    type: \'block-start\';\n    index: number;\n    blockType: ContentBlockType;\n} | {\n    type: \'text-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'reasoning-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'tool-call-delta\';\n    index: number;\n    id: ToolCallId;\n    name?: string;\n    argumentsDelta: string;\n} | {\n    type: \'block-end\';\n    index: number;\n    block: ContentBlock;\n} | {\n    type: \'usage\';\n    usage: TokenUsage;\n} | {\n    type: \'accounting\';\n    accounting: ModelCallAccounting;\n} | {\n    type: \'finish\';\n    reason: FinishReason;\n    replayState?: ReplayEnvelope;\n};',
++    declaration: 'export type StreamChunk = {\n    type: \'block-start\';\n    index: number;\n    blockType: ContentBlockType;\n} | {\n    type: \'text-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'reasoning-delta\';\n    index: number;\n    text: string;\n} | {\n    type: \'tool-call-delta\';\n    index: number;\n    id: ToolCallId;\n    name?: string;\n    argumentsDelta: string;\n} | {\n    type: \'block-end\';\n    index: number;\n    block: ContentBlock;\n} | {\n    type: \'usage\';\n    usage: TokenUsage;\n} | {\n    type: \'accounting\';\n    accounting: ModelCallAccounting;\n} | {\n    type: \'status\';\n    status: ModelStatus;\n} | {\n    type: \'finish\';\n    reason: FinishReason;\n    replayState?: ReplayEnvelope;\n};',
+   },
+   {
+     name: 'SubagentCapabilities',
+@@ -6026,6 +6042,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'TerminalWaitReason',
+     declaration: 'export type TerminalWaitReason = \'stdin_read\' | \'inferred_idle\' | \'timeout\' | \'session_exit\';',
+   },
++  {
++    name: 'TimedModelStatus',
++    declaration: 'export interface TimedModelStatus {\n    readonly time: number;\n    readonly status: ModelStatus;\n}',
++  },
+   {
+     name: 'TokenMeasurement',
+     declaration: 'export interface TokenMeasurement {\n    readonly logRevision: SessionLogOffset;\n    readonly baseline: TokenMeasurementBaseline;\n    readonly surfaceDeltaTokens: number;\n    readonly totalTokens: number;\n    readonly surfaceTokens: number;\n    readonly nodes: readonly TokenSurfaceNode[];\n}',
+diff --git a/scripts/gen-cordis-catalog.ts b/scripts/gen-cordis-catalog.ts
+index ed81fccc1fa23277bf13e09622cd3ebac792941e..32ece3fa42161f08caa498fab5d575a5b1f56349 100644
+--- a/scripts/gen-cordis-catalog.ts
++++ b/scripts/gen-cordis-catalog.ts
+@@ -702,6 +702,7 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
+   BashEnvVariableInfo: 'service-local metadata type is owned by packages/shell/tool-bash/src/index.ts',
+   CompactionAgentContext: 'compaction service input is owned by packages/compaction/compaction/src/index.ts',
+   ManualCompactAgentContext: 'manual compaction service input is owned by packages/compaction/compaction/src/index.ts',
++  ManualCompactionTarget: 'manual compaction route input is owned by packages/compaction/compaction/src/types.ts',
+   ClientResponse: 'wire response message is owned by packages/client/connection/src/rpc.ts',
+   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
+   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',

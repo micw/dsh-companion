@@ -2,10 +2,11 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { DshClient, PACKAGED_DSH_ORIGIN } from '../vscode/out/dshClient.js';
+import { DshClient } from '../vscode/out/dshClient.js';
 import { activatePayload } from '../vscode/out/runtimeInstaller.js';
 
 const { values } = parseArgs({
@@ -16,13 +17,14 @@ if (values.payload === undefined) throw new Error('Usage: smoke-managed-runtime.
 const payload = resolve(values.payload);
 const manifest = JSON.parse(await readFile(join(payload, 'runtime-manifest.json'), 'utf8'));
 const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-managed-smoke-'));
+const origin = `http://127.0.0.1:${String(await freePort())}`;
 let control;
 let peerControl;
 let sessionClient;
 try {
   [control, peerControl] = await Promise.all([0, 1].map(() => activatePayload(
     payload, storage, manifest.companionVersion,
-    join(storage, 'runtime-owner'), join(storage, 'dsh-home'),
+    join(storage, 'runtime-owner'), join(storage, 'dsh-home'), origin,
   )));
   const launchUrl = await control.bootstrapUrl();
   await peerControl.bootstrapUrl();
@@ -74,7 +76,7 @@ try {
     status: () => {},
     submissionObserved: () => {},
     userCommitted: () => {},
-  }, undefined, join(active.directory, 'client-runtime.js'), PACKAGED_DSH_ORIGIN);
+  }, undefined, join(active.directory, 'client-runtime.js'), origin);
   if (projected.resets < 1 || projected.historyStates < 1) {
     throw new Error('Managed DSH Client did not project its initial Session window');
   }
@@ -92,6 +94,20 @@ try {
     await new Promise((resolveDelay) => { setTimeout(resolveDelay, 50); });
   }
   await rm(storage, { recursive: true, force: true });
+}
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', () => { server.off('error', rejectListen); resolveListen(); });
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('Unable to reserve smoke-test port');
+  await new Promise((resolveClose, rejectClose) => {
+    server.close(error => { if (error === undefined) resolveClose(); else rejectClose(error); });
+  });
+  return address.port;
 }
 
 async function exists(path) {

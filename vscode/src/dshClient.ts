@@ -44,6 +44,11 @@ export type DshProcessEvent =
     readonly type: 'context'; readonly id: string; readonly turn: number;
     readonly label: string; readonly detail: string;
   }
+  | {
+    readonly type: 'status'; readonly id: string; readonly turn: number;
+    readonly kind: 'reasoning-token-progress'; readonly basis: 'reported' | 'estimated';
+    readonly deltaTokens?: number; readonly totalTokens?: number;
+  }
   | { readonly type: 'turn-summary'; readonly summary: DshTurnSummary; readonly turn: number };
 
 export type DshCostKind = 'reported' | 'estimated' | 'virtual';
@@ -58,6 +63,7 @@ export interface DshCostSummary {
     readonly calls: number;
   }[];
   readonly details?: readonly {
+    readonly scope: 'call' | 'turn';
     readonly kind: DshCostKind;
     readonly currency: string;
     readonly nanos: number;
@@ -153,6 +159,8 @@ export interface DshAllowanceGroup {
   readonly id: string;
   readonly name?: string;
   readonly reached?: boolean;
+  readonly observedAt?: number;
+  readonly ageSeconds?: number;
   readonly primary?: DshAllowanceWindow;
   readonly secondary?: DshAllowanceWindow;
 }
@@ -281,6 +289,7 @@ interface CanonicalState {
 let canonicalAssemblyQueue: Promise<void> = Promise.resolve();
 
 interface CostSample {
+  readonly scope: 'call' | 'turn';
   readonly kind: DshCostKind;
   readonly currency: string;
   readonly nanos: number;
@@ -419,13 +428,31 @@ export function parseCompactionEvent(value: unknown): DshCompactionEvent | undef
   return undefined;
 }
 
+/** Derives a page-local Turn hint for entries whose durable event omits its containing Turn. */
+export function historyTurnHints(entries: readonly unknown[]): readonly (number | undefined)[] {
+  const hints = new Array<number | undefined>(entries.length);
+  let followingTurn: number | undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (isRecord(entry) && isRecord(entry.event) && isRecord(entry.event.data)
+      && typeof entry.event.data.turn === 'number') {
+      followingTurn = entry.event.data.turn;
+    }
+    hints[index] = followingTurn;
+  }
+  return hints;
+}
+
 export class TurnStats {
   private readonly stepStarts = new Map<number, number>();
   private readonly firstTokens = new Map<number, number>();
   private readonly attempts: UsageSample[] = [];
-  private readonly costs: CostSample[] = [];
+  private readonly callCosts: CostSample[] = [];
+  private turnCosts: CostSample[] | undefined;
+  private turnCostSettlement: number | undefined;
   private settledAttempts = 0;
-  private completeAccounting = true;
+  private missingAccounting = 0;
+  private invalidAccounting = false;
   private route: string | undefined;
 
   constructor(readonly startedAt: number) {}
@@ -453,8 +480,18 @@ export class TurnStats {
   ): void {
     this.settledAttempts += 1;
     const costs = normalizeCosts(accounting, route);
-    if (costs.length === 0) this.completeAccounting = false;
-    else this.costs.push(...costs);
+    if (costs.length === 0) {
+      this.missingAccounting += 1;
+      if (this.turnCosts !== undefined) this.invalidAccounting = true;
+    } else if (costs[0]?.scope === 'turn') {
+      if (this.turnCosts !== undefined) this.invalidAccounting = true;
+      this.turnCosts = costs;
+      this.turnCostSettlement = this.settledAttempts;
+    } else if (this.turnCosts !== undefined) {
+      this.invalidAccounting = true;
+    } else {
+      this.callCosts.push(...costs);
+    }
     const normalized = normalizeUsage(usage, route);
     if (normalized === undefined) return;
     const firstToken = this.firstTokens.get(step);
@@ -466,9 +503,13 @@ export class TurnStats {
 
   finish(completedAt: number, reason: string): DshTurnSummary {
     const usage = aggregateUsage(this.attempts);
-    const cost = this.completeAccounting && this.settledAttempts > 0
-      ? aggregateCosts(this.costs)
-      : undefined;
+    const cost = this.invalidAccounting || this.settledAttempts === 0
+      ? undefined
+      : this.turnCosts !== undefined && this.turnCostSettlement === this.settledAttempts
+        ? aggregateCosts(this.turnCosts, this.settledAttempts)
+        : this.turnCosts === undefined && this.missingAccounting === 0
+          ? aggregateCosts(this.callCosts)
+          : undefined;
     const firstStep = [...this.stepStarts.keys()].sort((left, right) => left - right)[0];
     const stepStart = firstStep === undefined ? undefined : this.stepStarts.get(firstStep);
     const firstToken = firstStep === undefined ? undefined : this.firstTokens.get(firstStep);
@@ -661,10 +702,15 @@ export class DshClient {
     await this.publishProviderAccounts();
   }
 
-  /** Runs DSH's canonical argument-free `/compact` command for this Session. */
+  /** Runs DSH's canonical `/compact` command with this Session's selected model route. */
   async compact(): Promise<DshCompactResult> {
+    const selection = this.modelSelectionState.current;
+    if (/\s/u.test(selection.provider) || /\s/u.test(selection.model)) {
+      throw new Error('The selected provider or model cannot be passed to manual compaction');
+    }
+    const command = `/compact --provider ${selection.provider} --model ${selection.model}`;
     const result = await callCanonicalRemote(
-      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, '/compact', [],
+      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, command, [],
     );
     return parseCompactResult(unwrapCanonicalResult(result, 'commands.execute'));
   }
@@ -695,7 +741,7 @@ export class DshClient {
     return this.canonical;
   }
 
-  private async publishProviderAccounts(): Promise<void> {
+  private async publishProviderAccounts(settleRefreshing = true): Promise<void> {
     const request = ++this.providerAccountsRequest;
     const result = await callCanonicalRemote(
       this.requireCanonical().graph, 'companionProviderAccounts', 'list',
@@ -707,7 +753,19 @@ export class DshClient {
     const value = unwrapCanonicalResult(result, 'companionProviderAccounts.list');
     if (!Array.isArray(value)) throw new Error('DSH returned an invalid provider-account list');
     const snapshots = value.map(parseProviderAccountSnapshot);
-    if (request === this.providerAccountsRequest) this.sink.providerAccounts(snapshots);
+    if (request !== this.providerAccountsRequest) return;
+    this.sink.providerAccounts(snapshots);
+    const refreshing = snapshots.filter(snapshot => snapshot.refreshing).map(snapshot => snapshot.provider);
+    if (!settleRefreshing || refreshing.length === 0) return;
+    const canonical = this.requireCanonical();
+    void Promise.allSettled(refreshing.map(provider => callCanonicalRemote(
+      canonical.graph, 'companionProviderAccounts', 'refresh', provider,
+    ))).then(async () => {
+      if (this.canonical !== canonical || request !== this.providerAccountsRequest) return;
+      await this.publishProviderAccounts(false);
+    }).catch((error: unknown) => {
+      console.warn('DSH provider usage refresh settlement failed', error);
+    });
   }
 
   private async openCanonical(): Promise<void> {
@@ -784,9 +842,16 @@ export class DshClient {
     }
     if (change.kind === 'prepend' && Array.isArray(change.entries)) {
       const saved = this.saveParserPosition();
+      const hints = historyTurnHints(change.entries);
+      this.currentTurn = 0;
+      this.currentStep = 0;
+      this.turnStats = undefined;
+      this.hasLiveAssistantText = false;
       this.sink.historyPrependStart();
       try {
-        for (const entry of change.entries) this.receiveCanonicalEntry(entry, true, true);
+        for (const [index, entry] of change.entries.entries()) {
+          this.receiveCanonicalEntry(entry, true, true, hints[index]);
+        }
       } finally {
         this.restoreParserPosition(saved);
         this.sink.historyPrependEnd();
@@ -804,15 +869,23 @@ export class DshClient {
     this.retireCanonicalSubmissions(value.entries);
     this.resetParser();
     this.sink.reset();
-    for (const entry of value.entries) this.receiveCanonicalEntry(entry, true);
+    const hints = historyTurnHints(value.entries);
+    for (const [index, entry] of value.entries.entries()) {
+      this.receiveCanonicalEntry(entry, true, false, hints[index]);
+    }
     this.sink.compacting(this.compactionActive());
     this.sink.historyState(value.hasMore);
   }
 
-  private receiveCanonicalEntry(entry: unknown, fromSnapshot: boolean, older = false): void {
+  private receiveCanonicalEntry(
+    entry: unknown,
+    fromSnapshot: boolean,
+    older = false,
+    turnHint?: number,
+  ): void {
     if (!isRecord(entry) || !isRecord(entry.event)) return;
     if (entry.type === 'event') {
-      this.receiveHistoryRecord(entry, fromSnapshot, older);
+      this.receiveHistoryRecord(entry, fromSnapshot, older, turnHint);
       return;
     }
     const event = entry.event;
@@ -927,16 +1000,37 @@ export class DshClient {
       });
       return;
     }
+    if (chunk.type === 'status' && isRecord(chunk.status)
+      && chunk.status.kind === 'reasoning-token-progress'
+      && isCount(chunk.status.deltaTokens) && !Object.is(chunk.status.deltaTokens, -0)
+      && ['reported', 'estimated'].includes(String(chunk.status.basis))) {
+      this.sink.process({
+        type: 'status',
+        id: reasoningStatusId(this.currentTurn, this.currentStep),
+        turn: this.currentTurn,
+        kind: 'reasoning-token-progress',
+        basis: chunk.status.basis as 'reported' | 'estimated',
+        deltaTokens: chunk.status.deltaTokens,
+      });
+      return;
+    }
     this.receiveFinish(chunk);
   }
 
-  private receiveHistoryRecord(record: unknown, fromSnapshot: boolean, older = false): void {
+  private receiveHistoryRecord(
+    record: unknown,
+    fromSnapshot: boolean,
+    older = false,
+    turnHint?: number,
+  ): void {
     if (!isRecord(record) || record.type !== 'event' || !isRecord(record.event)) return;
     const event = record.event;
     if (!isRecord(event.data)) return;
+    if (typeof event.data.turn === 'number') this.currentTurn = event.data.turn;
+    else if (this.currentTurn === 0 && turnHint !== undefined) this.currentTurn = turnHint;
+    if (typeof event.data.step === 'number') this.currentStep = event.data.step;
 
     if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
-      this.currentTurn = event.data.turn;
       const startedAt = typeof event.time === 'number' ? event.time : Date.now();
       this.turnStats = new TurnStats(startedAt);
       this.sink.process({
@@ -949,7 +1043,6 @@ export class DshClient {
     }
 
     if (event.type === 'step/start' && typeof event.data.step === 'number') {
-      this.currentStep = event.data.step;
       if (typeof event.time === 'number') this.turnStats?.startStep(this.currentStep, event.time);
       return;
     }
@@ -1056,10 +1149,13 @@ export class DshClient {
       const route = typeof source?.provider === 'string' && typeof source.model === 'string'
         ? `${source.provider}/${source.model}`
         : undefined;
+      const usage = event.data.usage ?? usageFromStream(event.data.stream);
+      if (fromSnapshot) this.emitRestoredStatuses(event.data.statuses, step);
+      this.emitFinalReasoningStatus(usage, step);
       this.turnStats?.addAttempt(
         step,
         event.time,
-        event.data.usage ?? usageFromStream(event.data.stream),
+        usage,
         route,
         reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
       );
@@ -1122,11 +1218,14 @@ export class DshClient {
 
     if (event.type === 'assistant/attempt' && Array.isArray(event.data.stream)) {
       const step = typeof event.data.step === 'number' ? event.data.step : this.currentStep;
+      const usage = usageFromStream(event.data.stream);
       this.turnStats?.firstToken(step, firstVisibleStreamTime(event.data.stream));
+      if (fromSnapshot) this.emitRestoredStatuses(event.data.statuses, step);
+      this.emitFinalReasoningStatus(usage, step);
       this.turnStats?.addAttempt(
         step,
         event.time,
-        usageFromStream(event.data.stream),
+        usage,
         undefined,
         reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
       );
@@ -1136,6 +1235,38 @@ export class DshClient {
         }
       }
     }
+  }
+
+  private emitRestoredStatuses(statuses: unknown, step: number): void {
+    if (!Array.isArray(statuses)) return;
+    for (const item of statuses) {
+      if (!isRecord(item) || !Number.isSafeInteger(item.time) || Number(item.time) < 0
+        || !isRecord(item.status)) continue;
+      const status = item.status;
+      if (status.kind !== 'reasoning-token-progress' || !isCount(status.deltaTokens)
+        || Object.is(status.deltaTokens, -0)
+        || !['reported', 'estimated'].includes(String(status.basis))) continue;
+      this.sink.process({
+        type: 'status',
+        id: reasoningStatusId(this.currentTurn, step),
+        turn: this.currentTurn,
+        kind: 'reasoning-token-progress',
+        basis: status.basis as 'reported' | 'estimated',
+        deltaTokens: status.deltaTokens,
+      });
+    }
+  }
+
+  private emitFinalReasoningStatus(usage: unknown, step: number): void {
+    if (!isRecord(usage) || !isCount(usage.reasoningTokens) || Object.is(usage.reasoningTokens, -0)) return;
+    this.sink.process({
+      type: 'status',
+      id: reasoningStatusId(this.currentTurn, step),
+      turn: this.currentTurn,
+      kind: 'reasoning-token-progress',
+      basis: 'reported',
+      totalTokens: usage.reasoningTokens,
+    });
   }
 
   private compactionActive(): boolean {
@@ -1380,13 +1511,17 @@ export function parseProviderAccountSnapshot(value: unknown): DshProviderAccount
 function parseAllowanceGroup(value: unknown): DshAllowanceGroup {
   if (!isRecord(value) || typeof value.id !== 'string' || value.id.length === 0
     || (value.name !== undefined && typeof value.name !== 'string')
-    || (value.reached !== undefined && typeof value.reached !== 'boolean')) {
+    || (value.reached !== undefined && typeof value.reached !== 'boolean')
+    || (value.observedAt !== undefined && (!Number.isSafeInteger(value.observedAt) || Number(value.observedAt) < 0))
+    || (value.ageSeconds !== undefined && (!Number.isSafeInteger(value.ageSeconds) || Number(value.ageSeconds) < 0))) {
     throw new Error('DSH returned an invalid provider allowance');
   }
   return {
     id: value.id,
     ...(value.name === undefined ? {} : { name: value.name }),
     ...(value.reached === undefined ? {} : { reached: value.reached }),
+    ...(value.observedAt === undefined ? {} : { observedAt: Number(value.observedAt) }),
+    ...(value.ageSeconds === undefined ? {} : { ageSeconds: Number(value.ageSeconds) }),
     ...(value.primary === undefined ? {} : { primary: parseAllowanceWindow(value.primary) }),
     ...(value.secondary === undefined ? {} : { secondary: parseAllowanceWindow(value.secondary) }),
   };
@@ -1529,7 +1664,9 @@ export function reconcileSettlementAccounting(direct: unknown, streamed: unknown
 }
 
 function normalizeCosts(value: unknown, route?: string): CostSample[] {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'costs')
+  if (!isRecord(value) || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, 'scope') || !Object.hasOwn(value, 'costs')
+    || !['call', 'turn'].includes(String(value.scope))
     || !Array.isArray(value.costs) || value.costs.length === 0) return [];
   const costs: CostSample[] = [];
   const seen = new Set<string>();
@@ -1548,6 +1685,7 @@ function normalizeCosts(value: unknown, route?: string): CostSample[] {
     const components = parseCostComponents(item.breakdown, amount.nanos);
     if (item.breakdown !== undefined && components === undefined) return [];
     costs.push({
+      scope: value.scope as 'call' | 'turn',
       kind: item.kind as DshCostKind,
       currency: amount.currency,
       nanos: amount.nanos,
@@ -1643,11 +1781,12 @@ export function parseCostSummary(value: unknown): DshCostSummary {
   return { totals, breakdown, coverage };
 }
 
-function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefined {
+function aggregateCosts(costs: readonly CostSample[], coveredCalls?: number): DshCostSummary | undefined {
   if (costs.length === 0) return undefined;
   const totals = new Map<string, number[]>();
   const summaryBuckets = new Map<string, { kind: DshCostKind; currency: string; values: number[] }>();
   const detailBuckets = new Map<string, {
+    scope: 'call' | 'turn';
     kind: DshCostKind;
     currency: string;
     values: number[];
@@ -1666,10 +1805,11 @@ function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefine
     };
     summary.values.push(cost.nanos);
     summaryBuckets.set(summaryKey, summary);
-    const key = `${summaryKey}\0${cost.source}\0${cost.tariffVersion ?? ''}`;
+    const key = `${summaryKey}\0${cost.scope}\0${cost.source}\0${cost.tariffVersion ?? ''}`;
     let bucket = detailBuckets.get(key);
     if (bucket === undefined) {
       bucket = {
+        scope: cost.scope,
         kind: cost.kind,
         currency: cost.currency,
         values: [],
@@ -1706,7 +1846,7 @@ function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefine
       kind: bucket.kind,
       currency: bucket.currency,
       nanos,
-      calls: bucket.values.length,
+      calls: coveredCalls ?? bucket.values.length,
     });
   }
   const details: NonNullable<DshCostSummary['details']>[number][] = [];
@@ -1721,10 +1861,11 @@ function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefine
       components[name] = total;
     }
     details.push({
+      scope: bucket.scope,
       kind: bucket.kind,
       currency: bucket.currency,
       nanos,
-      calls: bucket.values.length,
+      calls: coveredCalls ?? bucket.values.length,
       ...(bucket.routes.size === 0 ? {} : { routes: [...bucket.routes] }),
       sources: [...bucket.sources],
       ...(bucket.tariffVersions.size === 0 ? {} : { tariffVersions: [...bucket.tariffVersions] }),
@@ -1736,6 +1877,7 @@ function aggregateCosts(costs: readonly CostSample[]): DshCostSummary | undefine
   breakdown.sort((left, right) => left.currency.localeCompare(right.currency) || order[left.kind] - order[right.kind]);
   details.sort((left, right) => left.currency.localeCompare(right.currency)
     || order[left.kind] - order[right.kind]
+    || left.scope.localeCompare(right.scope)
     || (left.sources?.[0] ?? '').localeCompare(right.sources?.[0] ?? '')
     || (left.tariffVersions?.[0] ?? '').localeCompare(right.tariffVersions?.[0] ?? '')
     || (left.routes?.[0] ?? '').localeCompare(right.routes?.[0] ?? ''));
@@ -1872,6 +2014,10 @@ function toolSummary(name: string, detail: string): string {
     // Tool arguments may be an incomplete provider string while streaming.
   }
   return name;
+}
+
+function reasoningStatusId(turn: number, step: number): string {
+  return `turn:${String(turn)}:status:reasoning-tokens:${String(step)}`;
 }
 
 function reasoningDisclosureId(turn: number, step: number, blockIndex: unknown): string {

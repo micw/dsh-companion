@@ -22,6 +22,14 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 
 **Completion:** A packaged extension starts and reconnects to one independently supervised, version-matched DSH Runtime, shares it across windows and Development Extension Hosts, stops it only through the declared idle or explicit lifecycle, and never depends on system Node.js, pnpm, or a source checkout.
 
+### COMP-006 — Stream provider-account snapshot changes to clients
+
+**Current behavior:** The Companion provider-account service has process-local change notifications, but its Remote exposes only `list` and coalesced `refresh`. The VS Code client reloads snapshots at connect, after explicit refresh, at reconnect, and after a live Turn. When its initial read intersects an in-flight refresh, it joins that one refresh once and republishes the settled list.
+
+**Deferred work:** Expose provider-account changes through a Companion-owned Remote follow stream or equivalent observable Client contribution, including initial state, refresh transitions, Turn quota observations, errors, reconnect, and disposal.
+
+**Completion:** Connected clients receive every provider-account snapshot transition without polling, Turn-end coupling, or initiating a redundant refresh, while the provider-account service remains the single state owner.
+
 ## DSH dependencies
 
 ### DSH-001 — Separate Session model selection from the global default
