@@ -21,6 +21,14 @@ const modelPicker = document.getElementById('model-picker');
 const modelSearch = document.getElementById('model-search');
 const modelList = document.getElementById('model-list');
 const effortMenu = document.getElementById('effort-menu');
+const providerSettingsTrigger = document.getElementById('provider-settings-trigger');
+const providerSettingsModal = document.getElementById('provider-settings-modal');
+const providerSettingsBackdrop = document.getElementById('provider-settings-backdrop');
+const providerSettingsClose = document.getElementById('provider-settings-close');
+const providerSettingsSearch = document.getElementById('provider-settings-search');
+const providerSettingsFilter = document.getElementById('provider-settings-filter');
+const providerSettingsStatus = document.getElementById('provider-settings-status');
+const providerSettingsList = document.getElementById('provider-settings-list');
 const permissionControl = document.getElementById('permission-control');
 const permissionSelect = document.getElementById('permission-select');
 const contextMeter = document.getElementById('context-meter');
@@ -91,6 +99,15 @@ let modelCatalog;
 let modelSelection;
 let modelSelecting = false;
 let openEffortRoute;
+let providerSettingsSnapshot;
+let providerSettingsLoading = false;
+let providerSettingsReturnFocus;
+const providerSettingsDrafts = new Map();
+const providerSettingsSaving = new Set();
+const providerModelSaving = new Set();
+const providerModelsSaving = new Set();
+const providerSettingsErrors = new Map();
+const providerSettingsSuccess = new Map();
 let permissionSelection;
 let permissionSelecting = false;
 let contextPressure;
@@ -150,11 +167,21 @@ stop.addEventListener('click', () => {
 
 modelTrigger.addEventListener('click', () => {
   if (modelTrigger.disabled) return;
+  if (modelTrigger.dataset.configure === 'true') {
+    openProviderSettings();
+    return;
+  }
   if (modelPicker.hidden) openModelPicker();
   else closeModelPicker(true);
 });
 
 modelSearch.addEventListener('input', renderModelPicker);
+
+providerSettingsTrigger.addEventListener('click', openProviderSettings);
+providerSettingsClose.addEventListener('click', closeProviderSettings);
+providerSettingsBackdrop.addEventListener('click', closeProviderSettings);
+providerSettingsSearch.addEventListener('input', renderProviderSettings);
+providerSettingsFilter.addEventListener('change', renderProviderSettings);
 
 permissionSelect.addEventListener('change', () => {
   const preset = permissionSelect.value;
@@ -290,6 +317,10 @@ document.addEventListener('keydown', (event) => {
     markUserScrollIntent();
   }
   if (event.key !== 'Escape') return;
+  if (!providerSettingsModal.hidden) {
+    closeProviderSettings();
+    return;
+  }
   if (!effortMenu.hidden) {
     closeEffortMenu(true);
     return;
@@ -395,6 +426,74 @@ function applyHostMessage(message) {
   }
   if (message.type === 'modelSelectionFailed') {
     status.textContent = typeof message.text === 'string' ? message.text : 'Could not select model';
+    return;
+  }
+  if (message.type === 'providerSettings') {
+    if (!isProviderSettingsSnapshot(message.snapshot)) return;
+    providerSettingsSnapshot = message.snapshot;
+    providerSettingsErrors.clear();
+    for (const provider of message.snapshot.providers) {
+      providerSettingsDrafts.set(provider.id, {
+        enabled: provider.enabled,
+        baseURL: provider.baseURL ?? '',
+        apiKey: '',
+      });
+    }
+    renderProviderSettings();
+    renderModelTrigger();
+    updateInputAvailability();
+    if (!modelPicker.hidden) renderModelPicker();
+    return;
+  }
+  if (message.type === 'providerSettingsLoading') {
+    providerSettingsLoading = message.value === true;
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerSettingsFailed') {
+    providerSettingsLoading = false;
+    providerSettingsStatus.textContent = typeof message.text === 'string'
+      ? message.text
+      : 'Provider settings are unavailable.';
+    providerSettingsStatus.dataset.kind = 'error';
+    return;
+  }
+  if (message.type === 'providerSettingsSaving') {
+    if (typeof message.provider !== 'string') return;
+    if (message.value === true) providerSettingsSaving.add(message.provider);
+    else providerSettingsSaving.delete(message.provider);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerModelSaving') {
+    if (typeof message.provider !== 'string' || typeof message.model !== 'string') return;
+    const key = `${message.provider}\0${message.model}`;
+    if (message.value === true) providerModelSaving.add(key);
+    else providerModelSaving.delete(key);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerModelsSaving') {
+    if (typeof message.provider !== 'string') return;
+    if (message.value === true) providerModelsSaving.add(message.provider);
+    else providerModelsSaving.delete(message.provider);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerSettingsSaveFailed') {
+    if (typeof message.provider !== 'string' || typeof message.text !== 'string') return;
+    providerSettingsErrors.set(message.provider, message.text);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerSettingsTested') {
+    if (typeof message.provider !== 'string' || !Number.isSafeInteger(message.modelCount)
+      || message.modelCount < 0) return;
+    providerSettingsSuccess.set(
+      message.provider,
+      `Connection verified · ${String(message.modelCount)} models loaded.`,
+    );
+    renderProviderSettings();
     return;
   }
   if (message.type === 'permissionSelection') {
@@ -1181,12 +1280,279 @@ function effortLabel(model, effort) {
   return model.reasoning.efforts.find((candidate) => candidate.id === effort)?.name ?? effort;
 }
 
+function openProviderSettings() {
+  providerSettingsReturnFocus = document.activeElement;
+  closeModelPicker();
+  closeContextPanel();
+  closeProviderUsagePanel();
+  closeSessionInfoPanel();
+  providerSettingsModal.hidden = false;
+  renderProviderSettings();
+  providerSettingsSearch.focus();
+  vscode.postMessage({ type: 'loadProviderSettings' });
+}
+
+function closeProviderSettings() {
+  if (providerSettingsModal.hidden) return;
+  providerSettingsModal.hidden = true;
+  const target = providerSettingsReturnFocus;
+  providerSettingsReturnFocus = undefined;
+  if (target?.isConnected) target.focus();
+}
+
+function renderProviderSettings() {
+  if (providerSettingsModal.hidden) return;
+  const previousScrollTop = providerSettingsList.scrollTop;
+  providerSettingsList.replaceChildren();
+  providerSettingsStatus.dataset.kind = '';
+  if (providerSettingsLoading && providerSettingsSnapshot === undefined) {
+    providerSettingsStatus.textContent = 'Loading providers…';
+    return;
+  }
+  if (providerSettingsSnapshot === undefined) {
+    if (!providerSettingsStatus.textContent) providerSettingsStatus.textContent = 'Provider settings are unavailable.';
+    return;
+  }
+  providerSettingsStatus.textContent = providerSettingsSnapshot.writable
+    ? 'Credentials are stored by DSH and are never read back.'
+    : 'The current DSH settings provider is read-only.';
+  providerSettingsStatus.dataset.kind = providerSettingsSnapshot.writable ? '' : 'warning';
+  const query = providerSettingsSearch.value.trim().toLocaleLowerCase();
+  const filter = providerSettingsFilter.value;
+  for (const provider of providerSettingsSnapshot.providers) {
+    const providerEnabled = providerSettingsDrafts.get(provider.id)?.enabled ?? provider.enabled;
+    const providerMatches = query === '' || `${provider.name}\n${provider.id}`.toLocaleLowerCase().includes(query);
+    const models = providerEnabled ? provider.models.filter((model) => {
+      const stateMatches = filter === 'all' || (filter === 'enabled' ? model.enabled : !model.enabled);
+      const textMatches = query === '' || providerMatches
+        || `${model.name}\n${model.id}\n${model.description ?? ''}`.toLocaleLowerCase().includes(query);
+      return stateMatches && textMatches;
+    }) : [];
+    providerSettingsList.append(providerSettingsCard(provider, models));
+  }
+  providerSettingsList.scrollTop = previousScrollTop;
+}
+
+function providerSettingsCard(provider, visibleModels) {
+  const draft = providerSettingsDrafts.get(provider.id) ?? {
+    enabled: provider.enabled, baseURL: provider.baseURL ?? '', apiKey: '',
+  };
+  providerSettingsDrafts.set(provider.id, draft);
+  const saving = providerSettingsSaving.has(provider.id);
+  const disabled = !providerSettingsSnapshot.writable || saving;
+  const card = document.createElement('article');
+  card.className = 'provider-settings-card';
+  const head = document.createElement('div');
+  head.className = 'provider-settings-card-head';
+  const identity = document.createElement('div');
+  const title = document.createElement('h3');
+  title.textContent = provider.name;
+  const route = document.createElement('code');
+  route.textContent = provider.id;
+  identity.append(title, route);
+  const stateLabel = document.createElement('span');
+  stateLabel.className = `provider-settings-state ${provider.active ? 'active' : ''}`;
+  stateLabel.textContent = provider.active ? 'Active' : draft.enabled ? 'Configured' : 'Disabled';
+  head.append(identity, stateLabel);
+  const form = document.createElement('form');
+  form.className = 'provider-settings-form';
+  const enabledLabel = document.createElement('label');
+  enabledLabel.className = 'provider-settings-toggle';
+  const enabled = document.createElement('input');
+  enabled.type = 'checkbox';
+  enabled.checked = draft.enabled;
+  enabled.disabled = disabled;
+  let serviceUrlInput;
+  enabled.addEventListener('change', () => {
+    draft.enabled = enabled.checked;
+    providerSettingsSuccess.delete(provider.id);
+    if (serviceUrlInput !== undefined && serviceUrlInput !== null) serviceUrlInput.required = enabled.checked;
+    renderProviderSettings();
+  });
+  enabledLabel.append(enabled, document.createTextNode(' Provider enabled'));
+  form.append(enabledLabel);
+  if (provider.kind === 'wrapper') {
+    const serviceUrlField = providerSettingsField('Service URL', 'url', draft.baseURL, disabled, (value) => {
+      draft.baseURL = value;
+      providerSettingsSuccess.delete(provider.id);
+    }, draft.enabled);
+    serviceUrlInput = serviceUrlField.querySelector('input');
+    form.append(serviceUrlField);
+  }
+  const credentialLabel = provider.credential.configured
+    ? `API key · configured${provider.credential.source === undefined ? '' : ` via ${provider.credential.source}`}`
+    : 'API key · not configured';
+  form.append(providerSettingsField(
+    credentialLabel,
+    'password',
+    draft.apiKey,
+    disabled || !provider.credential.writable,
+    (value) => { draft.apiKey = value; providerSettingsSuccess.delete(provider.id); },
+    false,
+    provider.credential.configured ? 'Enter a new key to replace it' : 'Enter API key',
+  ));
+  const actions = document.createElement('div');
+  actions.className = 'provider-settings-actions';
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.disabled = disabled;
+  const testsConnection = provider.kind === 'wrapper' && draft.enabled;
+  save.textContent = saving
+    ? testsConnection ? 'Saving & testing…' : 'Saving…'
+    : testsConnection ? 'Save & Test' : 'Save';
+  actions.append(save);
+  form.append(actions);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    providerSettingsErrors.delete(provider.id);
+    providerSettingsSuccess.delete(provider.id);
+    vscode.postMessage({
+      type: 'saveProviderSettings',
+      provider: provider.id,
+      enabled: draft.enabled,
+      ...(provider.kind === 'wrapper' ? { baseURL: draft.baseURL } : {}),
+      ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
+      ...(testsConnection ? { test: true } : {}),
+      revision: provider.revision,
+    });
+  });
+  card.append(head, form);
+  const error = providerSettingsErrors.get(provider.id);
+  if (error !== undefined) {
+    const failure = document.createElement('p');
+    failure.className = 'provider-settings-error';
+    failure.setAttribute('role', 'alert');
+    failure.textContent = error;
+    card.append(failure);
+  }
+  const success = providerSettingsSuccess.get(provider.id);
+  if (success !== undefined) {
+    const confirmation = document.createElement('p');
+    confirmation.className = 'provider-settings-success';
+    confirmation.setAttribute('role', 'status');
+    confirmation.textContent = success;
+    card.append(confirmation);
+  }
+  const models = document.createElement('details');
+  models.className = 'provider-settings-models';
+  const summary = document.createElement('summary');
+  summary.textContent = !draft.enabled
+    ? `Models (${String(provider.models.length)}) · provider disabled`
+    : visibleModels.length === provider.models.length
+      ? `Models (${String(provider.models.length)})`
+      : `Models (${String(visibleModels.length)} of ${String(provider.models.length)})`;
+  models.append(summary);
+  if (!draft.enabled) {
+    models.classList.add('disabled');
+    summary.setAttribute('aria-disabled', 'true');
+    summary.addEventListener('click', event => { event.preventDefault(); });
+  } else if (provider.models.length > 0) {
+    const bulk = document.createElement('div');
+    bulk.className = 'provider-settings-model-actions';
+    const bulkSaving = providerModelsSaving.has(provider.id);
+    for (const [label, value] of [['Enable all', true], ['Disable all', false]]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = bulkSaving ? 'Saving…' : label;
+      button.disabled = !providerSettingsSnapshot.writable || bulkSaving
+        || provider.models.every(model => model.enabled === value);
+      button.addEventListener('click', () => vscode.postMessage({
+        type: 'setProviderModelsEnabled',
+        provider: provider.id,
+        models: provider.models.map(model => model.id),
+        enabled: value,
+        revision: providerSettingsSnapshot.modelPolicyRevision,
+      }));
+      bulk.append(button);
+    }
+    models.append(bulk);
+  }
+  if (!draft.enabled) {
+    // A disabled provider contributes no searchable or editable model rows.
+  } else if (provider.models.length === 0) {
+    const empty = document.createElement('p');
+    empty.textContent = provider.active
+      ? 'No models are currently available.'
+      : 'Enable and save this provider to load its models.';
+    models.append(empty);
+  } else if (visibleModels.length === 0) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No models in this provider match the current filter.';
+    models.append(empty);
+  } else {
+    const list = document.createElement('ul');
+    for (const model of visibleModels) {
+      const item = document.createElement('li');
+      const label = document.createElement('label');
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox';
+      toggle.checked = model.enabled;
+      toggle.disabled = !providerSettingsSnapshot.writable
+        || providerModelsSaving.has(provider.id)
+        || providerModelSaving.has(`${provider.id}\0${model.id}`);
+      toggle.addEventListener('change', () => vscode.postMessage({
+        type: 'setProviderModelEnabled',
+        provider: provider.id,
+        model: model.id,
+        enabled: toggle.checked,
+        revision: providerSettingsSnapshot.modelPolicyRevision,
+      }));
+      const copy = document.createElement('span');
+      copy.textContent = model.name;
+      const id = document.createElement('code');
+      id.textContent = model.id;
+      label.append(toggle, copy, id);
+      item.append(label);
+      list.append(item);
+    }
+    models.append(list);
+  }
+  const disclosureId = `provider-settings:${provider.id}:models`;
+  const forcedOpen = draft.enabled
+    && (providerSettingsSearch.value.trim() !== '' || providerSettingsFilter.value !== 'all');
+  models.open = draft.enabled && (forcedOpen || state.disclosures[disclosureId] === true);
+  models.addEventListener('toggle', () => {
+    if (!draft.enabled || forcedOpen) return;
+    state.disclosures[disclosureId] = models.open;
+    saveState();
+  });
+  card.append(models);
+  return card;
+}
+
+function providerSettingsField(labelText, type, value, disabled, onInput, required, placeholder = '') {
+  const label = document.createElement('label');
+  label.className = 'provider-settings-field';
+  const caption = document.createElement('span');
+  caption.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = type;
+  input.value = value;
+  input.disabled = disabled;
+  input.required = required;
+  input.placeholder = placeholder;
+  input.addEventListener('input', () => onInput(input.value));
+  label.append(caption, input);
+  return label;
+}
+
+function selectedModelEnabled() {
+  if (modelSelection === undefined || modelCatalog === undefined
+    || !modelCatalog.routableProviders.includes(modelSelection.provider)) return false;
+  const provider = providerSettingsSnapshot?.providers.find(candidate => candidate.id === modelSelection.provider);
+  const model = provider?.models.find(candidate => candidate.id === modelSelection.model);
+  return model?.enabled !== false;
+}
+
 function renderModelTrigger() {
   const found = modelSelection === undefined
     ? undefined
     : findCatalogModel(modelSelection.provider, modelSelection.model);
-  const modelName = found?.model.name
-    ?? (modelSelection === undefined ? 'Loading models…' : `${modelSelection.provider}/${modelSelection.model}`);
+  const usable = selectedModelEnabled();
+  const modelName = modelCatalog !== undefined && modelCatalog.routableProviders.length === 0
+    ? 'Configure a provider'
+    : found?.model.name
+      ?? (modelSelection === undefined ? 'Loading models…' : `${modelSelection.provider}/${modelSelection.model}`);
   const selectedEffort = found === undefined ? undefined : effortLabel(found.model, modelSelection?.reasoningEffort);
   modelTrigger.replaceChildren();
   const name = document.createElement('span');
@@ -1204,8 +1570,8 @@ function renderModelTrigger() {
     ? 'Model and effort can be changed after the current activity finishes.'
     : label;
   modelTrigger.setAttribute('aria-label', `Select model, current ${label}`);
-  modelTrigger.disabled = running || compacting || modelSelecting
-    || modelCatalog === undefined || modelSelection === undefined;
+  modelTrigger.disabled = running || compacting || modelSelecting || modelCatalog === undefined;
+  modelTrigger.dataset.configure = usable ? 'false' : 'true';
 }
 
 function renderPermissionSelect() {
@@ -1262,9 +1628,13 @@ function renderModelPicker() {
   const query = modelSearch.value.trim().toLocaleLowerCase();
   let visible = 0;
   for (const group of modelCatalog.groups) {
-    const models = group.models.filter((model) => !query || [
-      group.id, group.name, model.id, model.name, model.description,
-    ].filter(Boolean).join('\n').toLocaleLowerCase().includes(query));
+    const settingsProvider = providerSettingsSnapshot?.providers.find(provider => provider.id === group.id);
+    const models = group.models.filter((model) => {
+      const enabled = settingsProvider?.models.find(candidate => candidate.id === model.id)?.enabled !== false;
+      return enabled && (!query || [
+        group.id, group.name, model.id, model.name, model.description,
+      ].filter(Boolean).join('\n').toLocaleLowerCase().includes(query));
+    });
     if (models.length === 0) continue;
     const section = document.createElement('section');
     section.className = 'model-group';
@@ -1792,7 +2162,7 @@ function setCompacting(value) {
 
 function updateInputAvailability() {
   prompt.disabled = compacting;
-  send.disabled = !sessionReady || sending || compacting;
+  send.disabled = !sessionReady || sending || compacting || !selectedModelEnabled();
   stop.hidden = !running && !compacting;
   stop.disabled = stopping;
   composer.dataset.running = running || compacting ? 'true' : 'false';
@@ -2149,6 +2519,31 @@ function isSessionInformation(value) {
   return isRecord(value) && typeof value.sessionId === 'string' && value.sessionId.length > 0
     && typeof value.companionVersion === 'string' && value.companionVersion.length > 0
     && typeof value.backendVersion === 'string' && value.backendVersion.length > 0;
+}
+
+function isProviderSettingsSnapshot(value) {
+  if (!isRecord(value) || typeof value.writable !== 'boolean'
+    || !Number.isSafeInteger(value.modelPolicyRevision) || value.modelPolicyRevision < 0
+    || !Array.isArray(value.providers) || value.providers.length !== 5) return false;
+  const ids = new Set();
+  return value.providers.every((provider) => {
+    if (!isRecord(provider) || typeof provider.id !== 'string' || provider.id.length === 0 || ids.has(provider.id)
+      || typeof provider.name !== 'string' || !['native', 'catalog', 'wrapper'].includes(provider.kind)
+      || typeof provider.active !== 'boolean' || typeof provider.enabled !== 'boolean'
+      || (provider.baseURL !== undefined && typeof provider.baseURL !== 'string')
+      || !Number.isSafeInteger(provider.revision) || provider.revision < 0
+      || !isRecord(provider.credential)
+      || Object.keys(provider.credential).some(key => !['ref', 'configured', 'writable', 'source'].includes(key))
+      || typeof provider.credential.ref !== 'string' || provider.credential.ref.length === 0
+      || typeof provider.credential.configured !== 'boolean' || typeof provider.credential.writable !== 'boolean'
+      || (provider.credential.source !== undefined && typeof provider.credential.source !== 'string')
+      || !Array.isArray(provider.models) || !provider.models.every(model => isRecord(model)
+        && typeof model.id === 'string' && model.id.length > 0
+        && typeof model.name === 'string' && typeof model.enabled === 'boolean'
+        && (model.description === undefined || typeof model.description === 'string'))) return false;
+    ids.add(provider.id);
+    return true;
+  });
 }
 
 function isModelSelection(value) {

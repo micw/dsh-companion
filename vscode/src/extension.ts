@@ -48,6 +48,36 @@ interface RefreshProviderUsageMessage {
   readonly provider: string;
 }
 
+interface LoadProviderSettingsMessage {
+  readonly type: 'loadProviderSettings';
+}
+
+interface SaveProviderSettingsMessage {
+  readonly type: 'saveProviderSettings';
+  readonly provider: string;
+  readonly enabled: boolean;
+  readonly baseURL?: string;
+  readonly apiKey?: string;
+  readonly test?: boolean;
+  readonly revision: number;
+}
+
+interface SetProviderModelEnabledMessage {
+  readonly type: 'setProviderModelEnabled';
+  readonly provider: string;
+  readonly model: string;
+  readonly enabled: boolean;
+  readonly revision: number;
+}
+
+interface SetProviderModelsEnabledMessage {
+  readonly type: 'setProviderModelsEnabled';
+  readonly provider: string;
+  readonly models: readonly string[];
+  readonly enabled: boolean;
+  readonly revision: number;
+}
+
 interface OpenLinkMessage {
   readonly type: 'openLink';
   readonly href: string;
@@ -178,6 +208,10 @@ function configureChatEditor(
       companionVersion: String(context.extension.packageJSON.version),
       backendVersion: connected.backendVersion,
     });
+    void connected.client.providerSettings().then(
+      snapshot => { post(panel, { type: 'providerSettings', snapshot }); },
+      error => { console.warn('DSH provider settings are unavailable', error); },
+    );
     return connected.client;
   });
   void ready.catch((error: unknown) => {
@@ -196,6 +230,10 @@ function configureChatEditor(
     if (isSelectPermissionMessage(message)) void selectPermission(panel, ready, message.preset);
     if (isCompactMessage(message)) void compact(panel, ready);
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
+    if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready);
+    if (isSaveProviderSettingsMessage(message)) void saveProviderSettings(panel, ready, message);
+    if (isSetProviderModelEnabledMessage(message)) void setProviderModelEnabled(panel, ready, message);
+    if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
   });
   panel.onDidDispose(() => {
@@ -429,6 +467,86 @@ async function refreshProviderUsage(
   }
 }
 
+async function loadProviderSettings(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
+  post(panel, { type: 'providerSettingsLoading', value: true });
+  try {
+    post(panel, { type: 'providerSettings', snapshot: await (await ready).providerSettings() });
+  } catch (error) {
+    post(panel, { type: 'providerSettingsFailed', text: error instanceof Error ? error.message : String(error) });
+  } finally {
+    post(panel, { type: 'providerSettingsLoading', value: false });
+  }
+}
+
+async function saveProviderSettings(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: SaveProviderSettingsMessage,
+): Promise<void> {
+  post(panel, { type: 'providerSettingsSaving', provider: message.provider, value: true });
+  let snapshot: import('./dshClient').DshProviderSettingsSnapshot | undefined;
+  try {
+    const client = await ready;
+    snapshot = await client.updateProviderSettings(message);
+    if (message.test === true) {
+      const tested = await client.testProviderConnection(message.provider);
+      snapshot = tested.snapshot;
+      post(panel, { type: 'providerSettingsTested', provider: message.provider, modelCount: tested.modelCount });
+    }
+    post(panel, { type: 'providerSettings', snapshot });
+  } catch (error) {
+    if (snapshot !== undefined) post(panel, { type: 'providerSettings', snapshot });
+    post(panel, {
+      type: 'providerSettingsSaveFailed', provider: message.provider,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerSettingsSaving', provider: message.provider, value: false });
+  }
+}
+
+async function setProviderModelEnabled(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: SetProviderModelEnabledMessage,
+): Promise<void> {
+  post(panel, { type: 'providerModelSaving', provider: message.provider, model: message.model, value: true });
+  try {
+    const snapshot = await (await ready).setProviderModelEnabled(
+      message.provider, message.model, message.enabled, message.revision,
+    );
+    post(panel, { type: 'providerSettings', snapshot });
+  } catch (error) {
+    post(panel, {
+      type: 'providerSettingsSaveFailed', provider: message.provider,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerModelSaving', provider: message.provider, model: message.model, value: false });
+  }
+}
+
+async function setProviderModelsEnabled(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: SetProviderModelsEnabledMessage,
+): Promise<void> {
+  post(panel, { type: 'providerModelsSaving', provider: message.provider, value: true });
+  try {
+    const snapshot = await (await ready).setProviderModelsEnabled(
+      message.provider, message.models, message.enabled, message.revision,
+    );
+    post(panel, { type: 'providerSettings', snapshot });
+  } catch (error) {
+    post(panel, {
+      type: 'providerSettingsSaveFailed', provider: message.provider,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerModelsSaving', provider: message.provider, value: false });
+  }
+}
+
 async function compact(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
   post(panel, { type: 'compacting', value: true });
   try {
@@ -506,6 +624,51 @@ function isRefreshProviderUsageMessage(value: unknown): value is RefreshProvider
     && Reflect.get(value, 'provider').length > 0;
 }
 
+function isLoadProviderSettingsMessage(value: unknown): value is LoadProviderSettingsMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'loadProviderSettings';
+}
+
+function isSaveProviderSettingsMessage(value: unknown): value is SaveProviderSettingsMessage {
+  const provider = typeof value === 'object' && value !== null ? Reflect.get(value, 'provider') : undefined;
+  const test = typeof value === 'object' && value !== null ? Reflect.get(value, 'test') : undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Reflect.get(value, 'type') !== 'saveProviderSettings'
+    || typeof provider !== 'string' || provider.length === 0
+    || typeof Reflect.get(value, 'enabled') !== 'boolean'
+    || !Number.isSafeInteger(Reflect.get(value, 'revision')) || Reflect.get(value, 'revision') < 0
+    || (Reflect.get(value, 'baseURL') !== undefined && typeof Reflect.get(value, 'baseURL') !== 'string')
+    || (Reflect.get(value, 'apiKey') !== undefined && typeof Reflect.get(value, 'apiKey') !== 'string')
+    || (test !== undefined && typeof test !== 'boolean')
+    || (test === true && !['claude-wrapper-advanced', 'codex-wrapper-advanced'].includes(provider))) return false;
+  return Object.keys(value).every(
+    key => ['type', 'provider', 'enabled', 'baseURL', 'apiKey', 'test', 'revision'].includes(key),
+  );
+}
+
+function isSetProviderModelEnabledMessage(value: unknown): value is SetProviderModelEnabledMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).every(key => ['type', 'provider', 'model', 'enabled', 'revision'].includes(key))
+    && Reflect.get(value, 'type') === 'setProviderModelEnabled'
+    && typeof Reflect.get(value, 'provider') === 'string' && Reflect.get(value, 'provider').length > 0
+    && typeof Reflect.get(value, 'model') === 'string' && Reflect.get(value, 'model').length > 0
+    && typeof Reflect.get(value, 'enabled') === 'boolean'
+    && Number.isSafeInteger(Reflect.get(value, 'revision')) && Reflect.get(value, 'revision') >= 0;
+}
+
+function isSetProviderModelsEnabledMessage(value: unknown): value is SetProviderModelsEnabledMessage {
+  const models = typeof value === 'object' && value !== null ? Reflect.get(value, 'models') : undefined;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).every(key => ['type', 'provider', 'models', 'enabled', 'revision'].includes(key))
+    && Reflect.get(value, 'type') === 'setProviderModelsEnabled'
+    && typeof Reflect.get(value, 'provider') === 'string' && Reflect.get(value, 'provider').length > 0
+    && Array.isArray(models) && models.length > 0 && models.length <= 1_000
+    && new Set(models).size === models.length
+    && models.every(model => typeof model === 'string' && model.length > 0)
+    && typeof Reflect.get(value, 'enabled') === 'boolean'
+    && Number.isSafeInteger(Reflect.get(value, 'revision')) && Reflect.get(value, 'revision') >= 0;
+}
+
 function isOpenLinkMessage(value: unknown): value is OpenLinkMessage {
   if (typeof value !== 'object' || value === null || Reflect.get(value, 'type') !== 'openLink'
     || typeof Reflect.get(value, 'href') !== 'string') return false;
@@ -563,7 +726,12 @@ function editorHtml(
       <div id="model-controls">
         <button id="model-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" disabled>Loading models…</button>
         <div id="model-picker" role="dialog" aria-label="Choose model and reasoning effort" hidden>
-          <input id="model-search" type="search" aria-label="Search models" placeholder="Search models…">
+          <div id="model-picker-header">
+            <input id="model-search" type="search" aria-label="Search models" placeholder="Search models…">
+            <button id="provider-settings-trigger" type="button" aria-label="Manage providers and models" title="Manage providers and models">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.7 1.5h2.6l.4 1.7 1.2.7 1.7-.5 1.3 2.2-1.3 1.2v1.4l1.3 1.2-1.3 2.2-1.7-.5-1.2.7-.4 1.7H6.7l-.4-1.7-1.2-.7-1.7.5-1.3-2.2 1.3-1.2V6.8L2.1 5.6l1.3-2.2 1.7.5 1.2-.7.4-1.7Z"/><circle cx="8" cy="8" r="2.1"/></svg>
+            </button>
+          </div>
           <div id="model-list"></div>
           <div id="effort-menu" role="menu" aria-label="Choose reasoning effort" hidden></div>
         </div>
@@ -621,6 +789,25 @@ function editorHtml(
       </div>
     </div>
   </form>
+  <div id="provider-settings-modal" role="dialog" aria-modal="true" aria-labelledby="provider-settings-title" hidden>
+    <div id="provider-settings-backdrop"></div>
+    <section id="provider-settings-surface">
+      <header id="provider-settings-header">
+        <div><h2 id="provider-settings-title">Providers &amp; Models</h2><p>Configure DSH routes and credentials.</p></div>
+        <button id="provider-settings-close" type="button" aria-label="Close provider settings" title="Close">×</button>
+      </header>
+      <div id="provider-settings-toolbar">
+        <input id="provider-settings-search" type="search" aria-label="Search providers and models" placeholder="Search providers and models…">
+        <select id="provider-settings-filter" aria-label="Filter models">
+          <option value="all">All models</option>
+          <option value="enabled">Enabled models</option>
+          <option value="disabled">Disabled models</option>
+        </select>
+      </div>
+      <div id="provider-settings-status" role="status"></div>
+      <div id="provider-settings-list"></div>
+    </section>
+  </div>
   <script nonce="${nonce}" src="${transcriptStateUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

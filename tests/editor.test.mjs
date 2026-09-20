@@ -15,6 +15,7 @@ import {
   parseModelCatalog,
   parsePermissionSelection,
   parseProviderAccountSnapshot,
+  parseSettingsDescribe,
   reconcileSettlementAccounting,
 } from '../vscode/out/dshClient.js';
 
@@ -37,6 +38,28 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('context-trigger'\)/);
   assert.match(script, /function renderModelPicker/);
   assert.match(script, /function renderEffortMenu/);
+  assert.match(script, /getElementById\('provider-settings-trigger'\)/);
+  assert.match(script, /function openProviderSettings/);
+  assert.match(script, /function renderProviderSettings/);
+  assert.match(script, /type: 'saveProviderSettings'/);
+  assert.match(script, /testsConnection \? 'Save & Test' : 'Save'/);
+  assert.match(script, /Connection verified · \$\{String\(message\.modelCount\)\} models loaded/);
+  assert.match(script, /type: 'setProviderModelEnabled'/);
+  assert.match(script, /type: 'setProviderModelsEnabled'/);
+  assert.match(script, /getElementById\('provider-settings-search'\)/);
+  assert.match(script, /getElementById\('provider-settings-filter'\)/);
+  assert.match(script, /\['Enable all', true\], \['Disable all', false\]/);
+  assert.match(script, /providerSettingsList\.append\(providerSettingsCard\(provider, models\)\)/);
+  assert.doesNotMatch(script, /if \(!providerMatches && models\.length === 0\) continue/);
+  assert.match(script, /const models = providerEnabled \? provider\.models\.filter/);
+  assert.match(script, /Models \(\$\{String\(provider\.models\.length\)\}\) · provider disabled/);
+  assert.match(script, /models\.open = draft\.enabled &&/);
+  assert.match(script, /const previousScrollTop = providerSettingsList\.scrollTop/);
+  assert.match(script, /providerSettingsList\.scrollTop = previousScrollTop/);
+  assert.match(script, /`provider-settings:\$\{provider\.id\}:models`/);
+  assert.match(script, /state\.disclosures\[disclosureId\] = models\.open/);
+  assert.match(script, /Credentials are stored by DSH and are never read back/);
+  assert.match(script, /send\.disabled = [^;]+!selectedModelEnabled\(\)/);
   assert.match(script, /if \(effort === undefined\) return 'Provider default'/);
   assert.match(script, /const efforts = \[\s*\{ id: undefined, name: 'Provider default' \}/);
   assert.doesNotMatch(script, /reasoningEffort \?\? model\.reasoning\.defaultEffort/);
@@ -154,6 +177,11 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.stat-icon \{[\s\S]*width: 14px/);
   assert.match(style, /#prompt \{[\s\S]*max-height: 200px/);
   assert.match(style, /#model-picker \{/);
+  assert.match(style, /#provider-settings-modal \{/);
+  assert.match(style, /#provider-settings-surface \{/);
+  assert.match(style, /#provider-settings-toolbar \{/);
+  assert.match(style, /\.provider-settings-actions \{[^}]*grid-column: 1 \/ -1/);
+  assert.match(style, /\.provider-settings-model-actions \{/);
   assert.match(style, /#permission-select \{/);
   assert.match(style, /#permission-select \{[\s\S]*appearance: none;[\s\S]*background: transparent/);
   assert.match(style, /#permission-control::after \{/);
@@ -173,6 +201,16 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /id="scroll-bottom"[\s\S]*<svg[^>]+><path d="m3\.5 6/);
   assert.match(extension, /Ask DSH Companion… \(Enter sends, Shift\+Enter = newline\)/);
   assert.match(extension, /isSelectModelMessage/);
+  assert.match(extension, /isLoadProviderSettingsMessage/);
+  assert.match(extension, /isSaveProviderSettingsMessage/);
+  assert.match(extension, /client\.testProviderConnection\(message\.provider\)/);
+  assert.match(extension, /type: 'providerSettingsTested'/);
+  assert.match(extension, /isSetProviderModelEnabledMessage/);
+  assert.match(extension, /isSetProviderModelsEnabledMessage/);
+  assert.match(extension, /id="provider-settings-modal"/);
+  assert.match(extension, /id="provider-settings-trigger"/);
+  assert.match(extension, /id="provider-settings-search"/);
+  assert.match(extension, /id="provider-settings-filter"/);
   assert.match(extension, /isSelectPermissionMessage/);
   assert.match(extension, /Full access disables filesystem sandboxing/);
   assert.match(extension, /id="permission-select" aria-label="Session permission"/);
@@ -208,12 +246,45 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(dshClient, /status\.kind === 'reasoning-token-progress'/);
   assert.match(dshClient, /emitFinalReasoningStatus/);
   assert.match(dshClient, /await client\.publishProviderAccounts\(\)/);
+  assert.match(dshClient, /callCanonicalRemote\(graph, 'settings', 'describe'\)/);
+  assert.match(dshClient, /callCanonicalRemote\(graph, 'credentials', 'describe', refs\)/);
+  assert.match(dshClient, /callCanonicalRemote\(graph, 'credentials', 'set', credentialRef, apiKey\)/);
+  assert.match(dshClient, /companionProviderCatalog', 'refresh', provider/);
+  assert.match(dshClient, /companionProviderAccounts', 'refresh', provider/);
+  assert.match(dshClient, /credentials', 'set', credentialRef, apiKey[\s\S]*await this\.refreshModelCatalog\(\)/);
+  assert.match(dshClient, /models\.map\(model => \(\{[\s\S]*value: enabled \? 'enabled' : 'disabled'/);
+  assert.match(dshClient, /definition\.kind === 'wrapper'[\s\S]*wrapperCatalog\?\.models\.filter[\s\S]*catalogGroup\?\.models/);
+  assert.doesNotMatch(dshClient, /credentials', 'get'/);
   assert.match(dshClient, /const request = \+\+this\.providerAccountsRequest/);
   assert.match(dshClient, /if \(this\.connectionInterrupted\)[\s\S]*this\.publishProviderAccounts\(\)/);
   assert.match(dshClient, /gateway\/invocation-unavailable/);
   assert.match(dshClient, /!older && !fromSnapshot[\s\S]*this\.publishProviderAccounts\(\)/);
   assert.match(dshClient, /connection\.state\.subscribe/);
   assert.doesNotMatch(dshClient, /remote\.mux|new WebSocket|Handwritten DSH/);
+});
+
+test('provider settings descriptions retain only redacted namespace values', () => {
+  const parsed = parseSettingsDescribe({
+    writable: true,
+    hasDocument: true,
+    namespaces: [{
+      ns: 'llm-deepseek',
+      schema: {},
+      value: { enabled: false, apiKeyEnv: 'DEEPSEEK_API_KEY' },
+      applies: 'live',
+      secrets: [{ path: ['secret'], set: true }],
+      revision: 7,
+    }],
+  });
+  assert.equal(parsed.writable, true);
+  assert.deepEqual(parsed.namespaces.get('llm-deepseek'), {
+    value: { enabled: false, apiKeyEnv: 'DEEPSEEK_API_KEY' },
+    revision: 7,
+  });
+  assert.throws(() => parseSettingsDescribe({
+    writable: true,
+    namespaces: [{ ns: 'llm-deepseek', value: {}, revision: -1 }],
+  }), /invalid settings namespace/u);
 });
 
 test('the development connection is fixed to the running DSH origin', () => {
