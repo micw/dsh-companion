@@ -1,6 +1,6 @@
 diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml
 new file mode 100644
-index 0000000000..6ec263a87d
+index 0000000..6ec263a
 --- /dev/null
 +++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.i18n.yaml
 @@ -0,0 +1,6 @@
@@ -12,7 +12,7 @@ index 0000000000..6ec263a87d
 +2026-09-14-non-browser-client-object-runtime.zh.md: 44b0c2c0c386895c2c219326b2f675e77d23790b
 diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md
 new file mode 100644
-index 0000000000..e7eddf2baf
+index 0000000..e7eddf2
 --- /dev/null
 +++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.md
 @@ -0,0 +1,52 @@
@@ -70,7 +70,7 @@ index 0000000000..e7eddf2baf
 +Non-browser product shells can replace handwritten Session transport and synchronization incrementally while retaining their own presentation. The npm artifact is larger because it closes over generated codecs and the Client object implementations, but the shell no longer selects or versions those internals independently. Cookie authentication and loopback Web deployment remain required. Node file upload needs a separate carrier implementation before shells can expose attachments. The runtime's Session service retains Web navigation concepts such as `current`, while shells may open and retain several Session bindings and keep tab selection in their own presentation state.
 diff --git a/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md
 new file mode 100644
-index 0000000000..44b0c2c0c3
+index 0000000..44b0c2c
 --- /dev/null
 +++ b/.agents/notes/implemented/architecture/2026-09-14-non-browser-client-object-runtime.zh.md
 @@ -0,0 +1,52 @@
@@ -127,7 +127,7 @@ index 0000000000..44b0c2c0c3
 +
 +非浏览器产品 shell 可以逐步替换手写 Session transport 与同步，同时保留自己的表示层。由于 npm artifact 闭包包含生成 codec 与 Client 对象实现，其体积更大，但 shell 不再独立选择或版本化这些内部组件。仍要求 cookie 认证与 loopback Web deployment。shell 暴露 attachment 前需要单独的 Node 文件上传 carrier。runtime 的 Session service 保留 `current` 等 Web navigation 概念，而 shell 可以打开并保留多个 Session binding，并在自己的表示状态中保存 tab selection。
 diff --git a/apps/cli/tests/web-auth.e2e.ts b/apps/cli/tests/web-auth.e2e.ts
-index 05889c8d32..ba02cb3f81 100644
+index 05889c8..ba02cb3 100644
 --- a/apps/cli/tests/web-auth.e2e.ts
 +++ b/apps/cli/tests/web-auth.e2e.ts
 @@ -2,6 +2,7 @@
@@ -168,7 +168,7 @@ index 05889c8d32..ba02cb3f81 100644
        expect(authenticated.status).toBe(200)
        const authenticatedBody = JSON.parse(authenticated.body) as unknown
 diff --git a/docs/config-catalog.i18n.yaml b/docs/config-catalog.i18n.yaml
-index d3235e1203..4b1f9a962c 100644
+index d3235e1..4b1f9a9 100644
 --- a/docs/config-catalog.i18n.yaml
 +++ b/docs/config-catalog.i18n.yaml
 @@ -2,5 +2,5 @@
@@ -180,7 +180,7 @@ index d3235e1203..4b1f9a962c 100644
 +config-catalog.md: 330d51a92c50e05691df180676146f55cf78de21
 +config-catalog.zh.md: 53619e92523a8e652a739525eb47d3df15df0e9e
 diff --git a/docs/config-catalog.md b/docs/config-catalog.md
-index 79878fc8da..330d51a92c 100644
+index 79878fc..330d51a 100644
 --- a/docs/config-catalog.md
 +++ b/docs/config-catalog.md
 @@ -3553,6 +3553,7 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
@@ -192,7 +192,7 @@ index 79878fc8da..330d51a92c 100644
  - `@deepseek-ai/dsh-atomic-write` ([`packages/util/atomic-write/src/index.ts`](../packages/util/atomic-write/src/index.ts))
  - `@deepseek-ai/dsh-base` ([`packages/bundle/base/src/index.ts`](../packages/bundle/base/src/index.ts))
 diff --git a/docs/config-catalog.zh.md b/docs/config-catalog.zh.md
-index f254241618..53619e9252 100644
+index f254241..53619e9 100644
 --- a/docs/config-catalog.zh.md
 +++ b/docs/config-catalog.zh.md
 @@ -3554,6 +3554,7 @@ export interface Config {
@@ -204,7 +204,7 @@ index f254241618..53619e9252 100644
  - `@deepseek-ai/dsh-atomic-write`（[`packages/util/atomic-write/src/index.ts`](../packages/util/atomic-write/src/index.ts)）
  - `@deepseek-ai/dsh-base`（[`packages/bundle/base/src/index.ts`](../packages/bundle/base/src/index.ts)）
 diff --git a/docs/subsystems/web-client.i18n.yaml b/docs/subsystems/web-client.i18n.yaml
-index 213853f56d..0730c2249e 100644
+index 213853f..0730c22 100644
 --- a/docs/subsystems/web-client.i18n.yaml
 +++ b/docs/subsystems/web-client.i18n.yaml
 @@ -2,5 +2,5 @@
@@ -216,7 +216,7 @@ index 213853f56d..0730c2249e 100644
 +web-client.md: c028f253e93d3098e19b3cedba22bad4470991d0
 +web-client.zh.md: 8c5d9ba4be8c3059d02a9119a9d8dacad57e8b77
 diff --git a/docs/subsystems/web-client.md b/docs/subsystems/web-client.md
-index 7e7f483131..c028f253e9 100644
+index 7e7f483..c028f25 100644
 --- a/docs/subsystems/web-client.md
 +++ b/docs/subsystems/web-client.md
 @@ -31,6 +31,8 @@ The Connection owns request correlation, the `/api` carrier, trust checks, exact
@@ -229,7 +229,7 @@ index 7e7f483131..c028f253e9 100644
 
  Each API controller package owns a paired Host and Client face. The Host side owns authoritative mutation and stream production. The Client side owns an identity-stable, React-free model over the same generated wire types and exposes observable snapshots plus commands. UI packages consume these Client services and do not reproduce transport state in component stores.
 diff --git a/docs/subsystems/web-client.zh.md b/docs/subsystems/web-client.zh.md
-index 603af505db..8c5d9ba4be 100644
+index 603af50..8c5d9ba 100644
 --- a/docs/subsystems/web-client.zh.md
 +++ b/docs/subsystems/web-client.zh.md
 @@ -31,6 +31,8 @@ Connection 拥有 request correlation、`/api` carrier、trust check、精确 Fe
@@ -242,7 +242,7 @@ index 603af505db..8c5d9ba4be 100644
 
  每个 API controller 包都拥有配对的 Host face 与 Client face。Host 侧拥有权威 mutation 与 stream 生产；Client 侧基于相同的生成 wire type 维护 identity 稳定、与 React 无关的 model，并公开 observable snapshot 与 command。UI 包消费这些 Client service，不在 component store 中复制 transport state。
 diff --git a/packages/api/README.i18n.yaml b/packages/api/README.i18n.yaml
-index c876cc751b..cf278ed263 100644
+index c876cc7..cf278ed 100644
 --- a/packages/api/README.i18n.yaml
 +++ b/packages/api/README.i18n.yaml
 @@ -2,5 +2,5 @@
@@ -254,7 +254,7 @@ index c876cc751b..cf278ed263 100644
 +README.md: 4d1a52ba6977c907475a18d416962baf7b99fadb
 +README.zh.md: 38798bd546f6a5f00d076aa2d94eff6a6a814deb
 diff --git a/packages/api/README.md b/packages/api/README.md
-index 5bc878fa53..4d1a52ba69 100644
+index 5bc878f..4d1a52b 100644
 --- a/packages/api/README.md
 +++ b/packages/api/README.md
 @@ -26,6 +26,7 @@ The packages below provide the Remote layer; the package READMEs own the exhaust
@@ -266,7 +266,7 @@ index 5bc878fa53..4d1a52ba69 100644
  | [`gateway/`](gateway/README.md) | Carries typed unary calls, multiplexed streams, and forwarded Host events. | `ctx.typertGateway` / `ctx.remote` |
  | [`session-controller/`](session-controller/README.md) | Owns Session commands, history streams, live control state, and Agent/Session identity policy. | `ctx.sessionController` / `ctx.remote.session` |
 diff --git a/packages/api/README.zh.md b/packages/api/README.zh.md
-index 814113f405..38798bd546 100644
+index 814113f..38798bd 100644
 --- a/packages/api/README.zh.md
 +++ b/packages/api/README.zh.md
 @@ -26,6 +26,7 @@ kind: "package-group"
@@ -279,7 +279,7 @@ index 814113f405..38798bd546 100644
  | [`session-controller/`](session-controller/README.zh.md) | 拥有 Session 命令、历史 stream、实时控制状态与 Agent/Session 身份策略。 | `ctx.sessionController` / `ctx.remote.session` |
 diff --git a/packages/api/client-runtime/README.i18n.yaml b/packages/api/client-runtime/README.i18n.yaml
 new file mode 100644
-index 0000000000..cfa85f5761
+index 0000000..cfa85f5
 --- /dev/null
 +++ b/packages/api/client-runtime/README.i18n.yaml
 @@ -0,0 +1,6 @@
@@ -291,7 +291,7 @@ index 0000000000..cfa85f5761
 +README.zh.md: 82aaf14b1c21fe49d96ea7e99a0c642e67164171
 diff --git a/packages/api/client-runtime/README.md b/packages/api/client-runtime/README.md
 new file mode 100644
-index 0000000000..bb02f80d8a
+index 0000000..bb02f80
 --- /dev/null
 +++ b/packages/api/client-runtime/README.md
 @@ -0,0 +1,93 @@
@@ -390,7 +390,7 @@ index 0000000000..bb02f80d8a
 +**Runtime invariant:** No companion is published. The package assembles existing services without retaining an independent observation of their state; its owned relation is the authenticated Node carrier exercised through HTTP/WebSocket composition coverage.
 diff --git a/packages/api/client-runtime/README.zh.md b/packages/api/client-runtime/README.zh.md
 new file mode 100644
-index 0000000000..82aaf14b1c
+index 0000000..82aaf14
 --- /dev/null
 +++ b/packages/api/client-runtime/README.zh.md
 @@ -0,0 +1,93 @@
@@ -489,7 +489,7 @@ index 0000000000..82aaf14b1c
 +**Runtime invariant：**不发布 companion。此包装配现有 service，不保留对其状态的独立观察；它拥有的关系是已认证 Node carrier，并由 HTTP/WebSocket composition coverage 验证。
 diff --git a/packages/api/client-runtime/package.json b/packages/api/client-runtime/package.json
 new file mode 100644
-index 0000000000..184ebaf0c6
+index 0000000..184ebaf
 --- /dev/null
 +++ b/packages/api/client-runtime/package.json
 @@ -0,0 +1,53 @@
@@ -548,7 +548,7 @@ index 0000000000..184ebaf0c6
 +}
 diff --git a/packages/api/client-runtime/src/index.ts b/packages/api/client-runtime/src/index.ts
 new file mode 100644
-index 0000000000..47b2c11178
+index 0000000..47b2c11
 --- /dev/null
 +++ b/packages/api/client-runtime/src/index.ts
 @@ -0,0 +1,210 @@
@@ -764,7 +764,7 @@ index 0000000000..47b2c11178
 +}
 diff --git a/packages/api/client-runtime/tests/runtime.client.spec.ts b/packages/api/client-runtime/tests/runtime.client.spec.ts
 new file mode 100644
-index 0000000000..b9e7a33ced
+index 0000000..b9e7a33
 --- /dev/null
 +++ b/packages/api/client-runtime/tests/runtime.client.spec.ts
 @@ -0,0 +1,164 @@
@@ -934,7 +934,7 @@ index 0000000000..b9e7a33ced
 +})
 diff --git a/packages/api/client-runtime/tsconfig.json b/packages/api/client-runtime/tsconfig.json
 new file mode 100644
-index 0000000000..73a2065ad0
+index 0000000..73a2065
 --- /dev/null
 +++ b/packages/api/client-runtime/tsconfig.json
 @@ -0,0 +1,33 @@
@@ -973,7 +973,7 @@ index 0000000000..73a2065ad0
 +}
 diff --git a/packages/api/client-runtime/tsdown.config.ts b/packages/api/client-runtime/tsdown.config.ts
 new file mode 100644
-index 0000000000..12f64e6f2a
+index 0000000..12f64e6
 --- /dev/null
 +++ b/packages/api/client-runtime/tsdown.config.ts
 @@ -0,0 +1,25 @@
@@ -1003,7 +1003,7 @@ index 0000000000..12f64e6f2a
 +
 +export default clientOnly([config])
 diff --git a/packages/api/gateway/README.i18n.yaml b/packages/api/gateway/README.i18n.yaml
-index 6e013ff43d..d7e939c54e 100644
+index 6e013ff..d7e939c 100644
 --- a/packages/api/gateway/README.i18n.yaml
 +++ b/packages/api/gateway/README.i18n.yaml
 @@ -2,5 +2,5 @@
@@ -1015,7 +1015,7 @@ index 6e013ff43d..d7e939c54e 100644
 +README.md: 4b6233dd66ecd488e64b514fd8145457e3ed1e3c
 +README.zh.md: 6ac6a61f161b41857216b2576c6cf928cadca24b
 diff --git a/packages/api/gateway/README.md b/packages/api/gateway/README.md
-index a234189cff..4b6233dd66 100644
+index a234189..4b6233d 100644
 --- a/packages/api/gateway/README.md
 +++ b/packages/api/gateway/README.md
 @@ -32,7 +32,7 @@ The Host entry registers a trusted-host interceptor on Connection's shared `/api
@@ -1028,7 +1028,7 @@ index a234189cff..4b6233dd66 100644
  Host composition can register one application event source through `registerRemoteEvents()`. Gateway reserves the internal `$events` logical endpoint for that source, accepts only empty `args`, and aborts streams opened by the registration when the source is withdrawn. API Remotes owns the event selection, argument validation, per-Client queues, and the Host home sent in the opening `{ type: 'ready', clientId, host: { home } }` frame. Its source factory attaches incremental listeners synchronously, so the Client publishes the generation and starts baseline reads only after incremental delivery is ready.
 
 diff --git a/packages/api/gateway/README.zh.md b/packages/api/gateway/README.zh.md
-index 067adbdbe0..6ac6a61f16 100644
+index 067adbd..6ac6a61 100644
 --- a/packages/api/gateway/README.zh.md
 +++ b/packages/api/gateway/README.zh.md
 @@ -32,7 +32,7 @@ Connection 可用时，Host 入口会在 Connection 共享的 `/api` FetchHandle
@@ -1041,7 +1041,7 @@ index 067adbdbe0..6ac6a61f16 100644
  Host 组合可通过 `registerRemoteEvents()` 注册唯一的应用事件 source。Gateway 为它保留内部 `$events` logical endpoint，只接受空 `args`，并在 source 撤回时中止该注册打开的 stream。事件名单、参数校验、每 Client 队列及 opening `{ type: 'ready', clientId, host: { home } }` frame 中的 Host home 由 API Remotes 拥有。source factory 在返回 iterable 前同步挂好增量 listener，因此 Client 只在增量投递就绪后发布 generation 并开始 baseline 读取。
 
 diff --git a/packages/api/gateway/src/client/index.ts b/packages/api/gateway/src/client/index.ts
-index 853fc4242f..7827f65dc3 100644
+index 853fc42..7827f65 100644
 --- a/packages/api/gateway/src/client/index.ts
 +++ b/packages/api/gateway/src/client/index.ts
 @@ -32,7 +32,9 @@ import {
@@ -1056,7 +1056,7 @@ index 853fc4242f..7827f65dc3 100644
  export type {
    RemoteJournalChange,
 diff --git a/packages/api/gateway/src/client/stream-client.ts b/packages/api/gateway/src/client/stream-client.ts
-index 3310cfd39e..2bbc81c251 100644
+index 3310cfd..2bbc81c 100644
 --- a/packages/api/gateway/src/client/stream-client.ts
 +++ b/packages/api/gateway/src/client/stream-client.ts
 @@ -30,6 +30,14 @@ interface SocketWaiter {
@@ -1139,7 +1139,7 @@ index 3310cfd39e..2bbc81c251 100644
 +  return socket.readyState === 1
 +}
 diff --git a/packages/api/gateway/tests/gateway.client.spec.ts b/packages/api/gateway/tests/gateway.client.spec.ts
-index 7fb0ec8bdc..51ca4edd9b 100644
+index 7fb0ec8..51ca4ed 100644
 --- a/packages/api/gateway/tests/gateway.client.spec.ts
 +++ b/packages/api/gateway/tests/gateway.client.spec.ts
 @@ -2338,6 +2338,20 @@ describe('Remote stream client carrier lifecycle', () => {
@@ -1164,7 +1164,7 @@ index 7fb0ec8bdc..51ca4edd9b 100644
      await withFakeWebSocket('https://harness.example', async () => {
        FakeWebSocket.autoOpen = false
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index be1647c24b..2345e572d1 100644
+index be1647c..83bdfce 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
 @@ -835,6 +835,37 @@ importers:
@@ -1205,8 +1205,18 @@ index be1647c24b..2345e572d1 100644
    packages/api/gateway:
      dependencies:
        '@deepseek-ai/dsh-deque':
+@@ -11052,6 +11083,9 @@ importers:
+       '@deepseek-ai/dsh-session-title':
+         specifier: workspace:^
+         version: link:../../packages/session/session-title
++      '@deepseek-ai/dsh-session-title-llm':
++        specifier: workspace:^
++        version: link:../../packages/session/session-title-llm
+       '@deepseek-ai/dsh-settings':
+         specifier: workspace:^
+         version: link:../../packages/settings/settings
 diff --git a/scripts/run-gates.ts b/scripts/run-gates.ts
-index 3918c87d38..b510aedd00 100644
+index 3918c87..b510aed 100644
 --- a/scripts/run-gates.ts
 +++ b/scripts/run-gates.ts
 @@ -800,6 +800,7 @@ function builtBinSmokeGate(needs: string[] = ['build']): Gate {
@@ -1218,7 +1228,7 @@ index 3918c87d38..b510aedd00 100644
      label: 'built-bin smoke',
      needs,
 diff --git a/tsconfig.base.json b/tsconfig.base.json
-index 83cabd9e4a..b51e75b3ed 100644
+index 83cabd9..b51e75b 100644
 --- a/tsconfig.base.json
 +++ b/tsconfig.base.json
 @@ -47,6 +47,7 @@
@@ -1230,7 +1240,7 @@ index 83cabd9e4a..b51e75b3ed 100644
        "@deepseek-ai/dsh-api-session-controller/client": ["./packages/api/session-controller/src/client/index.ts"],
        "@deepseek-ai/dsh-api-session-controller/types": ["./packages/api/session-controller/src/types.ts"],
 diff --git a/tsconfig.client.json b/tsconfig.client.json
-index 8ffb94127a..0bfa43f67a 100644
+index 8ffb941..0bfa43f 100644
 --- a/tsconfig.client.json
 +++ b/tsconfig.client.json
 @@ -65,6 +65,7 @@

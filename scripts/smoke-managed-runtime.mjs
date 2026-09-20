@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { DshClient } from '../vscode/out/dshClient.js';
+import { DshClient, PACKAGED_DSH_ORIGIN } from '../vscode/out/dshClient.js';
 import { activatePayload } from '../vscode/out/runtimeInstaller.js';
 
 const { values } = parseArgs({
@@ -72,7 +72,7 @@ try {
     status: () => {},
     submissionObserved: () => {},
     userCommitted: () => {},
-  }, undefined, join(active.directory, 'client-runtime.js'));
+  }, undefined, join(active.directory, 'client-runtime.js'), PACKAGED_DSH_ORIGIN);
   if (projected.resets < 1 || projected.historyStates < 1) {
     throw new Error('Managed DSH Client did not project its initial Session window');
   }

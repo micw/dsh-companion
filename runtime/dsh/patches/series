@@ -1,3 +1,4 @@
 0001-publish-node-client-object-runtime.patch
 0002-close-web-runtime-session-title-dependency.patch
 0003-scan-presets-with-sea-compatible-directory-stats.patch
+0004-share-model-capabilities-and-preserve-selection-intent.patch

@@ -6,7 +6,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type * as vscode from 'vscode';
-import { DSH_ORIGIN } from './dshClient';
+import { PACKAGED_DSH_ORIGIN } from './dshClient';
 import { RuntimeControl } from './runtimeControl';
 
 const TARGET = 'linux-x64';
@@ -201,9 +201,9 @@ async function startSupervisor(
     version: 1,
     stateFile,
     command: join(installed, manifest.launch.executable),
-    args: [...manifest.launch.args, '--port', new URL(DSH_ORIGIN).port],
+    args: [...manifest.launch.args, '--port', new URL(PACKAGED_DSH_ORIGIN).port],
     cwd: globalStorage,
-    origin: DSH_ORIGIN,
+    origin: PACKAGED_DSH_ORIGIN,
     environment: {
       DSH_HOME: dataHome,
       DSH_TELEMETRY_DISABLED: '1',

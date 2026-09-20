@@ -860,9 +860,8 @@ function findCatalogModel(providerId, modelId) {
 
 function effortLabel(model, effort) {
   if (!isRecord(model?.reasoning)) return undefined;
-  const effective = effort ?? model.reasoning.defaultEffort;
-  if (effective === undefined) return 'Provider default';
-  return model.reasoning.efforts.find((candidate) => candidate.id === effective)?.name ?? effective;
+  if (effort === undefined) return 'Provider default';
+  return model.reasoning.efforts.find((candidate) => candidate.id === effort)?.name ?? effort;
 }
 
 function renderModelTrigger() {
@@ -991,15 +990,11 @@ function renderEffortMenu(group, model, anchor) {
   title.textContent = model.name;
   effortMenu.append(title);
   const efforts = [
-    ...(model.reasoning.defaultEffort === undefined
-      ? [{ id: undefined, name: 'Provider default' }]
-      : []),
+    { id: undefined, name: 'Provider default' },
     ...model.reasoning.efforts,
   ];
   const selectedRoute = modelSelection?.provider === group.id && modelSelection.model === model.id;
-  const selectedEffort = selectedRoute
-    ? modelSelection.reasoningEffort ?? model.reasoning.defaultEffort
-    : undefined;
+  const selectedEffort = selectedRoute ? modelSelection.reasoningEffort : undefined;
   if (selectedEffort !== undefined && !efforts.some((candidate) => candidate.id === selectedEffort)) {
     efforts.unshift({ id: selectedEffort, name: selectedEffort, unavailable: true });
   }
@@ -1159,7 +1154,7 @@ function saveState() {
 }
 
 function isNearOutputBottom() {
-  return output.scrollHeight - output.scrollTop - output.clientHeight < 64;
+  return output.scrollHeight - output.scrollTop - output.clientHeight < 32;
 }
 
 function setOutputFollow() {

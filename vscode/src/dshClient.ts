@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
 
-/** Fixed development DSH Web origin. */
+/** Fixed source-development DSH Web origin. */
 export const DSH_ORIGIN = 'http://127.0.0.1:3081';
+
+/** Fixed installed Managed Runtime origin, kept apart from the development origin so packaged activation never collides with a DSH already running there. */
+export const PACKAGED_DSH_ORIGIN = 'http://127.0.0.1:3082';
 
 export class DshHttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -82,6 +86,8 @@ export interface DshModelCatalog {
       readonly id: string;
       readonly name: string;
       readonly description?: string;
+      readonly inputModalities?: readonly ('text' | 'image')[];
+      readonly context?: { readonly contextWindow: number };
       readonly reasoning?: {
         readonly efforts: readonly { readonly id: string; readonly name: string; readonly description?: string }[];
         readonly defaultEffort?: string;
@@ -201,6 +207,7 @@ interface CanonicalState {
   readonly graph: CanonicalClientGraph;
   readonly binding: CanonicalBinding;
   readonly disposers: (() => void)[];
+  readonly disposeProviderRemotes: () => Promise<void>;
   readonly requestAliases: Map<string, string>;
   assistantAttemptId?: string;
 }
@@ -285,6 +292,23 @@ export function advanceContextPressure(
       ...(contextWindow === undefined ? {} : { contextWindow }),
     },
   };
+}
+
+/** Replaces the last request's capacity with the selected catalog route's current capacity. */
+export function contextPressureForModel(
+  pressure: DshContextPressure | undefined,
+  selection: DshModelSelection,
+  catalog: DshModelCatalog,
+): DshContextPressure | undefined {
+  const model = catalog.groups.find((group) => group.id === selection.provider)
+    ?.models.find((candidate) => candidate.id === selection.model);
+  const contextWindow = model?.context?.contextWindow;
+  if (contextWindow === undefined) {
+    if (pressure === undefined) return undefined;
+    const { contextWindow: _stale, ...withoutContextWindow } = pressure;
+    return withoutContextWindow;
+  }
+  return { ...pressure, contextWindow };
 }
 
 /** Projects one durable DSH compaction lifecycle event for transcript presentation. */
@@ -405,10 +429,11 @@ export class DshClient {
     sink: DshOutputSink,
     restoredSessionId: string | undefined,
     clientModule: string,
+    origin: string = DSH_ORIGIN,
   ): Promise<DshClient> {
     sink.status('Connecting to DSH…');
-    await rpc(cookie, 'session/list', { _request: {} });
-    return DshClient.connectCanonical(cookie, cwd, sink, restoredSessionId, clientModule);
+    await rpc(cookie, 'session/list', { _request: {} }, origin);
+    return DshClient.connectCanonical(cookie, cwd, sink, restoredSessionId, clientModule, origin);
   }
 
   private static async connectCanonical(
@@ -417,6 +442,7 @@ export class DshClient {
     sink: DshOutputSink,
     restoredSessionId: string | undefined,
     clientModule: string,
+    origin: string,
   ): Promise<DshClient> {
     const module = await importExternalModule(pathToFileURL(clientModule).href);
     const Client = isRecord(module)
@@ -428,10 +454,15 @@ export class DshClient {
     if (typeof connect !== 'function') {
       throw new Error('Managed DSH Client module has an invalid API');
     }
-    const graphValue: unknown = await assembleCanonicalClient(connect, Client, { origin: DSH_ORIGIN, cookie });
+    const graphValue: unknown = await assembleCanonicalClient(connect, Client, { origin, cookie });
     if (!isCanonicalClientGraph(graphValue)) throw new Error('Managed DSH Client returned an invalid object graph');
     const graph = graphValue;
+    let disposeProviderRemotes: (() => Promise<void>) | undefined;
     try {
+      const mountedProviderRemotes = await mountCompanionProviderRemotes(
+        graph.remote as unknown as Parameters<typeof mountCompanionProviderRemotes>[0],
+      );
+      disposeProviderRemotes = mountedProviderRemotes;
       const catalogResult = await callCanonicalRemote(graph, 'session', 'modelCatalog');
       const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
       const sessionId = restoredSessionId ?? await graph.sessions.create(cwd === undefined ? {} : { cwd });
@@ -453,6 +484,7 @@ export class DshClient {
         graph,
         binding,
         disposers: [],
+        disposeProviderRemotes: mountedProviderRemotes,
         requestAliases: new Map(),
       });
       sink.modelCatalog(modelCatalog);
@@ -462,7 +494,11 @@ export class DshClient {
       sink.status('Connected');
       return client;
     } catch (error) {
-      await graph.dispose();
+      try {
+        await disposeProviderRemotes?.();
+      } finally {
+        await graph.dispose();
+      }
       throw error;
     }
   }
@@ -526,7 +562,13 @@ export class DshClient {
     const canonical = this.canonical;
     if (canonical === undefined) return;
     for (const dispose of canonical.disposers.splice(0)) dispose();
-    void canonical.graph.dispose().catch(() => {
+    void (async () => {
+      try {
+        await canonical.disposeProviderRemotes();
+      } finally {
+        await canonical.graph.dispose();
+      }
+    })().catch(() => {
       console.warn('DSH Client disposal did not settle cleanly');
     });
     this.canonical = undefined;
@@ -699,13 +741,22 @@ export class DshClient {
     if (next === this.modelSelectionState) return;
     this.modelSelectionState = next;
     this.sink.modelSelection(next.current);
+    this.publishContextPressure();
   }
 
   private acceptContextPressure(projection: unknown, watermark: number): void {
     const next = advanceContextPressure(this.contextPressureState, projection, watermark);
     if (next === this.contextPressureState) return;
     this.contextPressureState = next;
-    this.sink.contextPressure(next.current);
+    this.publishContextPressure();
+  }
+
+  private publishContextPressure(): void {
+    this.sink.contextPressure(contextPressureForModel(
+      this.contextPressureState.current,
+      this.modelSelectionState.current,
+      this.modelCatalogValue,
+    ));
   }
 
   private receiveAssistantChunk(chunk: Record<string, unknown>, time: unknown): void {
@@ -946,10 +997,10 @@ export class DshClient {
 }
 
 /** Exchanges a DSH launch URL for the authority-bound browser cookie. */
-export async function exchangeLaunchUrl(launchUrl: string): Promise<string> {
+export async function exchangeLaunchUrl(launchUrl: string, origin: string = DSH_ORIGIN): Promise<string> {
   const url = new URL(launchUrl);
-  if (url.origin !== DSH_ORIGIN || url.pathname !== '/' || !url.searchParams.has('token')) {
-    throw new Error(`Expected the launch URL printed by DSH for ${DSH_ORIGIN}`);
+  if (url.origin !== origin || url.pathname !== '/' || !url.searchParams.has('token')) {
+    throw new Error(`Expected the launch URL printed by DSH for ${origin}`);
   }
   const response = await fetch(url, { method: 'GET', redirect: 'manual' });
   if (response.status !== 303) {
@@ -963,9 +1014,9 @@ export async function exchangeLaunchUrl(launchUrl: string): Promise<string> {
   return cookie;
 }
 
-async function rpc<T = unknown>(cookie: string, endpoint: string, args: object): Promise<T> {
+async function rpc<T = unknown>(cookie: string, endpoint: string, args: object, origin: string): Promise<T> {
   const rpcId = randomUUID();
-  const response = await fetch(new URL(`/api/${endpoint}`, DSH_ORIGIN), {
+  const response = await fetch(new URL(`/api/${endpoint}`, origin), {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -1009,7 +1060,7 @@ function isCanonicalClientGraph(value: unknown): value is CanonicalClientGraph {
   return isRecord(value) && isRecord(value.sessions) && isObservable(value.sessions.list)
     && typeof value.sessions.create === 'function' && typeof value.sessions.open === 'function'
     && typeof value.sessions.binding === 'function' && typeof value.sessions.subagentAddress === 'function'
-    && isRecord(value.remote)
+    && isRecord(value.remote) && typeof value.remote.$mount === 'function'
     && isRecord(value.connection) && isObservable(value.connection.state)
     && typeof value.dispose === 'function';
 }
@@ -1133,6 +1184,21 @@ function parseCatalogModel(value: unknown): DshModelCatalog['groups'][number]['m
     || (value.description !== undefined && typeof value.description !== 'string')) {
     throw new Error('DSH returned an invalid model catalog entry');
   }
+  let inputModalities: readonly ('text' | 'image')[] | undefined;
+  if (value.inputModalities !== undefined) {
+    if (!Array.isArray(value.inputModalities)
+      || value.inputModalities.some((modality) => modality !== 'text' && modality !== 'image')) {
+      throw new Error('DSH returned invalid model input modalities');
+    }
+    inputModalities = value.inputModalities as ('text' | 'image')[];
+  }
+  let context: { readonly contextWindow: number } | undefined;
+  if (value.context !== undefined) {
+    if (!isRecord(value.context)) throw new Error('DSH returned invalid model context metadata');
+    const contextWindow = optionalCount(value.context.contextWindow, 'contextWindow', true);
+    if (contextWindow === undefined) throw new Error('DSH returned invalid model context metadata');
+    context = { contextWindow };
+  }
   let reasoning: DshModelCatalog['groups'][number]['models'][number]['reasoning'];
   if (value.reasoning !== undefined) {
     if (!isRecord(value.reasoning) || !Array.isArray(value.reasoning.efforts)
@@ -1160,6 +1226,8 @@ function parseCatalogModel(value: unknown): DshModelCatalog['groups'][number]['m
     id: value.id,
     name: value.name,
     ...(value.description === undefined ? {} : { description: value.description }),
+    ...(inputModalities === undefined ? {} : { inputModalities }),
+    ...(context === undefined ? {} : { context }),
     ...(reasoning === undefined ? {} : { reasoning }),
   };
 }

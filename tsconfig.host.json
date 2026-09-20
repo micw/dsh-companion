@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "typert-protocol.d.ts"
+  ],
+  "references": [
+    {
+      "path": "packages/model-policy"
+    },
+    {
+      "path": "packages/provider-account"
+    },
+    {
+      "path": "packages/provider-catalog"
+    },
+    {
+      "path": "packages/provider-client"
+    },
+    {
+      "path": "packages/ui-provider-settings"
+    }
+  ]
+}

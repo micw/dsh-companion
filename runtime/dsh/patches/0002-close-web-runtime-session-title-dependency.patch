@@ -1,19 +1,5 @@
-diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 2345e572d1..83bdfcebc3 100644
---- a/pnpm-lock.yaml
-+++ b/pnpm-lock.yaml
-@@ -11083,6 +11083,9 @@ importers:
-       '@deepseek-ai/dsh-session-title':
-         specifier: workspace:^
-         version: link:../../packages/session/session-title
-+      '@deepseek-ai/dsh-session-title-llm':
-+        specifier: workspace:^
-+        version: link:../../packages/session/session-title-llm
-       '@deepseek-ai/dsh-settings':
-         specifier: workspace:^
-         version: link:../../packages/settings/settings
 diff --git a/python/sdk-runtime/package.json b/python/sdk-runtime/package.json
-index 3a3f128cf5..8536215344 100644
+index 3a3f128..8536215 100644
 --- a/python/sdk-runtime/package.json
 +++ b/python/sdk-runtime/package.json
 @@ -79,6 +79,7 @@

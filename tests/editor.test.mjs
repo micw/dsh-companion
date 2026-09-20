@@ -4,9 +4,11 @@ import test from 'node:test';
 
 import {
   DSH_ORIGIN,
+  PACKAGED_DSH_ORIGIN,
   TurnStats,
   advanceContextPressure,
   advanceModelSelection,
+  contextPressureForModel,
   exchangeLaunchUrl,
   parseCompactionEvent,
   parseModelCatalog,
@@ -26,6 +28,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('context-trigger'\)/);
   assert.match(script, /function renderModelPicker/);
   assert.match(script, /function renderEffortMenu/);
+  assert.match(script, /if \(effort === undefined\) return 'Provider default'/);
+  assert.match(script, /const efforts = \[\s*\{ id: undefined, name: 'Provider default' \}/);
+  assert.doesNotMatch(script, /reasoningEffort \?\? model\.reasoning\.defaultEffort/);
   assert.match(script, /function renderContextMeter/);
   assert.match(script, /function applyCompactionEvent/);
   assert.match(script, /prompt\.disabled = compacting/);
@@ -73,7 +78,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function scrollToLatestOutput[\s\S]*behavior: 'smooth'/);
   assert.match(script, /stickyPromptJump\.addEventListener[\s\S]*setOutputSticky\(true\)[\s\S]*scrollIntoView/);
   assert.match(script, /output\.contains\(selection\.anchorNode\)/);
-  assert.match(script, /output\.scrollHeight - output\.scrollTop - output\.clientHeight < 64/);
+  assert.match(script, /output\.scrollHeight - output\.scrollTop - output\.clientHeight < 32/);
   assert.match(script, /scrollMode = nearBottom \? 'follow' : 'sticky'/);
   assert.match(script, /scrollMode === 'sticky' && nearBottom && !bottomLatchSuppressed/);
   assert.match(script, /scrollMode !== 'follow' \|\| userScrollIntent \|\| pointerScrolling/);
@@ -112,14 +117,28 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /runtime\.clientModule/);
   assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context\)/);
   assert.match(extension, /Managed DSH runtime is unavailable/);
+  assert.match(extension, /runtime\?\.runtimeId !== 'source' \|\| runtime\.origin !== DSH_ORIGIN/);
+  assert.match(extension, /vscode\.env\.openExternal\(vscode\.Uri\.parse\(await runtime\.bootstrapUrl\(\)\)\)/);
   assert.doesNotMatch(extension, /showInputBox|Paste the launch URL/);
   assert.match(dshClient, /connectCanonical/);
+  assert.match(dshClient, /mountCompanionProviderRemotes/);
   assert.match(dshClient, /connection\.state\.subscribe/);
   assert.doesNotMatch(dshClient, /remote\.mux|new WebSocket|Handwritten DSH/);
 });
 
 test('the development connection is fixed to the running DSH origin', () => {
   assert.equal(DSH_ORIGIN, 'http://127.0.0.1:3081');
+});
+
+test('the packaged runtime owns a separate loopback origin', async () => {
+  const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  const installer = await readFile(new URL('../vscode/src/runtimeInstaller.ts', import.meta.url), 'utf8');
+  const smoke = await readFile(new URL('../scripts/smoke-managed-runtime.mjs', import.meta.url), 'utf8');
+  assert.equal(PACKAGED_DSH_ORIGIN, 'http://127.0.0.1:3082');
+  assert.match(extension, /runtime\.origin !== DSH_ORIGIN && runtime\.origin !== PACKAGED_DSH_ORIGIN/);
+  assert.match(installer, /'--port', new URL\(PACKAGED_DSH_ORIGIN\)\.port/);
+  assert.match(installer, /origin: PACKAGED_DSH_ORIGIN/);
+  assert.match(smoke, /PACKAGED_DSH_ORIGIN\)/);
 });
 
 test('turn statistics aggregate usage and timing across attempts', () => {
@@ -175,6 +194,8 @@ test('the DSH model catalog preserves provider-owned effort metadata and order',
         id: 'reasoner',
         name: 'Reasoner',
         description: 'Complex work',
+        inputModalities: ['text', 'image'],
+        context: { contextWindow: 262_144 },
         reasoning: {
           efforts: [
             { id: 'off', name: 'Off' },
@@ -194,6 +215,8 @@ test('the DSH model catalog preserves provider-owned effort metadata and order',
     ],
     defaultEffort: 'high',
   });
+  assert.deepEqual(catalog.groups[0].models[0].inputModalities, ['text', 'image']);
+  assert.deepEqual(catalog.groups[0].models[0].context, { contextWindow: 262_144 });
   assert.deepEqual(catalog.failures, [{ id: 'broken', name: 'Broken Provider', message: 'Unavailable' }]);
 });
 
@@ -239,6 +262,30 @@ test('context pressure restores from DSH and ignores stale live-stream projectio
 test('context pressure rejects invented zero capacities and negative token counts', () => {
   assert.throws(() => advanceContextPressure({ watermark: -1 }, { contextWindow: 0 }, 0), /contextWindow/);
   assert.throws(() => advanceContextPressure({ watermark: -1 }, { pressureTokens: -1 }, 0), /pressureTokens/);
+});
+
+test('model selection immediately replaces stale request capacity from the DSH catalog', () => {
+  const catalog = parseModelCatalog({
+    default: { provider: 'alpha', model: 'small' },
+    routableProviders: ['alpha'],
+    groups: [{
+      id: 'alpha',
+      name: 'Alpha',
+      models: [
+        { id: 'small', name: 'Small', context: { contextWindow: 100_000 } },
+        { id: 'large', name: 'Large', context: { contextWindow: 500_000 } },
+        { id: 'unknown', name: 'Unknown' },
+      ],
+    }],
+    failures: [],
+  });
+  const pressure = { pressureTokens: 25_000, projectedTokens: 30_000, contextWindow: 100_000 };
+  assert.deepEqual(contextPressureForModel(
+    pressure, { provider: 'alpha', model: 'large' }, catalog,
+  ), { pressureTokens: 25_000, projectedTokens: 30_000, contextWindow: 500_000 });
+  assert.deepEqual(contextPressureForModel(
+    pressure, { provider: 'alpha', model: 'unknown' }, catalog,
+  ), { pressureTokens: 25_000, projectedTokens: 30_000 });
 });
 
 test('durable compaction events project running, summary, and completed session activity', () => {

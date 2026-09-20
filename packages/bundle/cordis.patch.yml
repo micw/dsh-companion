@@ -1,0 +1,17 @@
+# Generic DSH Companion provider infrastructure. Provider bundles remain optional.
+- insert:
+    - id: dsh-companion-provider-catalog
+      name: '@dsh-companion/provider-catalog'
+
+    - id: dsh-companion-provider-account
+      name: '@dsh-companion/provider-account'
+
+    - id: dsh-companion-model-policy
+      name: '@dsh-companion/model-policy'
+      config: {}
+
+    - id: dsh-companion-provider-client
+      name: '@dsh-companion/provider-client'
+
+    - id: dsh-companion-ui-provider-settings
+      name: '@dsh-companion/ui-provider-settings'
