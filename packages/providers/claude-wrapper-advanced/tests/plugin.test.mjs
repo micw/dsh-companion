@@ -55,7 +55,7 @@ test('registers a configurable native route and loads its catalog through the ge
   try {
     await fiber
     assert.deepEqual(ctx.llm.listProviders(), [
-      { id: CLAUDE_WRAPPER_ADVANCED_PROVIDER, name: 'Claude Wrapper Advanced' },
+      { id: CLAUDE_WRAPPER_ADVANCED_PROVIDER, name: 'Claude' },
     ])
     assert.deepEqual(ctx.llm.listConfigurableProviders(), [{
       provider: CLAUDE_WRAPPER_ADVANCED_PROVIDER,

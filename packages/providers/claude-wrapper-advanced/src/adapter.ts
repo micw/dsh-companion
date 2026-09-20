@@ -19,7 +19,7 @@ export interface ClaudeAdapterOptions {
 }
 export class ClaudeWrapperAdvancedAdapter extends LlmAdapter {
   constructor(private readonly options: ClaudeAdapterOptions) { super() }
-  override providerInfo(provider: string): LlmProviderInfo { this.owned(provider); return { id: provider, name: 'Claude Wrapper Advanced' } }
+  override providerInfo(provider: string): LlmProviderInfo { this.owned(provider); return { id: provider, name: 'Claude' } }
   override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined { this.owned(provider); return this.options.retryPolicy?.() }
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> { this.owned(provider); return (await this.options.generation()).catalog.listModels().filter(model => this.enabled(provider, model.id)) }
   override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> { this.owned(provider); this.allowed(provider, model); return (await this.options.generation(signal)).catalog.resolveModel(model) }

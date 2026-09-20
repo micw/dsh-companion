@@ -2,6 +2,8 @@
 
 Optional DSH Companion provider for an independently operated Claude Wrapper Advanced `/wire/v1` service. It strictly validates `info`, `models`, `usage`, and `responses`; registers the `claude-wrapper-advanced` DSH route; persists catalog LKG state through Companion; follows settings, credentials, and model policy; and projects quota windows into provider-account state.
 
+The DSH model catalog uses the concise provider display name `Claude`; settings and diagnostics retain the full Claude Wrapper Advanced product name.
+
 The adapter serializes DSH history into OpenAI-chat-like messages with tools, tool results, and images. It sends the DSH Session identity separately from the logical Turn cost scope. `thinking_progress.tokens` becomes transient `reasoning-token-progress` status with an estimated basis; final `done.usage.thinking` becomes `reasoningTokens` only when the wrapper marks it reported. The wrapper exposes no replay payload, so none is fabricated.
 
 Validated non-null costs with `scope: call | turn` become virtual USD `ModelCallAccounting`. USD is rounded once to safe integer nanos, and the wrapper counter epoch is retained as the tariff version. Null amount, null/unknown scope, or unsafe nanos emits no accounting. `by_model` remains validated private diagnostics.
