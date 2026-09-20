@@ -1,6 +1,6 @@
 # @dsh-companion/bundle
 
-Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
+Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
 
 ## Model Experience
 
@@ -16,4 +16,4 @@ Stable while the Companion preset is unchanged. Fresh subagents inherit the same
 
 ## Known Limitations and Deferred Work
 
-The preset duplicates the pinned DSH standard composition because DSH presets do not support inheritance. A drift test requires every upstream composition change to be reviewed while preserving the intentional omission of `subagent_fork`. The bundle provides generic provider infrastructure and its DSH Web settings presentation, but no provider-specific adapter. Each external provider remains an optional bundle with its own deployment and authentication requirements.
+The preset duplicates the pinned DSH standard composition because DSH presets do not support inheritance. A drift test requires every upstream composition change to be reviewed while preserving the intentional omission of `subagent_fork`. The bundle provides generic provider infrastructure and its DSH Web settings presentation, but no provider-specific adapter. OpenAI and OpenRouter remain available through DSH's add-provider catalog; each external wrapper provider remains an optional bundle with its own deployment and authentication requirements. No provider route is active in a fresh Companion profile until the user configures one.

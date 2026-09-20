@@ -11,6 +11,10 @@
     includeShippedRoot: false
     includeUserRoot: false
 
+- id: llm-deepseek
+  config:
+    enabled: false
+
 - insert:
     - id: dsh-companion-preset-root
       name: '@dsh-companion/bundle'

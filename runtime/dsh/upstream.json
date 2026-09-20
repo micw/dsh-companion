@@ -114,6 +114,17 @@
       "affectedModules": [
         "@deepseek-ai/dsh-client-modules"
       ]
+    },
+    {
+      "id": "native-deepseek-enablement",
+      "file": "patches/0010-add-native-deepseek-enablement.patch",
+      "sha256": "edee9979a4c062461a5bc6f9772b815ef41a96b1a9c0bf0150f59e10cf976875",
+      "assessment": "patches/native-deepseek-enablement.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-llm-deepseek",
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ]
     }
   ]
 }
