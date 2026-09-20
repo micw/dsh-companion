@@ -1,0 +1,126 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { serializeCodexWireRequest } from '../lib/index.js'
+
+const base = {
+  provider: 'codex-wrapper-advanced',
+  model: 'gpt-5.6-sol:long',
+  reasoningEffort: 'high',
+  tools: [{ name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } }],
+  sessionId: 'session-1',
+}
+
+const imageUrl = async attachment => `data:${attachment.mediaType};base64,${attachment.id}`
+
+test('serializes instructions, multimodal user input, tools, and stable session routing', async () => {
+  const request = await serializeCodexWireRequest({
+    ...base,
+    messages: [
+      message('system', [{ type: 'text', text: 'System instructions.' }], { kind: 'plugin', plugin: 'system' }),
+      message('user', [
+        { type: 'text', text: 'Inspect this.' },
+        { type: 'image', attachment: { id: 'image-data', mediaType: 'image/png' } },
+      ], { kind: 'user' }),
+    ],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+
+  assert.deepEqual(request, {
+    model: 'gpt-5.6-sol',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'Inspect this.' },
+        { type: 'input_image', image_url: 'data:image/png;base64,image-data' },
+      ],
+    }],
+    instructions: 'System instructions.',
+    tools: [{ type: 'function', name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } }],
+    effort: 'high',
+    parallel_tool_calls: true,
+    store: false,
+    session_id: 'session-1',
+  })
+})
+
+test('replays opaque reasoning in block order and preserves raw tool arguments', async () => {
+  const reasoningItem = {
+    type: 'reasoning',
+    id: 'reasoning-1',
+    encrypted_content: 'opaque',
+    summary: [{ type: 'summary_text', text: 'Checked.' }],
+  }
+  const request = await serializeCodexWireRequest({
+    ...base,
+    messages: [
+      message('assistant', [
+        { type: 'reasoning', text: 'Checked.' },
+        { type: 'text', text: 'Calling ' },
+        { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '{"path":"a"}' },
+        { type: 'text', text: 'after call' },
+      ], {
+        kind: 'model',
+        provider: 'codex-wrapper-advanced',
+        model: 'gpt-5.6-sol',
+        replayState: {
+          response: { version: 1, responseId: 'resp-1' },
+          blocks: [{ reasoningItem }, null, null, null],
+        },
+      }),
+      message('user', [{
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        content: [{ type: 'text', text: 'file body' }],
+      }], { kind: 'tool', callId: 'call-1' }),
+    ],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+
+  assert.deepEqual(request.input, [
+    reasoningItem,
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Calling ' }] },
+    { type: 'function_call', call_id: 'call-1', name: 'read_file', arguments: '{"path":"a"}' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after call' }] },
+    { type: 'function_call_output', call_id: 'call-1', output: 'file body' },
+  ])
+})
+
+test('drops unusable replay metadata instead of sending unvalidated opaque data', async () => {
+  const request = await serializeCodexWireRequest({
+    ...base,
+    messages: [message('assistant', [
+      { type: 'reasoning', text: 'Not replayable.' },
+      { type: 'text', text: 'Visible answer.' },
+    ], {
+      kind: 'model',
+      provider: 'codex-wrapper-advanced',
+      model: 'gpt-5.6-sol',
+      replayState: { response: { version: 99 }, blocks: [{ reasoningItem: 'not-an-object' }, null] },
+    })],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+  assert.deepEqual(request.input, [
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Visible answer.' }] },
+  ])
+})
+
+test('rejects unsupported controls and unverified mid-history system changes', async () => {
+  await assert.rejects(
+    serializeCodexWireRequest({ ...base, temperature: 0, messages: [] }, { wireModel: 'model', imageUrl }),
+    error => error.code === 'UNSUPPORTED_OPTION' && /temperature/u.test(error.message),
+  )
+  await assert.rejects(
+    serializeCodexWireRequest({
+      ...base,
+      messages: [
+        message('user', [{ type: 'text', text: 'before' }], { kind: 'user' }),
+        message('system', [{ type: 'text', text: 'changed' }], { kind: 'plugin', plugin: 'system' }),
+      ],
+    }, { wireModel: 'model', imageUrl }),
+    error => error.code === 'UNSUPPORTED_CONTENT' && /mid-history/u.test(error.message),
+  )
+})
+
+let nextMessage = 0
+function message(role, content, source) {
+  nextMessage += 1
+  return { id: `${role}-${String(nextMessage)}`, role, content, source }
+}

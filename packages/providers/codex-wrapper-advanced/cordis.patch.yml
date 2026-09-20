@@ -1,0 +1,5 @@
+# Optional provider adapter for an independently operated Codex Wrapper Advanced service.
+- insert:
+    - id: dsh-companion-provider-codex-wrapper-advanced
+      name: '@dsh-companion/provider-codex-wrapper-advanced'
+      config: {}

@@ -1,0 +1,34 @@
+# DSH Companion provider for Codex Wrapper Advanced
+
+This package connects DeepSeek Harness to an independently operated Codex Wrapper Advanced service through its authenticated `/wire/v1` HTTP and SSE API. It is an independent DSH Companion plugin and is not affiliated with or endorsed by DeepSeek or OpenAI.
+
+The wrapper process, wrapper authentication, wrapper deployment, and wrapper updates are outside this package's lifecycle. The plugin is only a client of a configured service endpoint and a provider adapter for DSH.
+
+## Development
+
+Requirements: Node.js 22 or newer and pnpm 11.7.
+
+```bash
+pnpm install
+pnpm test
+```
+
+Local development links the pinned DSH source checkout in the sibling `deepseek-harness` directory. Distribution and optional installation policy remain undecided; development and internal builds install this package locally.
+
+## Model Experience
+
+The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. It does not add instructions or tools of its own.
+
+### Token effect
+
+The adapter adds no model-visible text. Wire serialization preserves the DSH request content.
+
+### KV Cache effect
+
+The DSH Session id is sent as the wrapper `session_id`, keeping the wrapper's provider-side prompt-cache route stable across turns. Model, instructions, tools, and history remain the cache-relevant request content.
+
+## Known Limitations and Deferred Work
+
+The package is loadable as an optional DSH profile bundle and is installed from its checkout by the DSH Companion development runtime. Public distribution as a bundled or separately downloadable provider remains undecided.
+
+The native adapter, dynamic catalog, account projection, settings, credentials, model policy, and browser presentation are available. Live wrapper validation through DSH's canonical Web Client covers a text Turn, cold Session restore, a successful two-Step Tool call/result round trip, reasoning output, opaque reasoning replay into a later request, and DSH Session cancellation. The VS Code Client assembly discovers the same route, submits a native provider Turn, and restores its transcript. Post-header SSE cancellation is enforced independently of Fetch implementation behavior. Live image transport remains outstanding; the current VS Code composer does not admit image attachments.
