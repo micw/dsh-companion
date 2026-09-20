@@ -15,6 +15,8 @@ pnpm test
 
 Local development links the pinned DSH source checkout in the sibling `deepseek-harness` directory. Distribution and optional installation policy remain undecided; development and internal builds install this package locally.
 
+The provider is disabled by default. Enabling it requires an explicit service URL; credentials remain in DSH's credential store.
+
 ## Model Experience
 
 The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. DSH tool schemas are explicitly non-strict so the Responses endpoint preserves their optional parameters. Reasoning and tool-call blocks embedded by DSH in synthetic User input are retained as labeled inert text because the Responses User-content vocabulary cannot represent their original channels. The adapter does not add instructions or tools of its own. The Codex backend cannot enforce DSH's compaction output cap; the adapter admits that maintenance request without forwarding the cap so a Codex-routed Session remains compactable, while rejecting unsupported output caps on ordinary model calls.

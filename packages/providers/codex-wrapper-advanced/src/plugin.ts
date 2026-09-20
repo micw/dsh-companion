@@ -47,7 +47,7 @@ export interface Config {
 
 /** Runtime schema for provider settings and composition config. */
 export const Config: z<Config> = z.object({
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().default(false),
   baseURL: z.string(),
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF),
   retryPolicy: RetryPolicySchema,
@@ -253,7 +253,7 @@ function resolveConfig(config: Config): ResolvedConfig {
   const baseURL = config.baseURL === undefined ? undefined : normalizeServiceRoot(config.baseURL)
   const apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF)
   return {
-    enabled: config.enabled ?? true,
+    enabled: config.enabled ?? false,
     ...baseURL === undefined ? {} : { baseURL },
     apiKeyEnv,
     retryPolicy: resolveRetryPolicy(config.retryPolicy, 'provider-codex-wrapper-advanced retryPolicy'),
