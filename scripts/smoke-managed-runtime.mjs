@@ -63,7 +63,7 @@ try {
   if (active.directory !== join(storage, 'runtime', 'versions', `${manifest.companionVersion}-linux-x64`)) {
     throw new Error('Managed DSH activation record does not select the installed payload');
   }
-  const projected = { resets: 0, historyStates: 0 };
+  const projected = { resets: 0, historyStates: 0, permissionSelections: 0 };
   sessionClient = await DshClient.connect(cookie, storage, {
     reset: () => { projected.resets += 1; },
     history: () => {},
@@ -75,6 +75,7 @@ try {
     contextPressure: () => {},
     sessionCost: () => {},
     providerAccounts: () => {},
+    permissionSelection: () => { projected.permissionSelections += 1; },
     compactAvailable: () => {},
     compaction: () => {},
     compacting: () => {},
@@ -88,8 +89,8 @@ try {
     submissionObserved: () => {},
     userCommitted: () => {},
   }, undefined, join(active.directory, 'client-runtime.js'), origin);
-  if (projected.resets < 1 || projected.historyStates < 1) {
-    throw new Error('Managed DSH Client did not project its initial Session window');
+  if (projected.resets < 1 || projected.historyStates < 1 || projected.permissionSelections < 1) {
+    throw new Error('Managed DSH Client did not project its initial Session state');
   }
   console.log(`Managed Runtime smoke passed for ${manifest.companionVersion}`);
 } finally {

@@ -13,6 +13,7 @@ import {
   parseCompactionEvent,
   parseCostSummary,
   parseModelCatalog,
+  parsePermissionSelection,
   parseProviderAccountSnapshot,
   reconcileSettlementAccounting,
 } from '../vscode/out/dshClient.js';
@@ -28,6 +29,11 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('composer'\)/);
   assert.match(script, /getElementById\('prompt'\)/);
   assert.match(script, /getElementById\('model-trigger'\)/);
+  assert.match(script, /getElementById\('permission-select'\)/);
+  assert.match(script, /function renderPermissionSelect/);
+  assert.match(script, /if \(item\.value === 'workspace-write'\) return 'Workspace Write'/);
+  assert.match(script, /if \(item\.value === 'danger-full-access'\) return 'Full access'/);
+  assert.match(script, /type: 'selectPermission'/);
   assert.match(script, /getElementById\('context-trigger'\)/);
   assert.match(script, /function renderModelPicker/);
   assert.match(script, /function renderEffortMenu/);
@@ -68,6 +74,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /reasoning tokens/);
   assert.match(script, /function setMessageTime/);
   assert.match(script, /function completeTurn/);
+  assert.match(script, /function markTurnIncomplete/);
+  assert.match(script, /Interrupted/);
   assert.match(script, /`Thought for \$\{formatDuration\(measuredRunMs\)\}`/);
   assert.match(script, /turn-process turn-process-static/);
   assert.doesNotMatch(script, /Thought for a while/);
@@ -143,6 +151,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.stat-icon \{[\s\S]*width: 14px/);
   assert.match(style, /#prompt \{[\s\S]*max-height: 200px/);
   assert.match(style, /#model-picker \{/);
+  assert.match(style, /#permission-select \{/);
+  assert.match(style, /#permission-select \{[\s\S]*appearance: none;[\s\S]*background: transparent/);
+  assert.match(style, /#permission-control::after \{/);
   assert.match(style, /#effort-menu \{/);
   assert.match(style, /#context-panel \{/);
   assert.match(style, /#provider-usage-panel \{/);
@@ -159,6 +170,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /id="scroll-bottom"[\s\S]*<svg[^>]+><path d="m3\.5 6/);
   assert.match(extension, /Ask DSH Companion… \(Enter sends, Shift\+Enter = newline\)/);
   assert.match(extension, /isSelectModelMessage/);
+  assert.match(extension, /isSelectPermissionMessage/);
+  assert.match(extension, /Full access disables filesystem sandboxing/);
+  assert.match(extension, /id="permission-select" aria-label="Session permission"/);
   assert.match(extension, /isRefreshProviderUsageMessage/);
   assert.match(extension, /id="provider-usage" hidden/);
   assert.match(extension, /id="session-info" hidden/);
@@ -176,14 +190,18 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /Object\.keys\(value\)\.length === 1[\s\S]*copySessionId/);
   assert.doesNotMatch(extension, /copySessionId[\s\S]{0,200}message\.sessionId/);
   assert.match(extension, /runtime\.clientModule/);
-  assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context\)/);
+  assert.match(extension, /if \(runtime === undefined\) \{[\s\S]*runtime = await connectRuntime\(context, authorizeRuntimeReplacement\)/);
   assert.match(extension, /Managed DSH runtime is unavailable/);
+  assert.match(extension, /A different DSH Companion Managed Runtime is still running/);
+  assert.match(extension, /'Replace Runtime'/);
   assert.match(extension, /runtime\?\.runtimeId !== 'source' \|\| runtime\.origin !== DSH_ORIGIN/);
   assert.match(extension, /vscode\.env\.openExternal\(vscode\.Uri\.parse\(await runtime\.bootstrapUrl\(\)\)\)/);
   assert.doesNotMatch(extension, /showInputBox|Paste the launch URL/);
   assert.match(dshClient, /connectCanonical/);
   assert.match(dshClient, /mountCompanionProviderRemotes/);
   assert.match(dshClient, /faceOf\('modelCost'\)/);
+  assert.match(dshClient, /faceOf\('permissions'\)/);
+  assert.match(dshClient, /`\/permission \$\{preset\}`/);
   assert.match(dshClient, /accountingFromStream/);
   assert.match(dshClient, /reasoningStatusId/);
   assert.match(dshClient, /status\.kind === 'reasoning-token-progress'/);
@@ -210,6 +228,7 @@ test('the packaged runtime owns a separate loopback origin', async () => {
   assert.match(installer, /origin = PACKAGED_DSH_ORIGIN/);
   assert.match(installer, /'--port', new URL\(origin\)\.port/);
   assert.match(smoke, /server\.listen\(0, '127\.0\.0\.1'/);
+  assert.match(smoke, /permissionSelection: \(\) => \{ projected\.permissionSelections \+= 1/);
 });
 
 test('provider account snapshots retain validated allowance and reset facts', () => {
@@ -446,6 +465,26 @@ test('the DSH model catalog preserves provider-owned effort metadata and order',
   assert.deepEqual(catalog.groups[0].models[0].inputModalities, ['text', 'image']);
   assert.deepEqual(catalog.groups[0].models[0].context, { contextWindow: 262_144 });
   assert.deepEqual(catalog.failures, [{ id: 'broken', name: 'Broken Provider', message: 'Unavailable' }]);
+});
+
+test('permission projections retain the DSH-owned options and current preset', () => {
+  assert.deepEqual(parsePermissionSelection({
+    options: [
+      { value: 'workspace-write', name: 'Workspace Write', description: 'Confined writes.' },
+      { value: 'danger-full-access', name: 'Full Access', description: 'Unconfined access.' },
+    ],
+    currentValue: 'workspace-write',
+  }), {
+    options: [
+      { value: 'workspace-write', name: 'Workspace Write', description: 'Confined writes.' },
+      { value: 'danger-full-access', name: 'Full Access', description: 'Unconfined access.' },
+    ],
+    currentValue: 'workspace-write',
+  });
+  assert.throws(() => parsePermissionSelection({
+    options: [{ value: 'workspace-write', name: 'Workspace Write' }],
+    currentValue: 'danger-full-access',
+  }), /does not contain its current value/u);
 });
 
 test('model selection restores from DSH projections and rejects stale cross-stream baselines', () => {

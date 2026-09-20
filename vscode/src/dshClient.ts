@@ -49,6 +49,7 @@ export type DshProcessEvent =
     readonly kind: 'reasoning-token-progress'; readonly basis: 'reported' | 'estimated';
     readonly deltaTokens?: number; readonly totalTokens?: number;
   }
+  | { readonly type: 'turn-incomplete'; readonly turn: number }
   | { readonly type: 'turn-summary'; readonly summary: DshTurnSummary; readonly turn: number };
 
 export type DshCostKind = 'reported' | 'estimated' | 'virtual';
@@ -190,6 +191,15 @@ export interface DshCompactResult {
   readonly text?: string;
 }
 
+export interface DshPermissionSelection {
+  readonly options: readonly {
+    readonly value: string;
+    readonly name: string;
+    readonly description?: string;
+  }[];
+  readonly currentValue: string;
+}
+
 export type DshCompactionEvent =
   | { readonly type: 'start'; readonly id: string; readonly time: number }
   | { readonly type: 'summary'; readonly id: string; readonly itemCount: number; readonly tokenCount: number }
@@ -206,6 +216,7 @@ export interface DshOutputSink {
   contextPressure(pressure: DshContextPressure | undefined): void;
   sessionCost(cost: DshCostSummary | undefined): void;
   providerAccounts(snapshots: readonly DshProviderAccountSnapshot[]): void;
+  permissionSelection(selection: DshPermissionSelection | undefined): void;
   compactAvailable(value: boolean): void;
   compaction(event: DshCompactionEvent): void;
   compacting(value: boolean): void;
@@ -337,6 +348,28 @@ export function parseModelCatalog(value: unknown): DshModelCatalog {
     groups,
     failures,
   };
+}
+
+/** Validates the DSH-owned permission-preset projection used by the composer selector. */
+export function parsePermissionSelection(value: unknown): DshPermissionSelection {
+  if (!isRecord(value) || !Array.isArray(value.options) || typeof value.currentValue !== 'string'
+    || value.currentValue.length === 0) throw new Error('DSH returned an invalid permission projection');
+  const options = value.options.map((option) => {
+    if (!isRecord(option) || typeof option.value !== 'string' || option.value.length === 0
+      || typeof option.name !== 'string' || option.name.length === 0
+      || (option.description !== undefined && typeof option.description !== 'string')) {
+      throw new Error('DSH returned an invalid permission option');
+    }
+    return {
+      value: option.value,
+      name: option.name,
+      ...(option.description === undefined ? {} : { description: option.description }),
+    };
+  });
+  if (!options.some(option => option.value === value.currentValue)) {
+    throw new Error('DSH permission projection does not contain its current value');
+  }
+  return { options, currentValue: value.currentValue };
 }
 
 /** Applies a durable model-selection projection unless its watermark is stale. */
@@ -541,14 +574,17 @@ export class DshClient {
   private lastReportedError: string | undefined;
   private currentTurn = 0;
   private currentStep = 0;
+  private openTurn: number | undefined;
   private turnStats: TurnStats | undefined;
   private readonly modelLabels: ReadonlyMap<string, string>;
   private modelSelectionState: DshModelSelectionState;
   private contextPressureState: DshContextPressureState = { watermark: -1 };
   private readonly activeCompactions = new Set<string>();
   private readonly activeCompactionCommands = new Set<string>();
+  private permissionSelectionValue: DshPermissionSelection | undefined;
   private providerAccountsRequest = 0;
   private connectionInterrupted = false;
+  private sessionRunning = false;
   private canonical: CanonicalState | undefined;
 
   private constructor(
@@ -702,6 +738,23 @@ export class DshClient {
     await this.publishProviderAccounts();
   }
 
+  /** Selects one DSH-owned permission preset for this Session. */
+  async selectPermission(preset: string): Promise<void> {
+    const selection = this.permissionSelectionValue;
+    if (selection === undefined) {
+      throw new Error('Permission presets are not available for this Session');
+    }
+    if (preset === 'custom' || !/^[a-z0-9][a-z0-9-]*$/u.test(preset)
+      || !selection.options.some(option => option.value === preset)) {
+      throw new Error('The selected permission preset is not available');
+    }
+    const result = await callCanonicalRemote(
+      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, `/permission ${preset}`, [],
+    );
+    const command = parseCommandResult(unwrapCanonicalResult(result, 'commands.execute'));
+    if (command.kind === 'error') throw new Error(command.text ?? `Could not select permission preset ${preset}`);
+  }
+
   /** Runs DSH's canonical `/compact` command with this Session's selected model route. */
   async compact(): Promise<DshCompactResult> {
     const selection = this.modelSelectionState.current;
@@ -778,6 +831,7 @@ export class DshClient {
         throw new Error('DSH Client returned an invalid Session snapshot');
       }
       this.sink.queue(snapshot.queue.map((item) => canonicalQueueItem(item, canonical.requestAliases)));
+      this.sessionRunning = snapshot.running;
       this.sink.running(snapshot.running);
       this.sink.historyState(snapshot.hasMore);
     };
@@ -785,6 +839,7 @@ export class DshClient {
     const modelProjection = session.projections.faceOf('modelSelection');
     const contextProjection = session.projections.faceOf('contextPressure');
     const costProjection = session.projections.faceOf('modelCost');
+    const permissionProjection = session.projections.faceOf('permissions');
     const projectModel = (): void => {
       this.acceptModelSelection(modelProjection.getSnapshot(), this.modelSelectionState.watermark + 1);
     };
@@ -794,6 +849,11 @@ export class DshClient {
     const projectCost = (): void => {
       const snapshot = costProjection.getSnapshot();
       this.sink.sessionCost(snapshot === undefined ? undefined : parseCostSummary(snapshot));
+    };
+    const projectPermission = (): void => {
+      const snapshot = permissionProjection.getSnapshot();
+      this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection(snapshot);
+      this.sink.permissionSelection(this.permissionSelectionValue);
     };
     const projectConnection = (): void => {
       const state = canonical.graph.connection.state.getSnapshot();
@@ -819,6 +879,7 @@ export class DshClient {
       modelProjection.subscribe(projectModel),
       contextProjection.subscribe(projectContext),
       costProjection.subscribe(projectCost),
+      permissionProjection.subscribe(projectPermission),
       canonical.graph.connection.state.subscribe(projectConnection),
     );
     projectSession();
@@ -826,6 +887,7 @@ export class DshClient {
     projectModel();
     projectContext();
     projectCost();
+    projectPermission();
     projectConnection();
     await waitForCanonicalSession(session);
   }
@@ -872,6 +934,9 @@ export class DshClient {
     const hints = historyTurnHints(value.entries);
     for (const [index, entry] of value.entries.entries()) {
       this.receiveCanonicalEntry(entry, true, false, hints[index]);
+    }
+    if (this.openTurn !== undefined && !this.sessionRunning) {
+      this.sink.process({ type: 'turn-incomplete', turn: this.openTurn });
     }
     this.sink.compacting(this.compactionActive());
     this.sink.historyState(value.hasMore);
@@ -931,6 +996,7 @@ export class DshClient {
     return {
       currentTurn: this.currentTurn,
       currentStep: this.currentStep,
+      openTurn: this.openTurn,
       turnStats: this.turnStats,
       hasLiveAssistantText: this.hasLiveAssistantText,
     };
@@ -939,6 +1005,7 @@ export class DshClient {
   private restoreParserPosition(saved: ReturnType<DshClient['saveParserPosition']>): void {
     this.currentTurn = saved.currentTurn;
     this.currentStep = saved.currentStep;
+    this.openTurn = saved.openTurn;
     this.turnStats = saved.turnStats;
     this.hasLiveAssistantText = saved.hasLiveAssistantText;
   }
@@ -946,6 +1013,7 @@ export class DshClient {
   private resetParser(): void {
     this.currentTurn = 0;
     this.currentStep = 0;
+    this.openTurn = undefined;
     this.turnStats = undefined;
     this.hasLiveAssistantText = false;
     this.lastReportedError = undefined;
@@ -1029,6 +1097,10 @@ export class DshClient {
     if (typeof event.data.turn === 'number') this.currentTurn = event.data.turn;
     else if (this.currentTurn === 0 && turnHint !== undefined) this.currentTurn = turnHint;
     if (typeof event.data.step === 'number') this.currentStep = event.data.step;
+    if (this.currentTurn > 0 && event.type !== 'turn/end'
+      && (typeof event.data.turn === 'number' || event.type === 'user/message')) {
+      this.openTurn = this.currentTurn;
+    }
 
     if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
       const startedAt = typeof event.time === 'number' ? event.time : Date.now();
@@ -1038,7 +1110,6 @@ export class DshClient {
         turn: this.currentTurn,
         time: startedAt,
       });
-      if (!older) this.sink.running(true);
       return;
     }
 
@@ -1081,7 +1152,7 @@ export class DshClient {
         replay: fromSnapshot,
       });
       this.turnStats = undefined;
-      if (!older) this.sink.running(false);
+      if (this.openTurn === event.data.turn) this.openTurn = undefined;
       if (!older && !fromSnapshot) {
         void this.publishProviderAccounts().catch(() => this.sink.status('Provider usage update failed'));
       }
@@ -1544,16 +1615,20 @@ function parseAllowanceWindow(value: unknown): DshAllowanceWindow {
   };
 }
 
-function parseCompactResult(value: unknown): DshCompactResult {
+function parseCommandResult(value: unknown): DshCompactResult {
   if (!isRecord(value) || typeof value.commandId !== 'string' || !isRecord(value.result)
     || !['success', 'error'].includes(String(value.result.kind))
     || (value.result.text !== undefined && typeof value.result.text !== 'string')) {
-    throw new Error('DSH returned an invalid compact command response');
+    throw new Error('DSH returned an invalid command response');
   }
   return {
     kind: value.result.kind as DshCompactResult['kind'],
     ...(value.result.text === undefined ? {} : { text: value.result.text }),
   };
+}
+
+function parseCompactResult(value: unknown): DshCompactResult {
+  return parseCommandResult(value);
 }
 
 function parseModelSelection(value: unknown): DshModelSelection {

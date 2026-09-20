@@ -34,6 +34,11 @@ interface SelectModelMessage {
   readonly reasoningEffort?: string;
 }
 
+interface SelectPermissionMessage {
+  readonly type: 'selectPermission';
+  readonly preset: string;
+}
+
 interface CompactMessage {
   readonly type: 'compact';
 }
@@ -66,7 +71,7 @@ const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
-  const runtimeControl = connectRuntime(context);
+  const runtimeControl = connectRuntime(context, authorizeRuntimeReplacement);
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
   });
@@ -113,7 +118,7 @@ async function openDevelopmentWebUi(
 ): Promise<void> {
   let runtime = await runtimeControlPromise;
   if (runtime === undefined) {
-    runtime = await connectRuntime(context);
+    runtime = await connectRuntime(context, authorizeRuntimeReplacement);
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
   if (runtime?.runtimeId !== 'source' || runtime.origin !== DSH_ORIGIN) {
@@ -187,6 +192,7 @@ function configureChatEditor(
     if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
     if (isSelectModelMessage(message)) void selectModel(panel, ready, message);
+    if (isSelectPermissionMessage(message)) void selectPermission(panel, ready, message.preset);
     if (isCompactMessage(message)) void compact(panel, ready);
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
@@ -208,7 +214,7 @@ async function connect(
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
   if (runtime === undefined) {
-    runtime = await connectRuntime(context);
+    runtime = await connectRuntime(context, authorizeRuntimeReplacement);
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
   if (runtime === undefined) throw new Error('Managed DSH runtime is unavailable');
@@ -251,6 +257,9 @@ async function connect(
     providerAccounts: (snapshots: readonly import('./dshClient').DshProviderAccountSnapshot[]) => post(panel, {
       type: 'providerAccounts', snapshots,
     }),
+    permissionSelection: (selection: import('./dshClient').DshPermissionSelection | undefined) => post(panel, {
+      type: 'permissionSelection', selection,
+    }),
     compactAvailable: (value: boolean) => post(panel, { type: 'compactAvailable', value }),
     compaction: (event: import('./dshClient').DshCompactionEvent) => post(panel, { type: 'compaction', event }),
     compacting: (value: boolean) => post(panel, { type: 'compacting', value }),
@@ -292,6 +301,15 @@ async function connect(
     client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin),
     backendVersion,
   };
+}
+
+async function authorizeRuntimeReplacement(): Promise<boolean> {
+  const selected = await vscode.window.showWarningMessage(
+    'A different DSH Companion Managed Runtime is still running. Replacing it can interrupt active agents, jobs, terminals, and schedules. Continue only after its work has finished.',
+    { modal: true },
+    'Replace Runtime',
+  );
+  return selected === 'Replace Runtime';
 }
 
 async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
@@ -374,6 +392,32 @@ async function selectModel(
   }
 }
 
+async function selectPermission(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  preset: string,
+): Promise<void> {
+  post(panel, { type: 'permissionSelecting', value: true });
+  try {
+    if (preset === 'danger-full-access') {
+      const selected = await vscode.window.showWarningMessage(
+        'Full access disables filesystem sandboxing for this Session. Commands can read or modify files outside the workspace.',
+        { modal: true },
+        'Enable Full Access',
+      );
+      if (selected !== 'Enable Full Access') return;
+    }
+    await (await ready).selectPermission(preset);
+  } catch (error) {
+    post(panel, {
+      type: 'permissionSelectionFailed',
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'permissionSelecting', value: false });
+  }
+}
+
 async function refreshProviderUsage(
   panel: vscode.WebviewPanel,
   ready: Promise<DshClient>,
@@ -452,6 +496,13 @@ function isSelectModelMessage(value: unknown): value is SelectModelMessage {
         && Reflect.get(value, 'reasoningEffort').length > 0));
 }
 
+function isSelectPermissionMessage(value: unknown): value is SelectPermissionMessage {
+  return typeof value === 'object' && value !== null
+    && Reflect.get(value, 'type') === 'selectPermission'
+    && typeof Reflect.get(value, 'preset') === 'string'
+    && /^[a-z0-9][a-z0-9-]*$/u.test(Reflect.get(value, 'preset'));
+}
+
 function isCompactMessage(value: unknown): value is CompactMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'compact';
 }
@@ -524,6 +575,9 @@ function editorHtml(
           <div id="model-list"></div>
           <div id="effort-menu" role="menu" aria-label="Choose reasoning effort" hidden></div>
         </div>
+      </div>
+      <div id="permission-control" hidden>
+        <select id="permission-select" aria-label="Session permission" title="Session permission"></select>
       </div>
       <div id="provider-usage" hidden>
         <button id="provider-usage-trigger" type="button" aria-haspopup="dialog" aria-expanded="false">Usage</button>

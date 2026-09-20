@@ -61,8 +61,18 @@ interface ActiveRuntime {
   readonly directory: string;
 }
 
+export interface RuntimeReplacementRequest {
+  readonly currentRuntimeId: string | undefined;
+  readonly desiredRuntimeId: string;
+}
+
+export type RuntimeReplacementAuthorizer = (request: RuntimeReplacementRequest) => Promise<boolean>;
+
 /** Installs and starts the packaged Linux runtime, while source development may supply its own supervisor. */
-export async function connectRuntime(context: vscode.ExtensionContext): Promise<RuntimeControl | undefined> {
+export async function connectRuntime(
+  context: vscode.ExtensionContext,
+  authorizeReplacement?: RuntimeReplacementAuthorizer,
+): Promise<RuntimeControl | undefined> {
   const lifecycleRoot = companionLifecycleRoot();
   const shared = await RuntimeControl.fromStateFile(join(lifecycleRoot, 'runtime.json'));
   if (shared?.runtimeId === 'source') return shared;
@@ -85,6 +95,8 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
     context.extension.packageJSON.version,
     lifecycleRoot,
     companionDataHome(),
+    PACKAGED_DSH_ORIGIN,
+    authorizeReplacement,
   );
 }
 
@@ -96,11 +108,27 @@ export function activatePayload(
   lifecycleRoot = companionLifecycleRoot(),
   dataHome = companionDataHome(),
   origin = PACKAGED_DSH_ORIGIN,
+  authorizeReplacement?: RuntimeReplacementAuthorizer,
 ): Promise<RuntimeControl> {
   return withManagerLock(lifecycleRoot, async () => {
     const installed = await installPayload(payload, globalStorage, extensionVersion);
-    return activateInstalledRuntime(installed, globalStorage, lifecycleRoot, dataHome, origin);
+    return activateInstalledRuntime(
+      installed, globalStorage, lifecycleRoot, dataHome, origin, authorizeReplacement,
+    );
   });
+}
+
+/** Requires an explicit user decision before replacing a different managed Runtime. */
+export async function requireRuntimeReplacementAuthorization(
+  currentRuntimeId: string | undefined,
+  desiredRuntimeId: string,
+  authorizeReplacement?: RuntimeReplacementAuthorizer,
+): Promise<void> {
+  if (currentRuntimeId === desiredRuntimeId) return;
+  const allowed = await authorizeReplacement?.({ currentRuntimeId, desiredRuntimeId });
+  if (allowed !== true) {
+    throw new Error('Managed Runtime update deferred; active work continues on the existing Runtime');
+  }
 }
 
 /** Installs one verified payload as an immutable version directory. */
@@ -148,6 +176,7 @@ async function activateInstalledRuntime(
   lifecycleRoot: string,
   dataHome: string,
   origin: string,
+  authorizeReplacement?: RuntimeReplacementAuthorizer,
 ): Promise<RuntimeControl> {
   const runtimeRoot = join(globalStorage, 'runtime');
   const stateFile = join(lifecycleRoot, 'runtime.json');
@@ -157,10 +186,18 @@ async function activateInstalledRuntime(
   const versionsRoot = join(runtimeRoot, 'versions');
   const active = await readActiveRuntime(activeFile, versionsRoot);
   const retainedRollback = await readActiveRuntime(rollbackFile, versionsRoot);
+  const manifest = await verifyPayload(installed);
+  const desiredRuntimeId = `${manifest.companionVersion}-${manifest.target}`;
 
   const current = await connectExisting(stateFile);
-  if (active?.directory === installed && current !== undefined) return current;
+  if (active?.directory === installed && current?.runtimeId === desiredRuntimeId) return current;
   if (current !== undefined) {
+    await requireRuntimeReplacementAuthorization(
+      current.runtimeId, desiredRuntimeId, authorizeReplacement,
+    ).catch((error: unknown) => {
+      current.dispose();
+      throw error;
+    });
     await current.stop();
     current.dispose();
     await waitUntilAbsent(stateFile, 15_000);
