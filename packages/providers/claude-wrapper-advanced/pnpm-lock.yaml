@@ -1,0 +1,76 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../deepseek-harness/vendor/schemastery
+        version: link:../deepseek-harness/vendor/schemastery
+      '@dsh-companion/model-policy':
+        specifier: link:../dsh-companion/packages/model-policy
+        version: link:../dsh-companion/packages/model-policy
+      '@dsh-companion/provider-account':
+        specifier: link:../dsh-companion/packages/provider-account
+        version: link:../dsh-companion/packages/provider-account
+      '@dsh-companion/provider-catalog':
+        specifier: link:../dsh-companion/packages/provider-catalog
+        version: link:../dsh-companion/packages/provider-catalog
+      eventsource-parser:
+        specifier: ^3.1.0
+        version: 3.1.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../deepseek-harness/vendor/cordis
+        version: link:../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-attachment':
+        specifier: link:../deepseek-harness/packages/attachment/attachment
+        version: link:../deepseek-harness/packages/attachment/attachment
+      '@deepseek-ai/dsh-credentials':
+        specifier: link:../deepseek-harness/packages/credentials/credentials
+        version: link:../deepseek-harness/packages/credentials/credentials
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../deepseek-harness/packages/llm/llm
+        version: link:../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../deepseek-harness/packages/settings/settings
+        version: link:../deepseek-harness/packages/settings/settings
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+packages:
+
+  '@types/node@22.20.2':
+    resolution: {integrity: sha512-xlvWf4Vs9n1PEVYwP1n4vvG07M6y8WgvJ2t0vbrWTmijsIHp1cS+uJ2kMIRdY3nHZK0nCYKrPeD171+SzF4/zw==}
+
+  eventsource-parser@3.1.1:
+    resolution: {integrity: sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==}
+    engines: {node: '>=18.0.0'}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+snapshots:
+
+  '@types/node@22.20.2':
+    dependencies:
+      undici-types: 6.21.0
+
+  eventsource-parser@3.1.1: {}
+
+  typescript@5.9.3: {}
+
+  undici-types@6.21.0: {}
