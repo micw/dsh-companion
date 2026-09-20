@@ -57,10 +57,16 @@
     return /responding…$/u.test(hostStatus) ? 'Connected' : hostStatus;
   }
 
+  /** Rebuilds one prepend result from its older fragment and the complete retained tail. */
+  function reattachTranscriptTail(output, prependedNodes, tailNodes) {
+    output.replaceChildren(...prependedNodes, ...tailNodes);
+  }
+
   globalThis.dshCompanionTranscriptState = Object.freeze({
     activityStatusText,
     mergePrependedTurnState,
     placeTurnProcessAfterMessage,
     placeUserMessageBeforeTurn,
+    reattachTranscriptTail,
   });
 })();

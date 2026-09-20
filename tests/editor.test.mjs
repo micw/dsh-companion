@@ -111,6 +111,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function beginHistoryPrepend/);
   assert.match(script, /mergePrependedTurnState/);
   assert.match(script, /placeTurnProcessAfterMessage/);
+  assert.match(script, /following: scrollMode === 'follow'/);
+  assert.match(script, /if \(previous\.following\) \{[\s\S]*followOutput\(\)/);
+  assert.match(script, /reattachTranscriptTail\(output, \[\.\.\.fragment\.childNodes\], previous\.nodes\)/);
   assert.match(script, /output\.scrollTop = previous\.scrollTop \+ output\.scrollHeight - previous\.scrollHeight/);
   assert.match(script, /function updateStickyPrompt/);
   assert.match(script, /function setStickyPrompt/);
@@ -194,7 +197,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /Managed DSH runtime is unavailable/);
   assert.match(extension, /A different DSH Companion Managed Runtime is still running/);
   assert.match(extension, /'Replace Runtime'/);
-  assert.match(extension, /runtime\?\.runtimeId !== 'source' \|\| runtime\.origin !== DSH_ORIGIN/);
+  assert.match(extension, /runtime\.origin !== DSH_ORIGIN && runtime\.origin !== PACKAGED_DSH_ORIGIN/);
   assert.match(extension, /vscode\.env\.openExternal\(vscode\.Uri\.parse\(await runtime\.bootstrapUrl\(\)\)\)/);
   assert.doesNotMatch(extension, /showInputBox|Paste the launch URL/);
   assert.match(dshClient, /connectCanonical/);
@@ -228,6 +231,8 @@ test('the packaged runtime owns a separate loopback origin', async () => {
   assert.match(installer, /origin = PACKAGED_DSH_ORIGIN/);
   assert.match(installer, /'--port', new URL\(origin\)\.port/);
   assert.match(smoke, /server\.listen\(0, '127\.0\.0\.1'/);
+  assert.match(smoke, /unauthenticated\.status !== 401/);
+  assert.match(smoke, /Managed DSH Web UI omitted its dynamic client bootstrap/);
   assert.match(smoke, /permissionSelection: \(\) => \{ projected\.permissionSelections \+= 1/);
 });
 

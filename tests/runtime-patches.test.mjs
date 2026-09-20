@@ -25,7 +25,19 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'turn-cost-snapshots-and-model-status',
     'explicit-manual-compaction-route',
     'agent-preset-fallbacks',
+    'sea-client-module-proxies',
   ]);
+});
+
+test('the SEA client-module patch follows launcher-generated package proxies', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[8];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /moduleFallback\?\.targets\?\.\['\.\/client'\]/u);
+  assert.match(text, /this\.nearestPackage\(fallback, packageName\)/u);
+  assert.match(text, /follows a packaged module proxy to its virtual client bundle metadata/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-client-modules']);
 });
 
 test('the preset fallback patch keeps retired ids out of the roster', async () => {

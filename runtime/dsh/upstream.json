@@ -104,6 +104,16 @@
       "affectedModules": [
         "@deepseek-ai/dsh-agent-presets"
       ]
+    },
+    {
+      "id": "sea-client-module-proxies",
+      "file": "patches/0009-resolve-client-bundles-through-sea-module-proxies.patch",
+      "sha256": "791b827d55dcbabb70e38df57bcc8ac0435121d578c5e17788357cf2277371d4",
+      "assessment": "patches/sea-client-module-proxies.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-client-modules"
+      ]
     }
   ]
 }
