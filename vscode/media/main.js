@@ -123,7 +123,7 @@ let sessionInfoPinned = false;
 let sessionInfoStatusTimer;
 const providerUsageErrors = new Map();
 const providerUsageRefreshing = new Set();
-let sessionReady = false;
+let clientReady = false;
 let sending = false;
 let stopping = false;
 let hostStatus = 'Connecting…';
@@ -353,9 +353,13 @@ function applyHostMessage(message) {
     resetTranscript();
     return;
   }
+  if (message.type === 'connected' && Object.keys(message).length === 1) {
+    clientReady = true;
+    updateInputAvailability();
+    return;
+  }
   if (message.type === 'session') {
     state.sessionId = message.sessionId;
-    sessionReady = true;
     updateInputAvailability();
     if (message.sessionId === restoredSessionId) {
       requestAnimationFrame(setOutputFollow);
@@ -2167,7 +2171,7 @@ function setCompacting(value) {
 
 function updateInputAvailability() {
   prompt.disabled = compacting;
-  send.disabled = !sessionReady || sending || compacting || !selectedModelEnabled();
+  send.disabled = !clientReady || sending || compacting || !selectedModelEnabled();
   stop.hidden = !running && !compacting;
   stop.disabled = stopping;
   composer.dataset.running = running || compacting ? 'true' : 'false';

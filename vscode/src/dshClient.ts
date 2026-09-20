@@ -269,6 +269,7 @@ export type DshCompactionEvent =
   | { readonly type: 'end'; readonly id: string; readonly time: number; readonly error?: string };
 
 export interface DshOutputSink {
+  sessionCreated(sessionId: string): void;
   reset(): void;
   history(role: 'user' | 'assistant' | 'error', text: string, time?: number): void;
   historyPrependStart(): void;
@@ -355,7 +356,7 @@ interface CanonicalClientGraph {
 
 interface CanonicalState {
   readonly graph: CanonicalClientGraph;
-  readonly binding: CanonicalBinding;
+  binding?: CanonicalBinding;
   readonly disposers: (() => void)[];
   readonly disposeProviderRemotes: () => Promise<void>;
   readonly requestAliases: Map<string, string>;
@@ -889,7 +890,7 @@ export class DshSessionBrowser {
 
 /** Projects one canonical DSH Client Session supplied by the managed Runtime. */
 export class DshClient {
-  readonly sessionId: string;
+  private sessionIdValue: string | undefined;
   private hasLiveAssistantText = false;
   private lastReportedError: string | undefined;
   private currentTurn = 0;
@@ -906,22 +907,28 @@ export class DshClient {
   private providerAccountsRequest = 0;
   private connectionInterrupted = false;
   private sessionRunning = false;
+  private sessionCreation: Promise<void> | undefined;
+  private pendingModelSelection: DshModelSelection | undefined;
   private canonical: CanonicalState | undefined;
 
   private constructor(
-    sessionId: string,
+    private readonly cwd: string | undefined,
     private readonly sink: DshOutputSink,
     modelCatalogValue: DshModelCatalog,
     canonical: CanonicalState,
   ) {
-    this.sessionId = sessionId;
     this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
     this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
     this.canonical = canonical;
   }
 
-  /** Creates or restores a Session and opens its live event stream. */
+  /** DSH identity after the first prompt creates this tab's Session. */
+  get sessionId(): string | undefined {
+    return this.sessionIdValue;
+  }
+
+  /** Prepares a new lazy chat or restores a Session and opens its live event stream. */
   static async connect(
     cookie: string,
     cwd: string | undefined,
@@ -964,32 +971,22 @@ export class DshClient {
       disposeProviderRemotes = mountedProviderRemotes;
       const catalogResult = await callCanonicalRemote(graph, 'session', 'modelCatalog');
       const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
-      const sessionId = restoredSessionId ?? await graph.sessions.create(cwd === undefined ? {} : { cwd });
-      if (restoredSessionId !== undefined && !canonicalSessionIds(graph.sessions.list.getSnapshot()).has(sessionId)) {
-        throw new Error(`DSH Session ${sessionId} is not available`);
-      }
-      graph.sessions.open(sessionId);
-      const binding: unknown = graph.sessions.binding(sessionId);
-      if (!isCanonicalBinding(binding)) {
-        throw new Error(`DSH did not create a valid Client binding for Session ${sessionId}`);
-      }
-      const commands = graph.sessions.subagentAddress(sessionId) === undefined
-        ? unwrapCommandCatalog(await callCanonicalRemote(graph, 'commands', 'list', sessionId))
-        : [];
-      if (!Array.isArray(commands) || !commands.every((command) => (
-        isRecord(command) && typeof command.name === 'string'
-      ))) throw new Error('DSH returned an invalid command catalog');
-      const client = new DshClient(sessionId, sink, modelCatalog, {
+      const client = new DshClient(cwd, sink, modelCatalog, {
         graph,
-        binding,
         disposers: [],
         disposeProviderRemotes: mountedProviderRemotes,
         requestAliases: new Map(),
       });
       sink.modelCatalog(modelCatalog);
       sink.modelSelection(modelCatalog.default);
-      sink.compactAvailable(commands.some((command) => command.name === 'compact'));
-      await client.openCanonical();
+      sink.compactAvailable(false);
+      sink.permissionSelection(undefined);
+      if (restoredSessionId !== undefined) {
+        if (!canonicalSessionIds(graph.sessions.list.getSnapshot()).has(restoredSessionId)) {
+          throw new Error(`DSH Session ${restoredSessionId} is not available`);
+        }
+        await client.attachSession(restoredSessionId);
+      }
       try {
         await client.publishProviderAccounts();
       } catch (error) {
@@ -1011,8 +1008,10 @@ export class DshClient {
   /** Sends one text prompt to this editor's Session. */
   async prompt(text: string, requestId: string): Promise<void> {
     this.lastReportedError = undefined;
+    await this.ensureSession();
     const canonical = this.requireCanonical();
-    const submission = canonical.binding.session.beginSubmission({
+    const binding = this.requireBinding();
+    const submission = binding.session.beginSubmission({
       mode: 'queue',
       text,
       attachments: [],
@@ -1021,7 +1020,7 @@ export class DshClient {
       },
     });
     canonical.requestAliases.set(submission.requestId, requestId);
-    const result = await canonical.binding.session.prompt(
+    const result = await binding.session.prompt(
       [{ type: 'text', text }], 'queue', undefined, submission.requestId,
     );
     try {
@@ -1034,20 +1033,19 @@ export class DshClient {
 
   /** Cancels the active turn while retaining pending DSH inbox work. */
   async cancel(): Promise<void> {
-    unwrapCanonicalResult(await this.requireCanonical().binding.session.cancel(), 'session.cancel');
+    unwrapCanonicalResult(await this.requireBinding().session.cancel(), 'session.cancel');
   }
 
   /** Selects one DSH provider, model, and optional reasoning effort for this Session. */
   async selectModel(selection: DshModelSelection): Promise<void> {
-    const result = await callCanonicalRemote(this.requireCanonical().graph, 'session', 'selectModel', {
-      sessionId: this.sessionId,
-      ...selection,
-    });
-    const value = unwrapCanonicalResult(result, 'session.selectModel');
-    if (!isRecord(value) || !isRecord(value.selected)) {
-      throw new Error('DSH returned an invalid model-selection response');
+    this.validateModelSelection(selection);
+    if (this.sessionIdValue === undefined) {
+      this.pendingModelSelection = { ...selection };
+      this.modelSelectionState = { watermark: -1, current: { ...selection } };
+      this.sink.modelSelection(selection);
+      return;
     }
-    parseModelSelection(value.selected);
+    await this.selectModelForSession(this.sessionIdValue, selection);
   }
 
   /** Refreshes one provider account and republishes the complete validated snapshot list. */
@@ -1193,7 +1191,7 @@ export class DshClient {
       throw new Error('The selected permission preset is not available');
     }
     const result = await callCanonicalRemote(
-      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, `/permission ${preset}`, [],
+      this.requireCanonical().graph, 'commands', 'execute', this.requireSessionId(), `/permission ${preset}`, [],
     );
     const command = parseCommandResult(unwrapCanonicalResult(result, 'commands.execute'));
     if (command.kind === 'error') throw new Error(command.text ?? `Could not select permission preset ${preset}`);
@@ -1207,14 +1205,14 @@ export class DshClient {
     }
     const command = `/compact --provider ${selection.provider} --model ${selection.model}`;
     const result = await callCanonicalRemote(
-      this.requireCanonical().graph, 'commands', 'execute', this.sessionId, command, [],
+      this.requireCanonical().graph, 'commands', 'execute', this.requireSessionId(), command, [],
     );
     return parseCompactResult(unwrapCanonicalResult(result, 'commands.execute'));
   }
 
   /** Loads enough older DSH history to expose the next human prompt above the current window. */
   loadOlder(): Promise<void> {
-    return this.requireCanonical().binding.session.loadOlder();
+    return this.requireBinding().session.loadOlder();
   }
 
   dispose(): void {
@@ -1236,6 +1234,81 @@ export class DshClient {
   private requireCanonical(): CanonicalState {
     if (this.canonical === undefined) throw new Error('Managed DSH Client is disposed');
     return this.canonical;
+  }
+
+  private requireBinding(): CanonicalBinding {
+    const binding = this.requireCanonical().binding;
+    if (binding === undefined) throw new Error('This chat has not started a DSH Session');
+    return binding;
+  }
+
+  private requireSessionId(): string {
+    if (this.sessionIdValue === undefined) throw new Error('This chat has not started a DSH Session');
+    return this.sessionIdValue;
+  }
+
+  private async ensureSession(): Promise<void> {
+    if (this.sessionIdValue !== undefined) return;
+    if (this.sessionCreation === undefined) {
+      const operation = (async () => {
+        const graph = this.requireCanonical().graph;
+        const sessionId = await graph.sessions.create(this.cwd === undefined ? {} : { cwd: this.cwd });
+        await this.attachSession(sessionId);
+      })();
+      this.sessionCreation = operation;
+      void operation.finally(() => {
+        if (this.sessionCreation === operation) this.sessionCreation = undefined;
+      }).catch(() => {});
+    }
+    await this.sessionCreation;
+  }
+
+  private async attachSession(sessionId: string): Promise<void> {
+    const canonical = this.requireCanonical();
+    canonical.graph.sessions.open(sessionId);
+    const binding: unknown = canonical.graph.sessions.binding(sessionId);
+    if (!isCanonicalBinding(binding)) {
+      throw new Error(`DSH did not create a valid Client binding for Session ${sessionId}`);
+    }
+    const commands = canonical.graph.sessions.subagentAddress(sessionId) === undefined
+      ? unwrapCommandCatalog(await callCanonicalRemote(canonical.graph, 'commands', 'list', sessionId))
+      : [];
+    if (!Array.isArray(commands) || !commands.every((command) => (
+      isRecord(command) && typeof command.name === 'string'
+    ))) throw new Error('DSH returned an invalid command catalog');
+    canonical.binding = binding;
+    this.sessionIdValue = sessionId;
+    this.sink.sessionCreated(sessionId);
+    const pendingSelection = this.pendingModelSelection;
+    if (pendingSelection !== undefined) {
+      await this.selectModelForSession(sessionId, pendingSelection);
+      this.pendingModelSelection = undefined;
+    }
+    this.sink.compactAvailable(commands.some((command) => command.name === 'compact'));
+    await this.openCanonical();
+  }
+
+  private validateModelSelection(selection: DshModelSelection): void {
+    const group = this.modelCatalogValue.groups.find(candidate => candidate.id === selection.provider);
+    const model = group?.models.find(candidate => candidate.id === selection.model);
+    if (group === undefined || model === undefined
+      || !this.modelCatalogValue.routableProviders.includes(selection.provider)
+      || (selection.reasoningEffort !== undefined
+        && !model.reasoning?.efforts.some(effort => effort.id === selection.reasoningEffort))) {
+      throw new Error('The selected model route or reasoning effort is unavailable');
+    }
+  }
+
+  private async selectModelForSession(sessionId: string, selection: DshModelSelection): Promise<void> {
+    const result = await callCanonicalRemote(this.requireCanonical().graph, 'session', 'selectModel', {
+      sessionId,
+      ...selection,
+    });
+    const value = unwrapCanonicalResult(result, 'session.selectModel');
+    if (!isRecord(value) || !isRecord(value.selected)) {
+      throw new Error('DSH returned an invalid model-selection response');
+    }
+    parseModelSelection(value.selected);
   }
 
   private async refreshModelCatalog(): Promise<void> {
@@ -1275,7 +1348,8 @@ export class DshClient {
 
   private async openCanonical(): Promise<void> {
     const canonical = this.requireCanonical();
-    const session = canonical.binding.session;
+    const binding = this.requireBinding();
+    const session = binding.session;
     const projectSession = (): void => {
       const snapshot = session.getSnapshot();
       if (!isRecord(snapshot) || !Array.isArray(snapshot.queue) || typeof snapshot.running !== 'boolean'
@@ -1287,7 +1361,7 @@ export class DshClient {
       this.sink.running(snapshot.running);
       this.sink.historyState(snapshot.hasMore);
     };
-    const projectEvents = (): void => { this.receiveCanonicalWindow(canonical.binding.eventSource.getSnapshot()); };
+    const projectEvents = (): void => { this.receiveCanonicalWindow(binding.eventSource.getSnapshot()); };
     const modelProjection = session.projections.faceOf('modelSelection');
     const contextProjection = session.projections.faceOf('contextPressure');
     const costProjection = session.projections.faceOf('modelCost');
@@ -1327,7 +1401,7 @@ export class DshClient {
     };
     canonical.disposers.push(
       session.subscribe(projectSession),
-      canonical.binding.eventSource.subscribe(projectEvents),
+      binding.eventSource.subscribe(projectEvents),
       modelProjection.subscribe(projectModel),
       contextProjection.subscribe(projectContext),
       costProjection.subscribe(projectCost),

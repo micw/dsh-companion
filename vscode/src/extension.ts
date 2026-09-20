@@ -250,19 +250,25 @@ function configureChatEditor(
   panelMessengers.set(panel, messenger);
   let client: DshClient | undefined;
   const ready = connect(
-    context, runtimeControl, panel, restoredSessionId, () => { sessionTree.requestRefresh(); },
+    context,
+    runtimeControl,
+    panel,
+    restoredSessionId,
+    () => { sessionTree.requestRefresh(); },
+    (sessionId, backendVersion) => {
+      panelsBySessionId.set(sessionId, panel);
+      sessionTree.requestRefresh();
+      if (panel.active) sessionTree.setActiveSession(sessionId);
+      post(panel, { type: 'session', sessionId });
+      post(panel, {
+        type: 'sessionInformation', sessionId,
+        companionVersion: String(context.extension.packageJSON.version),
+        backendVersion,
+      });
+    },
   ).then((connected) => {
     client = connected.client;
-    panelsBySessionId.set(connected.client.sessionId, panel);
-    sessionTree.requestRefresh();
-    if (panel.active) sessionTree.setActiveSession(connected.client.sessionId);
-    post(panel, { type: 'session', sessionId: connected.client.sessionId });
-    post(panel, {
-      type: 'sessionInformation',
-      sessionId: connected.client.sessionId,
-      companionVersion: String(context.extension.packageJSON.version),
-      backendVersion: connected.backendVersion,
-    });
+    post(panel, { type: 'connected' });
     void connected.client.providerSettings().then(
       snapshot => { post(panel, { type: 'providerSettings', snapshot }); },
       error => { console.warn('DSH provider settings are unavailable', error); },
@@ -321,6 +327,7 @@ async function connect(
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
   onSessionListChange?: () => void,
+  onSessionCreated?: (sessionId: string, backendVersion: string) => void,
 ): Promise<ConnectedChat> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
@@ -341,6 +348,7 @@ async function connect(
   }
   let streamingAssistant = '';
   const sink = {
+    sessionCreated: (sessionId: string) => { onSessionCreated?.(sessionId, backendVersion); },
     reset: () => {
       streamingAssistant = '';
       post(panel, { type: 'resetTranscript' });
@@ -450,7 +458,9 @@ async function connectSessionBrowser(
 
 async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
   try {
-    await vscode.env.clipboard.writeText((await ready).sessionId);
+    const sessionId = (await ready).sessionId;
+    if (sessionId === undefined) throw new Error('Send the first prompt before copying a Session id');
+    await vscode.env.clipboard.writeText(sessionId);
     post(panel, { type: 'sessionIdCopied' });
   } catch (error) {
     post(panel, {
