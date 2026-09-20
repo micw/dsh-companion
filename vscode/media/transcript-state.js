@@ -10,6 +10,7 @@
     newer.toolCount = newer.toolCallIds.size;
     newer.contextCount = newer.contextIds.size;
     newer.startedAt = older.startedAt ?? newer.startedAt;
+    newer.firstAssistantMessage = older.firstAssistantMessage ?? newer.firstAssistantMessage;
     newer.latestAssistantMessage ??= older.latestAssistantMessage;
     if (newer.rows.childNodes.length > 0 && newer.disclosureRoot !== undefined
       && newer.root !== newer.disclosureRoot) {
@@ -31,8 +32,35 @@
     return true;
   }
 
+  /** Places a Turn's canonical user message before every rendered item owned by that Turn. */
+  function placeUserMessageBeforeTurn(turn, message) {
+    const parent = turn.root.parentNode;
+    if (parent === null) return false;
+    const candidates = [turn.firstAssistantMessage, turn.root]
+      .filter(node => node !== undefined && node.parentNode === parent);
+    const anchor = [...parent.childNodes].find(node => candidates.includes(node));
+    if (anchor === undefined) return false;
+    anchor.before(message);
+    return true;
+  }
+
+  /** Derives the visible activity line without letting connection readiness hide active work. */
+  function activityStatusText({ running, compacting, hostStatus }) {
+    if (compacting) return 'Compacting context…';
+    if (running) {
+      return /responding…$/u.test(hostStatus)
+        || hostStatus === 'Reconnecting to DSH…'
+        || hostStatus === 'Disconnected; retrying…'
+        ? hostStatus
+        : 'Running…';
+    }
+    return /responding…$/u.test(hostStatus) ? 'Connected' : hostStatus;
+  }
+
   globalThis.dshCompanionTranscriptState = Object.freeze({
+    activityStatusText,
     mergePrependedTurnState,
     placeTurnProcessAfterMessage,
+    placeUserMessageBeforeTurn,
   });
 })();

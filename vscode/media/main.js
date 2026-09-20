@@ -1,4 +1,9 @@
-const { mergePrependedTurnState, placeTurnProcessAfterMessage } = globalThis.dshCompanionTranscriptState;
+const {
+  activityStatusText,
+  mergePrependedTurnState,
+  placeTurnProcessAfterMessage,
+  placeUserMessageBeforeTurn,
+} = globalThis.dshCompanionTranscriptState;
 const vscode = acquireVsCodeApi();
 const output = document.getElementById('output');
 const stickyPrompt = document.getElementById('sticky-prompt');
@@ -15,6 +20,8 @@ const modelPicker = document.getElementById('model-picker');
 const modelSearch = document.getElementById('model-search');
 const modelList = document.getElementById('model-list');
 const effortMenu = document.getElementById('effort-menu');
+const permissionControl = document.getElementById('permission-control');
+const permissionSelect = document.getElementById('permission-select');
 const contextMeter = document.getElementById('context-meter');
 const contextTrigger = document.getElementById('context-trigger');
 const contextFill = contextMeter.querySelector('.context-fill');
@@ -83,6 +90,8 @@ let modelCatalog;
 let modelSelection;
 let modelSelecting = false;
 let openEffortRoute;
+let permissionSelection;
+let permissionSelecting = false;
 let contextPressure;
 let compactAvailable = false;
 let compacting = false;
@@ -99,6 +108,7 @@ const providerUsageRefreshing = new Set();
 let sessionReady = false;
 let sending = false;
 let stopping = false;
+let hostStatus = 'Connecting…';
 
 prompt.value = state.draft;
 requestAnimationFrame(autoGrowPrompt);
@@ -144,6 +154,14 @@ modelTrigger.addEventListener('click', () => {
 });
 
 modelSearch.addEventListener('input', renderModelPicker);
+
+permissionSelect.addEventListener('change', () => {
+  const preset = permissionSelect.value;
+  if (permissionSelecting || preset === 'custom' || preset === permissionSelection?.currentValue) return;
+  permissionSelecting = true;
+  renderPermissionSelect();
+  vscode.postMessage({ type: 'selectPermission', preset });
+});
 
 contextMeter.addEventListener('pointerenter', () => setContextOpen(true));
 contextMeter.addEventListener('pointerleave', () => {
@@ -378,6 +396,21 @@ function applyHostMessage(message) {
     status.textContent = typeof message.text === 'string' ? message.text : 'Could not select model';
     return;
   }
+  if (message.type === 'permissionSelection') {
+    if (message.selection !== undefined && !isPermissionSelection(message.selection)) return;
+    permissionSelection = message.selection;
+    renderPermissionSelect();
+    return;
+  }
+  if (message.type === 'permissionSelecting') {
+    permissionSelecting = message.value === true;
+    renderPermissionSelect();
+    return;
+  }
+  if (message.type === 'permissionSelectionFailed') {
+    status.textContent = typeof message.text === 'string' ? message.text : 'Could not select permission';
+    return;
+  }
   if (message.type === 'contextPressure') {
     if (message.pressure !== undefined && !isContextPressure(message.pressure)) return;
     contextPressure = message.pressure;
@@ -482,7 +515,9 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'status') {
-    status.textContent = message.text;
+    if (typeof message.text !== 'string') return;
+    hostStatus = message.text;
+    renderActivityStatus();
     return;
   }
   if (message.type === 'sending') {
@@ -526,15 +561,16 @@ function appendMessage(role, text, html, time = Date.now()) {
   article.append(label, body);
   setMessageTime(article, time);
   const turn = activeTurn === undefined ? undefined : turns.get(activeTurn);
-  if (role === 'user' && turn?.root.parentNode === renderTarget && turn.rows.childElementCount === 0) {
-    renderTarget.insertBefore(article, turn.root);
-  } else {
+  if (role !== 'user' || turn === undefined || !placeUserMessageBeforeTurn(turn, article)) {
     renderTarget.append(article);
   }
   if (role === 'assistant') {
     activeAssistant = body;
     activeAssistantMessage = article;
-    if (turn !== undefined) turn.latestAssistantMessage = article;
+    if (turn !== undefined) {
+      turn.firstAssistantMessage ??= article;
+      turn.latestAssistantMessage = article;
+    }
   }
   scheduleStickyPrompt();
   followOutput();
@@ -637,6 +673,11 @@ function applyProcessEvent(event) {
     followOutput();
     return;
   }
+  if (event.type === 'turn-incomplete') {
+    markTurnIncomplete(turn);
+    followOutput();
+    return;
+  }
   if (event.type === 'reasoning' && typeof event.text === 'string') {
     appendReasoning(turn, event);
     return;
@@ -696,6 +737,7 @@ function ensureTurn(number, startedAt) {
     toolCallIds: new Set(),
     contextIds: new Set(),
     startedAt,
+    firstAssistantMessage: undefined,
     latestAssistantMessage: undefined,
     completed: false,
   };
@@ -724,6 +766,13 @@ function completeTurn(turn, completedAt, reason) {
   turn.root.replaceWith(root);
   turn.root = root;
   turn.label = label;
+}
+
+function markTurnIncomplete(turn) {
+  turn.completed = true;
+  turn.incomplete = true;
+  turn.root.dataset.state = 'incomplete';
+  updateTurnProcessLabel(turn, false);
 }
 
 function appendReasoning(turn, event) {
@@ -829,7 +878,10 @@ function updateTurnProcessLabel(turn, active) {
   if (turn.contextCount > 0) {
     labels.push(`${turn.contextCount} context ${turn.contextCount === 1 ? 'injection' : 'injections'}`);
   }
-  turn.label.textContent = labels.length === 0 ? 'Working…' : `${labels.join(' · ')}${active ? '…' : ''}`;
+  const detail = labels.length === 0 ? undefined : labels.join(' · ');
+  turn.label.textContent = turn.incomplete
+    ? `Interrupted${detail === undefined ? '' : ` · ${detail}`}`
+    : detail === undefined ? 'Working…' : `${detail}${active ? '…' : ''}`;
 }
 
 function disclosureRow(kind, disclosureId, title, summaryText, detailText) {
@@ -1153,6 +1205,33 @@ function renderModelTrigger() {
   modelTrigger.setAttribute('aria-label', `Select model, current ${label}`);
   modelTrigger.disabled = running || compacting || modelSelecting
     || modelCatalog === undefined || modelSelection === undefined;
+}
+
+function renderPermissionSelect() {
+  permissionControl.hidden = permissionSelection === undefined;
+  permissionSelect.replaceChildren();
+  if (permissionSelection === undefined) return;
+  for (const item of permissionSelection.options) {
+    const option = document.createElement('option');
+    option.value = item.value;
+    option.textContent = displayPermissionName(item);
+    option.title = item.description ?? item.name;
+    option.disabled = item.value === 'custom';
+    permissionSelect.append(option);
+  }
+  permissionSelect.value = permissionSelection.currentValue;
+  const current = permissionSelection.options.find(item => item.value === permissionSelection.currentValue);
+  permissionSelect.title = current?.description
+    ?? `Session permission: ${current?.name ?? permissionSelection.currentValue}`;
+  permissionSelect.disabled = running || compacting || permissionSelecting;
+}
+
+function displayPermissionName(item) {
+  if (item.name !== item.value) return item.name;
+  if (item.value === 'read-only') return 'Read Only';
+  if (item.value === 'workspace-write') return 'Workspace Write';
+  if (item.value === 'danger-full-access') return 'Full access';
+  return item.name.split('-').map(titleCase).join(' ');
 }
 
 function openModelPicker() {
@@ -1696,6 +1775,7 @@ function setRunning(value) {
   updateInputAvailability();
   renderActivityStatus();
   renderModelTrigger();
+  renderPermissionSelect();
   renderContextMeter();
 }
 
@@ -1705,6 +1785,7 @@ function setCompacting(value) {
   updateInputAvailability();
   renderActivityStatus();
   renderModelTrigger();
+  renderPermissionSelect();
   renderContextMeter();
 }
 
@@ -1719,7 +1800,7 @@ function updateInputAvailability() {
 function renderActivityStatus() {
   const active = running || compacting;
   status.dataset.running = active ? 'true' : 'false';
-  status.textContent = compacting ? 'Compacting context…' : running ? 'Running…' : 'Connected';
+  status.textContent = activityStatusText({ running, compacting, hostStatus });
 }
 
 function saveState() {
@@ -2070,6 +2151,14 @@ function isModelSelection(value) {
       || (typeof value.reasoningEffort === 'string' && value.reasoningEffort.length > 0));
 }
 
+function isPermissionSelection(value) {
+  return isRecord(value) && typeof value.currentValue === 'string' && value.currentValue.length > 0
+    && Array.isArray(value.options) && value.options.some((item) => item?.value === value.currentValue)
+    && value.options.every((item) => isRecord(item) && typeof item.value === 'string' && item.value.length > 0
+      && typeof item.name === 'string' && item.name.length > 0
+      && (item.description === undefined || typeof item.description === 'string'));
+}
+
 function isContextPressure(value) {
   return isRecord(value)
     && isOptionalCount(value.pressureTokens)
@@ -2159,6 +2248,7 @@ function isRecord(value) {
 
 updateInputAvailability();
 renderModelTrigger();
+renderPermissionSelect();
 renderProviderUsage();
 renderSessionInformation();
 renderContextMeter();

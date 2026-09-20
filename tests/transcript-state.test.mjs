@@ -4,8 +4,10 @@ import test from 'node:test';
 await import('../vscode/media/transcript-state.js');
 
 const {
+  activityStatusText,
   mergePrependedTurnState,
   placeTurnProcessAfterMessage,
+  placeUserMessageBeforeTurn,
 } = globalThis.dshCompanionTranscriptState;
 
 class FakeNode {
@@ -29,6 +31,14 @@ class FakeNode {
     node.remove();
     const index = parent.childNodes.indexOf(this);
     parent.insertAt(node, index + 1);
+  }
+
+  before(node) {
+    if (this.parentNode === null) return;
+    const parent = this.parentNode;
+    node.remove();
+    const index = parent.childNodes.indexOf(this);
+    parent.insertAt(node, index);
   }
 
   remove() {
@@ -71,6 +81,7 @@ function turn(name, rows, options = {}) {
     toolCount: options.tools?.length ?? 0,
     contextCount: options.contexts?.length ?? 0,
     startedAt: options.startedAt,
+    firstAssistantMessage: options.firstAssistantMessage,
     latestAssistantMessage: options.latestAssistantMessage,
   };
 }
@@ -125,4 +136,46 @@ test('a Tool call places the growing process block after its Assistant preamble'
 
   assert.equal(placeTurnProcessAfterMessage(value), true);
   assert.deepEqual(transcript.childNodes.map(node => node.name), ['preamble', 'process', 'final']);
+});
+
+test('a delayed canonical prompt moves before an already populated Turn process', () => {
+  const transcript = new FakeNode('transcript');
+  const process = new FakeNode('process');
+  const prompt = new FakeNode('prompt');
+  transcript.append(process);
+
+  assert.equal(placeUserMessageBeforeTurn({ root: process }, prompt), true);
+  assert.deepEqual(transcript.childNodes.map(node => node.name), ['prompt', 'process']);
+});
+
+test('a delayed canonical prompt also precedes an Assistant preamble', () => {
+  const transcript = new FakeNode('transcript');
+  const preamble = new FakeNode('preamble');
+  const process = new FakeNode('process');
+  const final = new FakeNode('final');
+  const prompt = new FakeNode('prompt');
+  transcript.append(preamble, process, final);
+
+  assert.equal(placeUserMessageBeforeTurn({ root: process, firstAssistantMessage: preamble }, prompt), true);
+  assert.deepEqual(transcript.childNodes.map(node => node.name), ['prompt', 'preamble', 'process', 'final']);
+});
+
+test('activity status keeps running work distinct from connection readiness', () => {
+  assert.equal(activityStatusText({ running: true, compacting: false, hostStatus: 'Connected' }), 'Running…');
+  assert.equal(
+    activityStatusText({ running: true, compacting: false, hostStatus: 'Codex/Sol responding…' }),
+    'Codex/Sol responding…',
+  );
+  assert.equal(
+    activityStatusText({ running: true, compacting: false, hostStatus: 'Disconnected; retrying…' }),
+    'Disconnected; retrying…',
+  );
+  assert.equal(
+    activityStatusText({ running: false, compacting: false, hostStatus: 'Codex/Sol responding…' }),
+    'Connected',
+  );
+  assert.equal(
+    activityStatusText({ running: true, compacting: true, hostStatus: 'Connected' }),
+    'Compacting context…',
+  );
 });

@@ -540,7 +540,8 @@ body {
 
 #composer-toolbar,
 #composer-actions,
-#model-controls {
+#model-controls,
+#permission-control {
   display: flex;
   align-items: center;
 }
@@ -559,6 +560,47 @@ body {
   position: relative;
   min-width: 0;
 }
+
+#permission-control[hidden] { display: none; }
+
+#permission-control {
+  position: relative;
+  min-width: 0;
+}
+
+#permission-control::after {
+  content: '';
+  position: absolute;
+  top: 9px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  pointer-events: none;
+  transform: rotate(45deg);
+}
+
+#permission-control:has(#permission-select:disabled)::after { opacity: 0.6; }
+
+#permission-select {
+  max-width: min(180px, 28vw);
+  height: 28px;
+  padding: 0 22px 0 8px;
+  overflow: hidden;
+  appearance: none;
+  border: 0;
+  border-radius: 14px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+#permission-select:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
+#permission-select:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+#permission-select:disabled { cursor: default; opacity: 0.6; }
 
 #model-trigger {
   display: flex;
