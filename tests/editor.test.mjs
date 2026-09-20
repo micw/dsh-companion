@@ -233,7 +233,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /type: 'sessionCost'/);
   assert.match(extension, /context\.extension\.packageJSON\.version/);
   assert.match(extension, /runtime\.backendVersion\(\)/);
-  assert.match(extension, /vscode\.env\.clipboard\.writeText\(\(await ready\)\.sessionId\)/);
+  assert.match(extension, /Send the first prompt before copying a Session id/);
   assert.match(extension, /Object\.keys\(value\)\.length === 1[\s\S]*copySessionId/);
   assert.doesNotMatch(extension, /copySessionId[\s\S]{0,200}message\.sessionId/);
   assert.match(extension, /runtime\.clientModule/);
@@ -257,7 +257,12 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.doesNotMatch(sessionTree, /if \(this\.query\.length > 0\) await this\.search/);
   assert.match(sessionsScript, /function updateActiveRows\(\)/);
   assert.match(sessionsScript, /searchResults\?\.query === search\.value\.trim\(\)/);
-  assert.match(extension, /panelsBySessionId\.set\(connected\.client\.sessionId, panel\);[\s\S]*sessionTree\.requestRefresh\(\)/);
+  assert.match(extension, /sessionCreated: \(sessionId: string\)/);
+  assert.match(extension, /post\(panel, \{ type: 'connected' \}\)/);
+  assert.match(dshClient, /await this\.ensureSession\(\);[\s\S]*beginSubmission/);
+  assert.match(dshClient, /const sessionId = await graph\.sessions\.create/);
+  assert.match(dshClient, /this\.pendingModelSelection = \{ \.\.\.selection \}/);
+  assert.doesNotMatch(dshClient, /restoredSessionId \?\? await graph\.sessions\.create/);
   assert.match(extension, /running: \(value: boolean\)[\s\S]*onSessionListChange\?\.\(\)/);
   assert.match(sessionTree, /requestRefresh\(\): void/);
   assert.match(sessionTree, /this\.browser \?\? this\.browserPromise/);
@@ -724,17 +729,17 @@ test('tabs restore through the serializer and Stop uses DSH session cancellation
   const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
   assert.match(extension, /registerWebviewPanelSerializer\(CHAT_EDITOR_VIEW_TYPE/);
   assert.match(extension, /restoredSessionId/);
-  assert.match(client, /restoredSessionId \?\?/);
+  assert.match(client, /if \(restoredSessionId !== undefined\)[\s\S]*await client\.attachSession\(restoredSessionId\)/);
   assert.match(client, /reasoningDisclosureId/);
   assert.match(client, /context:\$\{String\(event\.seq\)\}/);
   assert.match(client, /callCanonicalRemote\(graph, 'session', 'modelCatalog'/);
   assert.match(client, /binding\.session\.beginSubmission/);
-  assert.match(client, /binding\.session\.loadOlder/);
-  assert.match(client, /callCanonicalRemote\(this\.requireCanonical\(\)\.graph, 'session', 'selectModel'/);
+  assert.match(client, /this\.requireBinding\(\)\.session\.loadOlder/);
+  assert.match(client, /selectModelForSession/);
   assert.match(client, /projections\.faceOf\('modelSelection'\)/);
   assert.match(client, /projections\.faceOf\('contextPressure'\)/);
   assert.match(client, /function modelLabelMap/);
-  assert.match(client, /binding\.session\.cancel/);
+  assert.match(client, /this\.requireBinding\(\)\.session\.cancel/);
   assert.match(client, /retaining pending DSH inbox work/);
 });
 
