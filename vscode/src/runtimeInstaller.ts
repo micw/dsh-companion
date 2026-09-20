@@ -12,6 +12,13 @@ import { RuntimeControl } from './runtimeControl';
 const TARGET = 'linux-x64';
 const MANAGER_LOCK_WAIT_MS = 60_000;
 const SUPERVISOR_READY_MS = 70_000;
+const MANAGED_PROFILE = 'dsh-companion';
+const DEFAULT_PROFILE_BUNDLES = ['@dsh-companion/bundle'] as const;
+const PRODUCT_PROFILE_BUNDLES = [
+  '@dsh-companion/bundle',
+  '@dsh-companion/provider-claude-wrapper-advanced',
+  '@dsh-companion/provider-codex-wrapper-advanced',
+] as const;
 
 interface RuntimeArtifact {
   readonly file: string;
@@ -28,6 +35,7 @@ interface RuntimeManifest {
   readonly launch: {
     readonly executable: string;
     readonly args: readonly string[];
+    readonly profileBundles: readonly string[];
   };
   readonly artifacts: readonly RuntimeArtifact[];
 }
@@ -203,6 +211,7 @@ async function startSupervisor(
   origin: string,
 ): Promise<RuntimeControl> {
   const manifest = await verifyPayload(installed);
+  await ensureManagedProfile(dataHome, manifest.launch.profileBundles);
   const configFile = join(ownerRoot, 'supervisor-config.json');
   const config = {
     version: 1,
@@ -242,6 +251,23 @@ async function startSupervisor(
   throw new Error('Managed DSH runtime did not become ready', { cause: lastError });
 }
 
+async function ensureManagedProfile(dataHome: string, profileBundles: readonly string[]): Promise<void> {
+  const profile = join(dataHome, 'profiles', MANAGED_PROFILE);
+  await mkdir(profile, { recursive: true, mode: 0o700 });
+  await writeJsonAtomic(join(profile, 'package.json'), {
+    name: 'dsh-profile-dsh-companion',
+    private: true,
+    dependencies: {},
+    dsh: {
+      profile: {
+        bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', ...profileBundles],
+        patchReload: 'startup',
+      },
+    },
+  });
+  await writeFile(join(profile, 'cordis.patch.yml'), '[]\n', { mode: 0o600 });
+}
+
 /** Validates one closed runtime payload and every declared artifact digest. */
 export async function verifyPayload(root: string): Promise<RuntimeManifest> {
   const value: unknown = JSON.parse(await readFile(join(root, 'runtime-manifest.json'), 'utf8'));
@@ -250,9 +276,20 @@ export async function verifyPayload(root: string): Promise<RuntimeManifest> {
     || !isRecord(value.dsh)
     || !isRecord(value.launch) || typeof value.launch.executable !== 'string'
     || !isSafeFileName(value.launch.executable) || !Array.isArray(value.launch.args)
-    || value.launch.args.some((item) => typeof item !== 'string') || !Array.isArray(value.artifacts)) {
+    || value.launch.args.some((item) => typeof item !== 'string')
+    || (value.launch.profileBundles !== undefined && !Array.isArray(value.launch.profileBundles))
+    || !Array.isArray(value.artifacts)) {
     throw new Error('Invalid DSH Companion runtime manifest');
   }
+  const rawProfileBundles: unknown[] = value.launch.profileBundles === undefined
+    ? [...DEFAULT_PROFILE_BUNDLES]
+    : [...value.launch.profileBundles];
+  const legacy = sameStrings(rawProfileBundles, DEFAULT_PROFILE_BUNDLES);
+  const product = sameStrings(rawProfileBundles, PRODUCT_PROFILE_BUNDLES);
+  if (!legacy && !product) {
+    throw new Error('Invalid DSH Companion runtime profile bundle list');
+  }
+  const profileBundles = rawProfileBundles as string[];
   const names = new Set<string>();
   const dsh = parseDshProvenance(value.dsh);
   const artifacts: RuntimeArtifact[] = [];
@@ -284,9 +321,14 @@ export async function verifyPayload(root: string): Promise<RuntimeManifest> {
     companionVersion: value.companionVersion,
     target: TARGET,
     dsh,
-    launch: { executable: value.launch.executable, args: [...value.launch.args] },
+    launch: { executable: value.launch.executable, args: [...value.launch.args], profileBundles },
     artifacts,
   };
+}
+
+function sameStrings(value: readonly unknown[], expected: readonly string[]): boolean {
+  return value.length === expected.length
+    && value.every((item, index) => item === expected[index]);
 }
 
 function parseDshProvenance(value: Record<string, unknown>): DshProvenance {

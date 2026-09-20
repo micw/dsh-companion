@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -11,6 +11,10 @@ import { parseArgs } from 'node:util';
 import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
 
 const TARGET = 'linux-x64';
+const EXPECTED_PROVIDER_BUNDLES = [
+  '@dsh-companion/provider-claude-wrapper-advanced',
+  '@dsh-companion/provider-codex-wrapper-advanced',
+];
 const { values } = parseArgs({
   options: {
     source: { type: 'string' },
@@ -31,6 +35,7 @@ if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(companionVersion))
 }
 const source = resolve(values.source);
 const output = resolve(values.output);
+const providerPackageRoots = parseProviderPackageRoots(process.env.DSH_COMPANION_PROVIDER_BUNDLES);
 const buildEnvironment = { ...process.env, CI: '1' };
 await requireAbsent(output, 'Runtime payload output');
 await mkdir(dirname(output), { recursive: true, mode: 0o700 });
@@ -45,6 +50,8 @@ try {
   ]);
   await run('pnpm', ['install', '--frozen-lockfile'], { cwd: prepared, env: buildEnvironment });
   await run('pnpm', ['run', 'build'], { cwd: prepared, env: buildEnvironment });
+  const profileBundles = await stageCompanionPackages(prepared, providerPackageRoots);
+  await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: prepared, env: buildEnvironment });
   const clientBundle = join(prepared, 'dist-exe', 'dsh-companion-client-runtime.js');
   await bundleClientRuntime(prepared, clientBundle);
   await run('pnpm', [
@@ -94,12 +101,13 @@ try {
     },
     launch: {
       executable: executableName,
-      args: ['web', '--no-open'],
+      args: ['--profile', 'dsh-companion', '--no-open'],
+      profileBundles,
     },
     artifacts,
   };
   await writeFile(join(output, 'runtime-manifest.json'), `${JSON.stringify(runtimeManifest, null, 2)}\n`, { mode: 0o600 });
-  await healthCheck(join(output, executableName));
+  await healthCheck(join(output, executableName), profileBundles);
   console.log(`Built DSH Companion ${companionVersion} runtime payload at ${output}`);
 } catch (error) {
   await rm(output, { recursive: true, force: true });
@@ -136,15 +144,74 @@ async function bundleClientRuntime(prepared, outfile) {
   });
 }
 
-async function healthCheck(executable) {
+async function stageCompanionPackages(prepared, providerRoots) {
+  const companionRoot = resolve(import.meta.dirname, '../../..');
+  const sourcePackages = join(companionRoot, 'packages');
+  const destinationRoot = join(prepared, 'packages', 'dsh-companion');
+  await mkdir(destinationRoot, { recursive: true });
+  for (const entry of await readdir(sourcePackages, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    await stagePackage(join(sourcePackages, entry.name), join(destinationRoot, entry.name));
+  }
+  const profileBundles = ['@dsh-companion/bundle'];
+  for (const [index, providerRoot] of providerRoots.entries()) {
+    const sourceManifest = JSON.parse(await readFile(join(providerRoot, 'package.json'), 'utf8'));
+    if (sourceManifest.name !== EXPECTED_PROVIDER_BUNDLES[index]) {
+      throw new Error(`Invalid Companion provider bundle at ${providerRoot}`);
+    }
+    await stagePackage(providerRoot, join(destinationRoot, sourceManifest.name.split('/')[1]));
+    profileBundles.push(sourceManifest.name);
+  }
+  const cliManifestPath = join(prepared, 'apps', 'cli', 'package.json');
+  const cliManifest = JSON.parse(await readFile(cliManifestPath, 'utf8'));
+  for (const packageName of profileBundles) cliManifest.dependencies[packageName] = 'workspace:*';
+  await writeFile(cliManifestPath, `${JSON.stringify(cliManifest, null, 2)}\n`);
+  return profileBundles;
+}
+
+async function stagePackage(from, to) {
+  const sourceNodeModules = join(from, 'node_modules');
+  await cp(from, to, {
+    recursive: true,
+    filter: path => path !== sourceNodeModules && !path.startsWith(`${sourceNodeModules}/`),
+  });
+  await Promise.all([
+    rm(join(to, 'src'), { recursive: true, force: true }),
+    rm(join(to, 'tests'), { recursive: true, force: true }),
+    rm(join(to, 'tsconfig.json'), { force: true }),
+    rm(join(to, 'tsdown.config.ts'), { force: true }),
+  ]);
+  const manifestPath = join(to, 'package.json');
+  const packageManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  rewriteLinkDependencies(packageManifest);
+  delete packageManifest.devDependencies;
+  delete packageManifest.scripts;
+  await writeFile(manifestPath, `${JSON.stringify(packageManifest, null, 2)}\n`);
+}
+
+function rewriteLinkDependencies(packageManifest) {
+  for (const section of ['dependencies', 'peerDependencies']) {
+    for (const [name, version] of Object.entries(packageManifest[section] ?? {})) {
+      if (typeof version === 'string' && version.startsWith('link:')) {
+        packageManifest[section][name] = 'workspace:*';
+      }
+    }
+  }
+}
+
+async function healthCheck(executable, profileBundles) {
   const home = await mkdtemp(join(tmpdir(), 'dsh-companion-health-'));
+  const dshHome = join(home, 'dsh-home');
+  await writeManagedProfile(dshHome, profileBundles);
   const port = await freePort();
   const cleanEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => (
     !/(?:KEY|SECRET|TOKEN|PASSWORD)/iu.test(name)
   )));
-  const child = spawn(executable, ['web', '--no-open', '--port', String(port)], {
+  const child = spawn(executable, [
+    '--profile', 'dsh-companion', '--no-open', '--port', String(port),
+  ], {
     cwd: home,
-    env: { ...cleanEnvironment, DSH_HOME: join(home, 'dsh-home'), DSH_TELEMETRY_DISABLED: '1' },
+    env: { ...cleanEnvironment, DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -176,6 +243,41 @@ async function healthCheck(executable) {
     await stopChild(child);
     await rm(home, { recursive: true, force: true });
   }
+}
+
+async function writeManagedProfile(dshHome, profileBundles) {
+  const profile = join(dshHome, 'profiles', 'dsh-companion');
+  await mkdir(profile, { recursive: true, mode: 0o700 });
+  await writeFile(join(profile, 'package.json'), `${JSON.stringify({
+    name: 'dsh-profile-dsh-companion',
+    private: true,
+    dependencies: {},
+    dsh: {
+      profile: {
+        bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', ...profileBundles],
+        patchReload: 'startup',
+      },
+    },
+  }, null, 2)}\n`);
+  await writeFile(join(profile, 'cordis.patch.yml'), '[]\n');
+}
+
+function parseProviderPackageRoots(value) {
+  if (value === undefined || value === '') {
+    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must name the packaged provider bundles');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must be a JSON array', { cause: error });
+  }
+  if (!Array.isArray(parsed) || parsed.length !== EXPECTED_PROVIDER_BUNDLES.length
+    || parsed.some(path => typeof path !== 'string' || path.length === 0)
+    || new Set(parsed).size !== parsed.length) {
+    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must contain both provider package directories in product order');
+  }
+  return parsed.map(path => resolve(path));
 }
 
 async function freePort() {

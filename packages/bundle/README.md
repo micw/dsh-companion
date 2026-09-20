@@ -1,19 +1,19 @@
 # @dsh-companion/bundle
 
-Profile bundle for the generic DSH Companion Host plugins. It mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
+Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
 
 ## Model Experience
 
-None directly. This bundle mounts provider infrastructure but no model adapter, prompt, or tool.
+The `dsh-companion` preset provides DSH's standard coding-agent composition except fork-based delegation. Fresh subagents, Goals, plans, compaction, workflows, and the standard Tool set remain available.
 
 ### Token effect
 
-None.
+The omitted `subagent_fork` Tool schema reduces the stable Tool prefix relative to DSH's standard preset.
 
 ### KV Cache effect
 
-None.
+Stable while the Companion preset is unchanged. Fresh subagents inherit the same preset as their Parent.
 
 ## Known Limitations and Deferred Work
 
-The bundle provides generic provider infrastructure and its DSH Web settings presentation, but no provider-specific adapter. Each external provider remains an optional bundle with its own deployment and authentication requirements.
+The preset duplicates the pinned DSH standard composition because DSH presets do not support inheritance. A drift test requires every upstream composition change to be reviewed while preserving the intentional omission of `subagent_fork`. The bundle provides generic provider infrastructure and its DSH Web settings presentation, but no provider-specific adapter. Each external provider remains an optional bundle with its own deployment and authentication requirements.

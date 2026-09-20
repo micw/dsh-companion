@@ -43,6 +43,7 @@ if (dshSource === undefined || dshSource.length === 0) {
   throw new Error('DSH_COMPANION_DSH_SOURCE must name an exact DSH Git checkout');
 }
 
+run('pnpm', ['run', 'build']);
 rmSync(runtimePayload, { recursive: true, force: true });
 rmSync(preparedDshSource, { recursive: true, force: true });
 run(process.execPath, [
@@ -51,7 +52,6 @@ run(process.execPath, [
   '--output', runtimePayload,
   '--companion-version', version,
 ]);
-run('pnpm', ['run', 'build']);
 run(process.execPath, [
   join(root, 'scripts', 'smoke-managed-runtime.mjs'),
   '--payload', runtimePayload,

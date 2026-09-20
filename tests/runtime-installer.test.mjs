@@ -54,7 +54,15 @@ async function fixturePayload(version = '0.0.20260914103045') {
       patchSetSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       patches: [],
     },
-    launch: { executable: 'dsh', args: ['web', '--no-open'] },
+    launch: {
+      executable: 'dsh',
+      args: ['web', '--no-open'],
+      profileBundles: [
+        '@dsh-companion/bundle',
+        '@dsh-companion/provider-claude-wrapper-advanced',
+        '@dsh-companion/provider-codex-wrapper-advanced',
+      ],
+    },
     artifacts,
   }, null, 2)}\n`);
   return root;
@@ -65,12 +73,26 @@ test('runtime payload validation checks every declared file and rejects extras',
   const manifest = await verifyPayload(payload);
   assert.equal(manifest.target, 'linux-x64');
   assert.equal(manifest.artifacts.length, 6);
+  assert.deepEqual(manifest.launch.profileBundles, [
+    '@dsh-companion/bundle',
+    '@dsh-companion/provider-claude-wrapper-advanced',
+    '@dsh-companion/provider-codex-wrapper-advanced',
+  ]);
 
   await writeFile(join(payload, 'client-runtime.js'), 'tampered\n');
   await assert.rejects(verifyPayload(payload), /integrity failed/);
   await writeFile(join(payload, 'client-runtime.js'), 'export const runtime = true;\n');
   await writeFile(join(payload, 'undeclared'), 'unexpected\n');
   await assert.rejects(verifyPayload(payload), /undeclared files/);
+});
+
+test('runtime payload validation rejects malformed or reordered profile bundles', async () => {
+  const payload = await fixturePayload();
+  const manifestPath = join(payload, 'runtime-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.launch.profileBundles.reverse();
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await assert.rejects(verifyPayload(payload), /profile bundle list/);
 });
 
 test('runtime payload validation requires complete official DSH provenance', async () => {
