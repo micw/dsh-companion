@@ -8,6 +8,8 @@ Validated non-null costs with `scope: call | turn` become virtual USD `ModelCall
 
 ## Configuration
 
+The provider is disabled by default. Enabling it requires an explicit service URL; credentials remain in DSH's credential store.
+
 ```yaml
 - name: '@dsh-companion/provider-claude-wrapper-advanced'
   config:

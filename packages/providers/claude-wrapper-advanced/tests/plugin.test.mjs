@@ -6,6 +6,7 @@ import CompanionProviderAccounts from '@dsh-companion/provider-account'
 import {
   CLAUDE_WRAPPER_ADVANCED_PROVIDER,
   CLAUDE_WRAPPER_ADVANCED_SETTINGS_NAMESPACE,
+  Config,
   apply,
   inject,
   name,
@@ -16,6 +17,10 @@ const model = {
   input_modalities: ['text'], efforts: { supported: ['low'], default: 'low' },
   knowledge_cutoff: null, aliases: [], limit_groups: ['global'],
 }
+
+test('defaults the installed provider to disabled', () => {
+  assert.equal(Config({}).enabled, false)
+})
 
 test('registers a configurable native route and loads its catalog through the generic LKG owner', async () => {
   const originalFetch = globalThis.fetch
