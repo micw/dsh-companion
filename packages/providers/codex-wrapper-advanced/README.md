@@ -2,6 +2,8 @@
 
 This package connects DeepSeek Harness to an independently operated Codex Wrapper Advanced service through its authenticated `/wire/v1` HTTP and SSE API. It is an independent DSH Companion plugin and is not affiliated with or endorsed by DeepSeek or OpenAI.
 
+The DSH model catalog uses the concise provider display name `Codex`; settings and diagnostics retain the full Codex Wrapper Advanced product name.
+
 The wrapper process, wrapper authentication, wrapper deployment, and wrapper updates are outside this package's lifecycle. The plugin is only a client of a configured service endpoint and a provider adapter for DSH.
 
 ## Development

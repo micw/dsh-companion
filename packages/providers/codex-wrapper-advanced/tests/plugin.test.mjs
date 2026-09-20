@@ -65,7 +65,7 @@ test('registers a configurable native route and loads its catalog through the ge
   try {
     await fiber
     assert.deepEqual(ctx.llm.listProviders(), [
-      { id: CODEX_WRAPPER_ADVANCED_PROVIDER, name: 'Codex Wrapper Advanced' },
+      { id: CODEX_WRAPPER_ADVANCED_PROVIDER, name: 'Codex' },
     ])
     assert.deepEqual(ctx.llm.listConfigurableProviders(), [{
       provider: CODEX_WRAPPER_ADVANCED_PROVIDER,

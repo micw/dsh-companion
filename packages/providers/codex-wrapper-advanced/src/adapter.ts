@@ -45,7 +45,7 @@ export class CodexWrapperAdvancedAdapter extends LlmAdapter {
 
   override providerInfo(provider: string): LlmProviderInfo {
     this.assertProvider(provider)
-    return { id: provider, name: 'Codex Wrapper Advanced' }
+    return { id: provider, name: 'Codex' }
   }
 
   override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined {
