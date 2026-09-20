@@ -4,6 +4,7 @@ const stickyPrompt = document.getElementById('sticky-prompt');
 const stickyPromptJump = document.getElementById('sticky-prompt-jump');
 const stickyPromptText = document.getElementById('sticky-prompt-text');
 const stickyPromptTime = document.getElementById('sticky-prompt-time');
+const scrollBottom = document.getElementById('scroll-bottom');
 const queue = document.getElementById('queue');
 const composer = document.getElementById('composer');
 const prompt = document.getElementById('prompt');
@@ -26,7 +27,6 @@ const stop = document.getElementById('stop');
 const status = document.getElementById('status');
 const restored = vscode.getState() ?? {};
 const restoredSessionId = typeof restored.sessionId === 'string' ? restored.sessionId : undefined;
-const restoredScrollTop = typeof restored.scrollTop === 'number' ? restored.scrollTop : 0;
 const restoredDisclosures = isRecord(restored.disclosures) ? { ...restored.disclosures } : {};
 if (isRecord(restored.processOpenByTurn)) {
   for (const [turn, open] of Object.entries(restored.processOpenByTurn)) {
@@ -37,7 +37,7 @@ const state = {
   version: 2,
   sessionId: restoredSessionId,
   draft: typeof restored.draft === 'string' ? restored.draft : '',
-  scrollTop: restoredScrollTop,
+  scrollTop: 0,
   disclosures: { ...restoredDisclosures },
 };
 let turns = new Map();
@@ -52,6 +52,13 @@ let activeTurn;
 let running = false;
 let stickyPromptTarget;
 let stickyPromptFrame;
+let scrollMode = 'follow';
+let scrollFrame;
+let scrollGeneration = 0;
+let userScrollIntent = false;
+let userScrollTimer;
+let pointerScrolling = false;
+let bottomLatchSuppressed = false;
 let renderTarget = output;
 let prependState;
 let historyHasMore = false;
@@ -75,6 +82,7 @@ composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = prompt.value.trim();
   if (text.length === 0) return;
+  setOutputFollow();
   const requestId = crypto.randomUUID();
   pendingSubmissions.set(requestId, { requestId, text, submittedAt: Date.now() });
   renderQueue();
@@ -134,19 +142,44 @@ compactButton.addEventListener('click', () => {
 
 stickyPromptJump.addEventListener('click', () => {
   if (stickyPromptTarget === undefined) return;
+  setOutputSticky(true);
   stickyPromptTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
+scrollBottom.addEventListener('click', scrollToLatestOutput);
+
 output.addEventListener('scroll', () => {
+  const nearBottom = isNearOutputBottom();
+  if (bottomLatchSuppressed && !nearBottom) bottomLatchSuppressed = false;
+  if (scrollMode === 'sticky' && nearBottom && !bottomLatchSuppressed) {
+    scrollMode = 'follow';
+    userScrollIntent = false;
+    if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
+    userScrollTimer = undefined;
+    updateScrollButton();
+    if (!pointerScrolling) followOutput();
+  } else if (userScrollIntent || pointerScrolling) {
+    scrollMode = nearBottom ? 'follow' : 'sticky';
+    userScrollIntent = false;
+    if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
+    userScrollTimer = undefined;
+    if (scrollMode === 'sticky') cancelScheduledOutputScroll();
+    else if (!pointerScrolling) followOutput();
+    updateScrollButton();
+  }
   state.scrollTop = output.scrollTop;
   saveState();
   scheduleStickyPrompt();
   requestOlderHistory();
 }, { passive: true });
 
+output.addEventListener('wheel', markUserScrollIntent, { passive: true });
+output.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+
 window.addEventListener('resize', () => {
   scheduleStickyPrompt();
   positionContextPanel();
+  positionScrollButton();
 });
 
 output.addEventListener('click', (event) => {
@@ -159,13 +192,24 @@ output.addEventListener('click', (event) => {
 });
 
 document.addEventListener('pointerdown', (event) => {
+  if (event.button === 0 && output.contains(event.target)) {
+    pointerScrolling = true;
+    markUserScrollIntent();
+  }
   const targetControl = event.target.closest?.('.stat-control');
   closeStatControls(targetControl);
   if (!modelControls.contains(event.target)) closeModelPicker();
   if (!contextMeter.contains(event.target)) closeContextPanel();
 });
 
+document.addEventListener('pointerup', finishPointerInteraction);
+document.addEventListener('pointercancel', finishPointerInteraction);
+
 document.addEventListener('keydown', (event) => {
+  if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
+    && !event.target.closest?.('textarea, input, select, button')) {
+    markUserScrollIntent();
+  }
   if (event.key !== 'Escape') return;
   if (!effortMenu.hidden) {
     closeEffortMenu(true);
@@ -178,17 +222,16 @@ document.addEventListener('keydown', (event) => {
 
 window.addEventListener('message', (event) => {
   const message = event.data;
+  if (message.type === 'resetTranscript') {
+    resetTranscript();
+    return;
+  }
   if (message.type === 'session') {
     state.sessionId = message.sessionId;
     sessionReady = true;
     updateInputAvailability();
     if (message.sessionId === restoredSessionId) {
-      requestAnimationFrame(() => {
-        output.scrollTop = restoredScrollTop;
-        state.scrollTop = restoredScrollTop;
-        saveState();
-        scheduleStickyPrompt();
-      });
+      requestAnimationFrame(setOutputFollow);
     }
     saveState();
     return;
@@ -306,6 +349,11 @@ window.addEventListener('message', (event) => {
     renderQueue();
     return;
   }
+  if (message.type === 'submissionObserved') {
+    pendingSubmissions.delete(message.requestId);
+    renderQueue();
+    return;
+  }
   if (message.type === 'running') {
     setRunning(message.value);
     return;
@@ -326,6 +374,21 @@ window.addEventListener('message', (event) => {
   }
   if (message.type === 'error') appendMessage('error', message.text);
 });
+
+function resetTranscript() {
+  output.replaceChildren();
+  turns = new Map();
+  tools = new Map();
+  compactions = new Map();
+  activeAssistant = undefined;
+  activeAssistantMessage = undefined;
+  activeTurn = undefined;
+  stickyPromptTarget = undefined;
+  renderTarget = output;
+  prependState = undefined;
+  stickyPrompt.hidden = true;
+  scheduleStickyPrompt();
+}
 
 function appendMessage(role, text, html, time = Date.now()) {
   const article = document.createElement('article');
@@ -446,6 +509,7 @@ function applyProcessEvent(event) {
       state.disclosures[key] = false;
       saveState();
     }
+    followOutput();
     return;
   }
   if (event.type === 'reasoning' && typeof event.text === 'string') {
@@ -646,6 +710,7 @@ function appendTurnSummary(turn, summary) {
   footer.append(clock);
   if (activeAssistantMessage === undefined) renderTarget.append(footer);
   else activeAssistantMessage.append(footer);
+  followOutput();
 }
 
 function usageControl(turn, usage) {
@@ -1093,12 +1158,110 @@ function saveState() {
   vscode.setState(state);
 }
 
+function isNearOutputBottom() {
+  return output.scrollHeight - output.scrollTop - output.clientHeight < 64;
+}
+
+function setOutputFollow() {
+  scrollMode = 'follow';
+  bottomLatchSuppressed = false;
+  userScrollIntent = false;
+  if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
+  userScrollTimer = undefined;
+  updateScrollButton();
+  followOutput();
+}
+
+function scrollToLatestOutput() {
+  if (isNearOutputBottom()) {
+    setOutputFollow();
+    return;
+  }
+  setOutputSticky(true);
+  output.scrollTo({ top: output.scrollHeight, behavior: 'smooth' });
+}
+
+function setOutputSticky(suppressBottomLatch = false) {
+  scrollMode = 'sticky';
+  bottomLatchSuppressed = suppressBottomLatch;
+  userScrollIntent = false;
+  if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
+  userScrollTimer = undefined;
+  cancelScheduledOutputScroll();
+  updateScrollButton();
+}
+
+function updateScrollButton() {
+  scrollBottom.hidden = scrollMode !== 'sticky';
+  if (!scrollBottom.hidden) positionScrollButton();
+}
+
+function positionScrollButton() {
+  if (scrollBottom.hidden) return;
+  const outputRect = output.getBoundingClientRect();
+  scrollBottom.style.top = `${String(Math.max(outputRect.top + 12, outputRect.bottom - 44))}px`;
+}
+
+function cancelScheduledOutputScroll() {
+  scrollGeneration += 1;
+  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame);
+  scrollFrame = undefined;
+}
+
+function markUserScrollIntent() {
+  userScrollIntent = true;
+  bottomLatchSuppressed = false;
+  cancelScheduledOutputScroll();
+  if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
+  userScrollTimer = window.setTimeout(() => {
+    userScrollTimer = undefined;
+    userScrollIntent = false;
+    if (scrollMode === 'follow') followOutput();
+  }, 150);
+}
+
+function finishPointerInteraction() {
+  pointerScrolling = false;
+  const selection = window.getSelection();
+  const transcriptSelection = selection !== null && !selection.isCollapsed
+    && (output.contains(selection.anchorNode) || output.contains(selection.focusNode));
+  if (transcriptSelection) {
+    setOutputSticky();
+    return;
+  }
+  if (isNearOutputBottom()) {
+    scrollMode = 'follow';
+    updateScrollButton();
+  }
+  if (scrollMode === 'follow') followOutput();
+}
+
 function followOutput() {
   if (prependState !== undefined) return;
-  output.scrollTop = output.scrollHeight;
-  state.scrollTop = output.scrollTop;
-  saveState();
-  scheduleStickyPrompt();
+  if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) {
+    if (scrollMode !== 'follow') cancelScheduledOutputScroll();
+    return;
+  }
+  scrollGeneration += 1;
+  if (scrollFrame !== undefined) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = undefined;
+    if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) return;
+    output.scrollTop = output.scrollHeight;
+    state.scrollTop = output.scrollTop;
+    saveState();
+    scheduleStickyPrompt();
+    const renderedGeneration = scrollGeneration;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = undefined;
+      if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) return;
+      output.scrollTop = output.scrollHeight;
+      state.scrollTop = output.scrollTop;
+      saveState();
+      scheduleStickyPrompt();
+      if (renderedGeneration !== scrollGeneration) followOutput();
+    });
+  });
 }
 
 function requestOlderHistory() {
@@ -1300,4 +1463,5 @@ function isRecord(value) {
 updateInputAvailability();
 renderModelTrigger();
 renderContextMeter();
+updateScrollButton();
 saveState();

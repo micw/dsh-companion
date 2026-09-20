@@ -92,20 +92,21 @@ body {
 }
 
 #sticky-prompt-jump {
+  display: grid;
+  align-self: center;
+  place-items: center;
   width: 24px;
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 50%;
   cursor: pointer;
-  color: var(--vscode-descriptionForeground);
-  background: transparent;
-  font: inherit;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
 }
 
 #sticky-prompt-jump:hover {
-  color: var(--vscode-foreground);
-  background: var(--vscode-toolbar-hoverBackground);
+  background: var(--vscode-button-hoverBackground);
 }
 
 #sticky-prompt-jump:focus-visible {
@@ -127,6 +128,48 @@ body {
   color: var(--vscode-descriptionForeground);
   font-size: 0.72em;
   font-variant-numeric: tabular-nums;
+}
+
+#scroll-bottom {
+  position: absolute;
+  z-index: 9;
+  right: 20px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+#scroll-bottom:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+#sticky-prompt-jump svg,
+#scroll-bottom svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+#scroll-bottom:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+#scroll-bottom[hidden] {
+  display: none;
 }
 
 .message.assistant .body > :first-child { margin-top: 0; }
