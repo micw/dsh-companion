@@ -338,6 +338,10 @@ window.addEventListener('message', (event) => {
 
 function applyHostMessage(message) {
   if (!isRecord(message)) return;
+  if (message.type === 'openProviderSettings' && Object.keys(message).length === 1) {
+    openProviderSettings();
+    return;
+  }
   if (message.type === 'batch') {
     if (!Array.isArray(message.messages) || message.messages.length > 64) return;
     for (const item of message.messages) {
@@ -1551,8 +1555,9 @@ function renderModelTrigger() {
   const usable = selectedModelEnabled();
   const modelName = modelCatalog !== undefined && modelCatalog.routableProviders.length === 0
     ? 'Configure a provider'
-    : found?.model.name
-      ?? (modelSelection === undefined ? 'Loading models…' : `${modelSelection.provider}/${modelSelection.model}`);
+    : (found === undefined
+      ? modelSelection === undefined ? 'Loading models…' : `${modelSelection.provider}/${modelSelection.model}`
+      : `${found.group.name} / ${found.model.name}`);
   const selectedEffort = found === undefined ? undefined : effortLabel(found.model, modelSelection?.reasoningEffort);
   modelTrigger.replaceChildren();
   const name = document.createElement('span');

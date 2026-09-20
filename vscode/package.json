@@ -33,6 +33,7 @@
   "activationEvents": [
     "onCommand:dshCompanion.newChatEditor",
     "onCommand:dshCompanion.openDevelopmentWebUi",
+    "onCommand:dshCompanion.openProviderSettings",
     "onCommand:dshCompanion.searchSessions",
     "onCommand:dshCompanion.stopManagedRuntime",
     "onView:dshCompanion.sessions",
@@ -58,6 +59,11 @@
         "command": "dshCompanion.searchSessions",
         "title": "DSH: Search Sessions",
         "icon": "$(search)"
+      },
+      {
+        "command": "dshCompanion.openProviderSettings",
+        "title": "DSH: Providers & Models",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "dshCompanion.openDevelopmentWebUi",
@@ -97,6 +103,11 @@
           "command": "dshCompanion.refreshSessions",
           "when": "view == dshCompanion.sessions",
           "group": "navigation@2"
+        },
+        {
+          "command": "dshCompanion.openProviderSettings",
+          "when": "view == dshCompanion.sessions",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [

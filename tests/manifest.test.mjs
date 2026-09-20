@@ -36,6 +36,11 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
       icon: '$(search)',
     },
     {
+      command: 'dshCompanion.openProviderSettings',
+      title: 'DSH: Providers & Models',
+      icon: '$(settings-gear)',
+    },
+    {
       command: 'dshCompanion.openDevelopmentWebUi',
       title: 'DSH: Open Web UI',
     },
@@ -47,6 +52,7 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
   assert.deepEqual(manifest.activationEvents, [
     'onCommand:dshCompanion.newChatEditor',
     'onCommand:dshCompanion.openDevelopmentWebUi',
+    'onCommand:dshCompanion.openProviderSettings',
     'onCommand:dshCompanion.searchSessions',
     'onCommand:dshCompanion.stopManagedRuntime',
     'onView:dshCompanion.sessions',
