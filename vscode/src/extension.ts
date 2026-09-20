@@ -78,7 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('dshCompanion.openDevelopmentWebUi', async () => {
       try {
-        await openDevelopmentWebUi(context, runtimeControl);
+        await openWebUi(context, runtimeControl);
       } catch (error) {
         await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
       }
@@ -112,7 +112,7 @@ export function activate(context: vscode.ExtensionContext): void {
 /** Releases resources owned by editor-panel subscriptions. */
 export function deactivate(): void {}
 
-async function openDevelopmentWebUi(
+async function openWebUi(
   context: vscode.ExtensionContext,
   runtimeControlPromise: Promise<RuntimeControl | undefined>,
 ): Promise<void> {
@@ -121,8 +121,9 @@ async function openDevelopmentWebUi(
     runtime = await connectRuntime(context, authorizeRuntimeReplacement);
     if (runtime !== undefined) context.subscriptions.push(runtime);
   }
-  if (runtime?.runtimeId !== 'source' || runtime.origin !== DSH_ORIGIN) {
-    throw new Error('The DSH Companion source development runtime is unavailable');
+  if (runtime === undefined) throw new Error('DSH Companion Runtime is unavailable');
+  if (runtime.origin !== DSH_ORIGIN && runtime.origin !== PACKAGED_DSH_ORIGIN) {
+    throw new Error(`DSH runtime origin ${runtime.origin} does not match a Companion runtime origin`);
   }
   await vscode.env.openExternal(vscode.Uri.parse(await runtime.bootstrapUrl()));
 }

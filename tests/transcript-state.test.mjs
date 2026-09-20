@@ -8,6 +8,7 @@ const {
   mergePrependedTurnState,
   placeTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
+  reattachTranscriptTail,
 } = globalThis.dshCompanionTranscriptState;
 
 class FakeNode {
@@ -23,6 +24,12 @@ class FakeNode {
 
   prepend(...nodes) {
     for (const [index, node] of nodes.entries()) this.insertAt(node, index);
+  }
+
+  replaceChildren(...nodes) {
+    for (const child of this.childNodes) child.parentNode = null;
+    this.childNodes = [];
+    this.append(...nodes);
   }
 
   after(node) {
@@ -177,5 +184,22 @@ test('activity status keeps running work distinct from connection readiness', ()
   assert.equal(
     activityStatusText({ running: true, compacting: true, hostStatus: 'Connected' }),
     'Compacting context…',
+  );
+});
+
+test('a history prepend reattaches the complete existing transcript tail', () => {
+  const transcript = new FakeNode('transcript');
+  const oldPrompt = new FakeNode('old-prompt');
+  const process = new FakeNode('process');
+  const finalAnswer = new FakeNode('final-answer');
+  const laterTurn = new FakeNode('later-turn');
+  transcript.append(process, finalAnswer, laterTurn);
+  const tail = [...transcript.childNodes];
+
+  reattachTranscriptTail(transcript, [oldPrompt], tail);
+
+  assert.deepEqual(
+    transcript.childNodes.map(node => node.name),
+    ['old-prompt', 'process', 'final-answer', 'later-turn'],
   );
 });

@@ -37,12 +37,22 @@ try {
   if (JSON.stringify(profile.dsh?.profile?.bundles) !== JSON.stringify(expectedBundles)) {
     throw new Error('Managed DSH profile omits packaged Companion bundles');
   }
+  const unauthenticated = await fetch(control.origin, { redirect: 'manual' });
+  if (unauthenticated.status !== 401 || unauthenticated.headers.get('cache-control') !== 'no-store') {
+    throw new Error('Managed DSH Web UI did not reject an unauthenticated request');
+  }
   const launchUrl = await control.bootstrapUrl();
   await peerControl.bootstrapUrl();
   const exchanged = await fetch(launchUrl, { redirect: 'manual' });
   if (exchanged.status !== 303) throw new Error(`Managed DSH authentication failed with HTTP ${String(exchanged.status)}`);
   const cookie = exchanged.headers.get('set-cookie')?.split(';', 1)[0];
   if (cookie === undefined) throw new Error('Managed DSH authentication returned no cookie');
+  const webUi = await fetch(control.origin, { headers: { cookie } });
+  const webUiHtml = await webUi.text();
+  if (!webUi.ok || !webUiHtml.includes('"id":"@deepseek-ai/dsh-client-modules"')
+    || !webUiHtml.includes('/plugins/??')) {
+    throw new Error('Managed DSH Web UI omitted its dynamic client bootstrap');
+  }
   const rpcId = randomUUID();
   const response = await fetch(new URL('/api/session/list', control.origin), {
     method: 'POST',

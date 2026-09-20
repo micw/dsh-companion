@@ -1,0 +1,111 @@
+diff --git a/packages/client/modules/src/index.ts b/packages/client/modules/src/index.ts
+index c823657..38501ab 100644
+--- a/packages/client/modules/src/index.ts
++++ b/packages/client/modules/src/index.ts
+@@ -752,22 +752,42 @@ export class ClientModuleRegistry extends Service {
+       return null
+     }
+     const { packageName, path: pkgPath } = located
+-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<string, unknown>
+-    const dsh = pkg.dsh
+-    const decl = parseDshClient(
++    let pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<string, unknown>
++    let dsh = pkg.dsh
++    let decl = parseDshClient(
+       packageName,
+       dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).client : undefined,
+     )
++    let clientPath: string | undefined
++    if (decl === undefined && dsh !== null && typeof dsh === 'object') {
++      const fallback = (dsh as { moduleFallback?: { targets?: Record<string, unknown> } })
++        .moduleFallback?.targets?.['./client']
++      if (typeof fallback === 'string') {
++        const original = this.nearestPackage(fallback, packageName)
++        if (original !== undefined) {
++          pkg = JSON.parse(readFileSync(original.path, 'utf8')) as Record<string, unknown>
++          dsh = pkg.dsh
++          decl = parseDshClient(
++            packageName,
++            dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).client : undefined,
++          )
++          if (decl !== undefined) clientPath = fileURLToPath(fallback)
++        }
++      }
++    }
+     if (decl === undefined || decl.platform !== 'web') {
+       this.pkgMeta.set(sourceKey, null)
+       return null
+     }
+-    const clientRel = clientExportOf(packageName, pkg.exports)
+-    if (clientRel === undefined) {
+-      throw new Error(`client-modules: ${packageName} declares dsh.client but exports no "./client" bundle`)
++    if (clientPath === undefined) {
++      const clientRel = clientExportOf(packageName, pkg.exports)
++      if (clientRel === undefined) {
++        throw new Error(`client-modules: ${packageName} declares dsh.client but exports no "./client" bundle`)
++      }
++      clientPath = join(dirname(pkgPath), clientRel)
+     }
+     const meta: PkgMeta = {
+-      clientPath: join(dirname(pkgPath), clientRel),
++      clientPath,
+       ...(decl.inject !== undefined ? { inject: decl.inject } : {}),
+       external: decl.external ?? [],
+       immediately: decl.immediately === true,
+diff --git a/packages/client/modules/tests/node-half.client.spec.ts b/packages/client/modules/tests/node-half.client.spec.ts
+index 4f06360..f0a0834 100644
+--- a/packages/client/modules/tests/node-half.client.spec.ts
++++ b/packages/client/modules/tests/node-half.client.spec.ts
+@@ -261,7 +261,7 @@ describe('client bundle activation', () => {
+       const { service } = constructWithRoute([packageName], {
+         contextBaseUrl,
+         entryBaseUrl,
+-        internal: internal as NonNullable<Context['loader']['internal']>,
++        internal: internal as unknown as NonNullable<Context['loader']['internal']>,
+       })
+ 
+       expect(calls).toEqual(version === 'v2'
+@@ -272,6 +272,34 @@ describe('client bundle activation', () => {
+     },
+   )
+ 
++  it('follows a packaged module proxy to its virtual client bundle metadata', () => {
++    const packageName = '@fixture/packaged-proxy'
++    const clientPath = writePackage(packageName)
++    mkdirSync(dirname(clientPath), { recursive: true })
++    writeFileSync(clientPath, 'module.exports = {}\n')
++    const proxyRoot = join(root!, 'proxy', 'node_modules', ...packageName.split('/'))
++    const hostPath = join(proxyRoot, 'entry-0.js')
++    mkdirSync(proxyRoot, { recursive: true })
++    writeFileSync(hostPath, 'export default {}\n')
++    writeFileSync(join(proxyRoot, 'package.json'), JSON.stringify({
++      name: packageName,
++      exports: { '.': './entry-0.js', './client': './entry-1.js' },
++      dsh: { moduleFallback: { targets: { '.': pathToFileURL(hostPath).href, './client': pathToFileURL(clientPath).href } } },
++    }))
++    const internal = {
++      version: 'v2' as const,
++      resolveSync: () => ({ format: 'module' as const, url: pathToFileURL(hostPath).href }),
++    }
++
++    const { service } = constructWithRoute([packageName], {
++      entryBaseUrl: pathToFileURL(proxyRoot).href + '/',
++      internal: internal as unknown as NonNullable<Context['loader']['internal']>,
++    })
++
++    expect(service.clientPath(packageName)).toBe(clientPath)
++    expect(service.graph().entries.map(entry => entry.id)).toEqual([packageName])
++  })
++
+   it('derives the browser module id from a file entry owning manifest', () => {
+     const packageName = '@fixture/file-entry'
+     const clientPath = writePackage(packageName)
+@@ -327,7 +355,7 @@ describe('client bundle activation', () => {
+ 
+       const { service } = constructWithRoute([loaderName], {
+         entryBaseUrl,
+-        internal: internal as NonNullable<Context['loader']['internal']>,
++        internal: internal as unknown as NonNullable<Context['loader']['internal']>,
+       })
+ 
+       expect(calls).toEqual(version === 'v2'

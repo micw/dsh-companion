@@ -3,6 +3,7 @@ const {
   mergePrependedTurnState,
   placeTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
+  reattachTranscriptTail,
 } = globalThis.dshCompanionTranscriptState;
 const vscode = acquireVsCodeApi();
 const output = document.getElementById('output');
@@ -1929,8 +1930,10 @@ function beginHistoryPrepend() {
     activeAssistant,
     activeAssistantMessage,
     activeTurn,
+    nodes: [...output.childNodes],
     scrollTop: output.scrollTop,
     scrollHeight: output.scrollHeight,
+    following: scrollMode === 'follow' && !userScrollIntent && !pointerScrolling,
   };
   renderTarget = document.createDocumentFragment();
   turns = new Map();
@@ -1956,7 +1959,7 @@ function endHistoryPrepend() {
     updateTurnProcessLabel(merged, !merged.completed);
     prependedTurns.set(number, merged);
   }
-  output.prepend(fragment);
+  reattachTranscriptTail(output, [...fragment.childNodes], previous.nodes);
   turns = new Map([...prependedTurns, ...previous.turns]);
   tools = new Map([...prependedTools, ...previous.tools]);
   compactions = new Map([...prependedCompactions, ...previous.compactions]);
@@ -1964,6 +1967,10 @@ function endHistoryPrepend() {
   activeAssistantMessage = previous.activeAssistantMessage;
   activeTurn = previous.activeTurn;
   prependState = undefined;
+  if (previous.following) {
+    followOutput();
+    return;
+  }
   output.scrollTop = previous.scrollTop + output.scrollHeight - previous.scrollHeight;
   state.scrollTop = output.scrollTop;
   saveState();
