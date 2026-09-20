@@ -32,6 +32,8 @@ export interface CodexWireRequestOptions {
 /**
  * Serialize one DSH call. Assistant-only blocks embedded in User input become
  * labeled inert text; unsupported controls fail instead of being discarded.
+ * Compaction's required output cap is omitted because the Codex backend cannot
+ * enforce it and rejecting it would prevent DSH from maintaining the Session.
  */
 export async function serializeCodexWireRequest(
   request: GenerateOptions,
@@ -69,7 +71,7 @@ export async function serializeCodexWireRequest(
 function rejectUnsupportedControls(request: GenerateOptions): void {
   const unsupported = [
     request.temperature === undefined ? undefined : 'temperature',
-    request.maxTokens === undefined ? undefined : 'maxTokens',
+    request.maxTokens === undefined || request.purpose === 'compaction' ? undefined : 'maxTokens',
     request.stop === undefined ? undefined : 'stop',
   ].filter((name): name is string => name !== undefined)
   if (unsupported.length > 0) {

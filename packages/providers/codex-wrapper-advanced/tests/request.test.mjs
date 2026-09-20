@@ -135,6 +135,10 @@ test('rejects unsupported controls and unverified mid-history system changes', a
     error => error.code === 'UNSUPPORTED_OPTION' && /temperature/u.test(error.message),
   )
   await assert.rejects(
+    serializeCodexWireRequest({ ...base, maxTokens: 8192, messages: [] }, { wireModel: 'model', imageUrl }),
+    error => error.code === 'UNSUPPORTED_OPTION' && /maxTokens/u.test(error.message),
+  )
+  await assert.rejects(
     serializeCodexWireRequest({
       ...base,
       messages: [
@@ -151,6 +155,19 @@ test('rejects unsupported controls and unverified mid-history system changes', a
     }, { wireModel: 'model', imageUrl }),
     error => error.code === 'UNSUPPORTED_CONTENT' && /future-content/u.test(error.message),
   )
+})
+
+test('admits DSH compaction when the backend cannot enforce its output cap', async () => {
+  const request = await serializeCodexWireRequest({
+    ...base,
+    purpose: 'compaction',
+    maxTokens: 8192,
+    messages: [message('user', [{ type: 'text', text: 'Summarize this session.' }], { kind: 'plugin', plugin: 'compaction' })],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+
+  assert.equal('maxTokens' in request, false)
+  assert.equal('max_output_tokens' in request, false)
+  assert.equal(request.input[0].content[0].text, 'Summarize this session.')
 })
 
 let nextMessage = 0

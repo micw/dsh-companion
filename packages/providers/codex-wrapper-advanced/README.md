@@ -17,7 +17,7 @@ Local development links the pinned DSH source checkout in the sibling `deepseek-
 
 ## Model Experience
 
-The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. DSH tool schemas are explicitly non-strict so the Responses endpoint preserves their optional parameters. Reasoning and tool-call blocks embedded by DSH in synthetic User input are retained as labeled inert text because the Responses User-content vocabulary cannot represent their original channels. The adapter does not add instructions or tools of its own.
+The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. DSH tool schemas are explicitly non-strict so the Responses endpoint preserves their optional parameters. Reasoning and tool-call blocks embedded by DSH in synthetic User input are retained as labeled inert text because the Responses User-content vocabulary cannot represent their original channels. The adapter does not add instructions or tools of its own. The Codex backend cannot enforce DSH's compaction output cap; the adapter admits that maintenance request without forwarding the cap so a Codex-routed Session remains compactable, while rejecting unsupported output caps on ordinary model calls.
 
 ### Token effect
 
@@ -30,5 +30,7 @@ The DSH Session id is sent as the wrapper `session_id`, keeping the wrapper's pr
 ## Known Limitations and Deferred Work
 
 The package is loadable as an optional DSH profile bundle and is installed from its checkout by the DSH Companion development runtime. Public distribution as a bundled or separately downloadable provider remains undecided.
+
+Codex compaction relies on the summarization instruction and the backend's own output limit because the backend rejects `max_output_tokens`. Deployments that require an exact compaction cap configure DSH's dedicated summarization provider and model to a route that supports `maxTokens`.
 
 The native adapter, dynamic catalog, account projection, settings, credentials, model policy, and browser presentation are available. Live wrapper validation through DSH's canonical Web Client covers a text Turn, cold Session restore, a successful two-Step Tool call/result round trip, reasoning output, opaque reasoning replay into a later request, and DSH Session cancellation. The VS Code Client assembly discovers the same route, submits a native provider Turn, and restores its transcript. Post-header SSE cancellation is enforced independently of Fetch implementation behavior. Live image transport remains outstanding; the current VS Code composer does not admit image attachments.
