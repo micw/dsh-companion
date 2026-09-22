@@ -151,6 +151,11 @@ export interface DshContextPressureState {
 
 export interface DshAllowanceWindow {
   readonly usedPercent: number;
+  readonly monetary?: {
+    readonly currency: string;
+    readonly limitNanos: number;
+    readonly remainingNanos: number;
+  };
   readonly windowSeconds?: number;
   readonly resetsAt?: number;
   readonly resetsInSeconds?: number;
@@ -2355,6 +2360,7 @@ function parseAllowanceWindow(value: unknown): DshAllowanceWindow {
     || value.usedPercent < 0) throw new Error('DSH returned an invalid provider allowance window');
   return {
     usedPercent: value.usedPercent,
+    ...(value.monetary === undefined ? {} : { monetary: parseAllowanceMoney(value.monetary) }),
     ...(value.windowSeconds === undefined
       ? {}
       : { windowSeconds: optionalCount(value.windowSeconds, 'allowance windowSeconds', true) }),
@@ -2365,6 +2371,15 @@ function parseAllowanceWindow(value: unknown): DshAllowanceWindow {
       ? {}
       : { resetsInSeconds: optionalSafeInteger(value.resetsInSeconds, 'allowance resetsInSeconds') }),
   };
+}
+
+function parseAllowanceMoney(value: unknown): NonNullable<DshAllowanceWindow['monetary']> {
+  if (!isRecord(value) || typeof value.currency !== 'string' || !/^[A-Z]{3,12}$/u.test(value.currency)
+    || !isCount(value.limitNanos) || !isCount(value.remainingNanos)
+    || value.remainingNanos > value.limitNanos) {
+    throw new Error('DSH returned invalid provider allowance money');
+  }
+  return { currency: value.currency, limitNanos: value.limitNanos, remainingNanos: value.remainingNanos };
 }
 
 function parseCommandResult(value: unknown): DshCompactResult {

@@ -14,6 +14,12 @@ export type CompanionJsonValue =
 /** One provider allowance window. */
 export interface CompanionAllowanceWindow {
   readonly usedPercent: number
+  /** Exact monetary spending-cap values when the provider reports one currency. */
+  readonly monetary?: {
+    readonly currency: string
+    readonly limitNanos: number
+    readonly remainingNanos: number
+  }
   readonly windowSeconds?: number
   readonly resetsAt?: number
   readonly resetsInSeconds?: number
