@@ -12,8 +12,10 @@
     includeUserRoot: false
 
 - id: llm-deepseek
-  config:
-    enabled: false
+  disabled: true
+
+- id: llm-pi-ai
+  disabled: true
 
 # Companion exposes message-content search in its Session sidebar. Keep the
 # derived index durable, but defer SQLite initialization until the first query.
@@ -34,7 +36,10 @@
 
     - id: dsh-companion-model-policy
       name: '@dsh-companion/model-policy'
-      config: {}
+      config:
+        providers:
+          openrouter:
+            defaultModelState: disabled
 
     - id: dsh-companion-provider-client
       name: '@dsh-companion/provider-client'

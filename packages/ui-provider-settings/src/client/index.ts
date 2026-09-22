@@ -35,6 +35,10 @@ const NS = 'dsh-companion.provider-settings'
 const POLICY_NAMESPACE = 'dsh-companion-model-policy'
 const PROVIDERS = [
   {
+    settingsNamespace: 'dsh-companion-openrouter',
+    defaultApiKeyRef: 'OPENROUTER_API_KEY',
+  },
+  {
     settingsNamespace: 'dsh-companion-codex-wrapper-advanced',
     defaultApiKeyRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
   },
@@ -50,7 +54,7 @@ export const inject = [
   'remote.credentials', 'settingsScope',
 ]
 
-/** Register provider-card details for every Companion-managed wrapper route. */
+/** Register provider-card details for every Companion-managed dynamic route. */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-companion provider settings: dictionaries')
   const modelPolicy = ctx.settingsScope.bind<ModelPolicySettings>({ namespace: POLICY_NAMESPACE })

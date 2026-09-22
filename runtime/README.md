@@ -20,7 +20,7 @@ The output is disposable. Never edit it or use it as the source of a patch.
 
 ## Linux payload
 
-The internal Linux build reuses DSH's supported single-executable runtime builder. It produces the normal `dsh` launcher with the Web profile and its required native sidecars, plus the patched Node Client Runtime artifact consumed by the Extension bundle. The build stages the separately maintained Claude Wrapper Advanced and Codex Wrapper Advanced adapter packages into the executable closure and records their ordered profile bundles in the payload manifest; wrapper services and credentials remain external. The manifest binds the payload to the derived Companion build version, Linux target, upstream DSH identity, and patch digests.
+The internal Linux build reuses DSH's supported single-executable runtime builder. It produces the normal `dsh` launcher with the Web profile and its required native sidecars, plus the patched Node Client Runtime artifact consumed by the Extension bundle. The build stages the separately maintained OpenRouter, Claude Wrapper Advanced, and Codex Wrapper Advanced provider packages into the executable closure and records their ordered profile bundles in the payload manifest; wrapper services and all credentials remain external. The manifest binds the payload to the derived Companion build version, Linux target, upstream DSH identity, and patch digests.
 
 ## Installation
 

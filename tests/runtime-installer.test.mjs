@@ -59,6 +59,7 @@ async function fixturePayload(version = '0.0.20260914103045') {
       args: ['web', '--no-open'],
       profileBundles: [
         '@dsh-companion/bundle',
+        '@dsh-companion/provider-openrouter',
         '@dsh-companion/provider-claude-wrapper-advanced',
         '@dsh-companion/provider-codex-wrapper-advanced',
       ],
@@ -75,6 +76,7 @@ test('runtime payload validation checks every declared file and rejects extras',
   assert.equal(manifest.artifacts.length, 6);
   assert.deepEqual(manifest.launch.profileBundles, [
     '@dsh-companion/bundle',
+    '@dsh-companion/provider-openrouter',
     '@dsh-companion/provider-claude-wrapper-advanced',
     '@dsh-companion/provider-codex-wrapper-advanced',
   ]);

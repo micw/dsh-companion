@@ -1379,8 +1379,8 @@ function providerSettingsCard(provider, visibleModels) {
   });
   enabledLabel.append(enabled, document.createTextNode(' Provider enabled'));
   form.append(enabledLabel);
-  if (provider.kind === 'wrapper') {
-    const serviceUrlField = providerSettingsField('Service URL', 'url', draft.baseURL, disabled, (value) => {
+  if (provider.kind === 'wrapper' || provider.kind === 'dynamic') {
+    const serviceUrlField = providerSettingsField(provider.kind === 'dynamic' ? 'API URL' : 'Service URL', 'url', draft.baseURL, disabled, (value) => {
       draft.baseURL = value;
       providerSettingsSuccess.delete(provider.id);
     }, draft.enabled);
@@ -1404,7 +1404,7 @@ function providerSettingsCard(provider, visibleModels) {
   const save = document.createElement('button');
   save.type = 'submit';
   save.disabled = disabled;
-  const testsConnection = provider.kind === 'wrapper' && draft.enabled;
+  const testsConnection = (provider.kind === 'wrapper' || provider.kind === 'dynamic') && draft.enabled;
   save.textContent = saving
     ? testsConnection ? 'Saving & testing…' : 'Saving…'
     : testsConnection ? 'Save & Test' : 'Save';
@@ -1418,7 +1418,7 @@ function providerSettingsCard(provider, visibleModels) {
       type: 'saveProviderSettings',
       provider: provider.id,
       enabled: draft.enabled,
-      ...(provider.kind === 'wrapper' ? { baseURL: draft.baseURL } : {}),
+      ...(provider.kind === 'wrapper' || provider.kind === 'dynamic' ? { baseURL: draft.baseURL } : {}),
       ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
       ...(testsConnection ? { test: true } : {}),
       revision: provider.revision,
