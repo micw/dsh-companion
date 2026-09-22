@@ -5,6 +5,8 @@
 0005-add-provider-neutral-model-cost-accounting.patch
 0006-add-turn-cost-snapshots-and-model-status.patch
 0007-add-explicit-manual-compaction-route.patch
-0008-add-agent-preset-fallbacks.patch
-0009-resolve-client-bundles-through-sea-module-proxies.patch
-0010-add-native-deepseek-enablement.patch
+0008-add-provider-families-and-instances.patch
+0009-manage-provider-instances-in-models-settings.patch
+0010-add-agent-preset-fallbacks.patch
+0011-resolve-client-bundles-through-sea-module-proxies.patch
+0012-map-provider-accounting-through-pi-ai.patch

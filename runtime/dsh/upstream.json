@@ -96,8 +96,30 @@
       ]
     },
     {
+      "id": "provider-families-and-instances",
+      "file": "patches/0008-add-provider-families-and-instances.patch",
+      "sha256": "d238208f08d3900ea50d68786eb52a3d3faf3df3ff04f0e0d86c98fceaff7912",
+      "assessment": "patches/provider-families-and-instances.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-llm",
+        "@deepseek-ai/dsh-tool-cordis"
+      ]
+    },
+    {
+      "id": "provider-instance-models-settings",
+      "file": "patches/0009-manage-provider-instances-in-models-settings.patch",
+      "sha256": "020286156b6aecefd7375df4e122f147eb5b7deb276e5f08387c567f92923f9a",
+      "assessment": "patches/provider-instance-models-settings.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ]
+    },
+    {
       "id": "agent-preset-fallbacks",
-      "file": "patches/0008-add-agent-preset-fallbacks.patch",
+      "file": "patches/0010-add-agent-preset-fallbacks.patch",
       "sha256": "8b65d6f27fd5e2bc2fc07f5b3b50b4c2ea1ba8ea664e6ad7e16d200cbe069892",
       "assessment": "patches/agent-preset-fallbacks.md",
       "upstreamDiscussion": null,
@@ -107,7 +129,7 @@
     },
     {
       "id": "sea-client-module-proxies",
-      "file": "patches/0009-resolve-client-bundles-through-sea-module-proxies.patch",
+      "file": "patches/0011-resolve-client-bundles-through-sea-module-proxies.patch",
       "sha256": "791b827d55dcbabb70e38df57bcc8ac0435121d578c5e17788357cf2277371d4",
       "assessment": "patches/sea-client-module-proxies.md",
       "upstreamDiscussion": null,
@@ -116,14 +138,13 @@
       ]
     },
     {
-      "id": "native-deepseek-enablement",
-      "file": "patches/0010-add-native-deepseek-enablement.patch",
-      "sha256": "edee9979a4c062461a5bc6f9772b815ef41a96b1a9c0bf0150f59e10cf976875",
-      "assessment": "patches/native-deepseek-enablement.md",
+      "id": "pi-ai-provider-accounting-mapper",
+      "file": "patches/0012-map-provider-accounting-through-pi-ai.patch",
+      "sha256": "b4441b75dc41ce2d153cf19d6a62d7763d9d50bb578a2922086bee58497fb795",
+      "assessment": "patches/pi-ai-provider-accounting-mapper.md",
       "upstreamDiscussion": null,
       "affectedModules": [
-        "@deepseek-ai/dsh-llm-deepseek",
-        "@deepseek-ai/dsh-client-ui-settings-models"
+        "@deepseek-ai/dsh-llm-pi-ai"
       ]
     }
   ]

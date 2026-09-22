@@ -18,6 +18,18 @@ test('uses a provider default before the shared default', () => {
   assert.equal(modelEnabled(config, 'other', 'new-model'), true)
 })
 
+test('inherits a family policy until an instance route has exact policy', () => {
+  const config = {
+    providers: {
+      openrouter: { defaultModelState: 'disabled', models: { selected: 'enabled' } },
+      'openrouter-work': { models: { selected: 'disabled' } },
+    },
+  }
+  assert.equal(modelEnabled(config, 'openrouter-personal', 'new-model', 'openrouter'), false)
+  assert.equal(modelEnabled(config, 'openrouter-personal', 'selected', 'openrouter'), true)
+  assert.equal(modelEnabled(config, 'openrouter-work', 'selected', 'openrouter'), false)
+})
+
 test('applies provider denial before exact model overrides', () => {
   const config = {
     defaultModelState: 'enabled',

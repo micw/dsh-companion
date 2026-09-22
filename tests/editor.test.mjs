@@ -48,10 +48,10 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function renderProviderSettings/);
   assert.match(script, /type: 'saveProviderSettings'/);
   assert.match(script, /provider\.kind === 'dynamic' \? 'API URL' : 'Service URL'/);
-  assert.match(dshClient, /kind: 'dynamic', namespace: 'dsh-companion-openrouter'/);
-  assert.match(dshClient, /removeLegacyOpenRouterProfile\(graph\)/);
-  assert.match(dshClient, /path: \['providers', 'openrouter'\]/);
-  assert.match(dshClient, /restoreLegacyOpenRouterProfile\(graph, legacyOpenRouter\)/);
+  assert.match(dshClient, /callCanonicalRemote\(graph, 'llm', 'listProviderFamilies'\)/);
+  assert.match(dshClient, /'llm',\s*'saveProviderInstance'/);
+  assert.match(dshClient, /current\.instanceId === undefined/);
+  assert.doesNotMatch(dshClient, /removeLegacyOpenRouterProfile|restoreLegacyOpenRouterProfile/);
   assert.match(script, /testsConnection \? 'Save & Test' : 'Save'/);
   assert.match(script, /Connection verified · \$\{String\(message\.modelCount\)\} models loaded/);
   assert.match(script, /`\$\{found\.group\.name\} \/ \$\{found\.model\.name\}`/);
