@@ -81,7 +81,10 @@ test('registers one configured instance backed by catalog LKG and account servic
       'https://openrouter.example/api/v1/key',
     ]))
     assert.ok(calls.every(call => call.init.headers.authorization === 'Bearer openrouter-key'))
-    assert.equal(ctx.companionProviderAccounts.snapshot('openrouter-primary').value.credits.balance, '15')
+    const account = ctx.companionProviderAccounts.snapshot('openrouter-primary').value
+    assert.equal(account.credits, undefined)
+    assert.equal(account.allowances[1].name, 'API key spending cap')
+    assert.equal(account.allowances[1].primary.usedPercent, 25)
   } finally {
     globalThis.fetch = originalFetch
     await fiber.dispose()

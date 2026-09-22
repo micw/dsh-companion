@@ -119,27 +119,33 @@ function decodeModel(value: unknown, index: number): OpenRouterModel {
   const reasoning = source.reasoning === undefined || source.reasoning === null
     ? undefined
     : decodeReasoning(source.reasoning, label)
+  const contextLength = positive(source.context_length, `${label} context_length`)
   const decoded: OpenRouterModel = {
     id: nonEmpty(source.id, `${label} id`),
     canonical_slug: nonEmpty(source.canonical_slug, `${label} canonical_slug`),
     name: nonEmpty(source.name, `${label} name`),
     created: natural(source.created, `${label} created`),
     description: string(source.description, `${label} description`),
-    context_length: positive(source.context_length, `${label} context_length`),
+    context_length: contextLength,
     architecture: {
       input_modalities: strings(architecture.input_modalities, `${label} input_modalities`),
       output_modalities: strings(architecture.output_modalities, `${label} output_modalities`),
     },
     pricing: {
-      prompt: decimal(pricing.prompt, `${label} pricing.prompt`),
-      completion: decimal(pricing.completion, `${label} pricing.completion`),
+      prompt: price(pricing.prompt, `${label} pricing.prompt`),
+      completion: price(pricing.completion, `${label} pricing.completion`),
       ...optionalDecimal(pricing, 'input_cache_read', label),
       ...optionalDecimal(pricing, 'input_cache_write', label),
     },
     top_provider: {
-      context_length: positive(topProvider.context_length, `${label} top_provider.context_length`),
-      max_completion_tokens: positive(
+      context_length: optionalPositive(
+        topProvider.context_length,
+        contextLength,
+        `${label} top_provider.context_length`,
+      ),
+      max_completion_tokens: optionalPositive(
         topProvider.max_completion_tokens,
+        contextLength,
         `${label} top_provider.max_completion_tokens`,
       ),
     },
@@ -148,6 +154,9 @@ function decodeModel(value: unknown, index: number): OpenRouterModel {
   }
   if (!decoded.architecture.output_modalities.includes('text')) {
     throw new Error(`${label} does not produce text`)
+  }
+  if ((decoded.pricing.prompt === '-1') !== (decoded.pricing.completion === '-1')) {
+    throw new Error(`${label} must report both token prices or neither`)
   }
   return decoded
 }
@@ -196,8 +205,8 @@ function toPiModel(source: OpenRouterModel, apiBaseURL: string): Model<'openai-c
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
     input: inputModalities(source.architecture.input_modalities),
     cost: {
-      input: perMillionNumber(source.pricing.prompt),
-      output: perMillionNumber(source.pricing.completion),
+      input: pricingKnown(source) ? perMillionNumber(source.pricing.prompt) : 0,
+      output: pricingKnown(source) ? perMillionNumber(source.pricing.completion) : 0,
       cacheRead: perMillionNumber(source.pricing.input_cache_read ?? '0'),
       cacheWrite: perMillionNumber(source.pricing.input_cache_write ?? '0'),
     },
@@ -222,7 +231,7 @@ function projectModel(source: OpenRouterModel): CompanionProviderModel {
         ...reasoning.default_effort === undefined ? {} : { defaultEffort: reasoning.default_effort },
       },
     },
-    pricing: pricing(source),
+    ...pricingKnown(source) ? { pricing: pricing(source) } : {},
   }
 }
 
@@ -242,6 +251,10 @@ function pricing(source: OpenRouterModel): ModelPricing {
     source: 'openrouter-models-api',
     tariffVersion: `${source.canonical_slug}@${String(source.created)}`,
   }
+}
+
+function pricingKnown(source: OpenRouterModel): boolean {
+  return source.pricing.prompt !== '-1'
 }
 
 function inputModalities(values: readonly string[]): InputModality[] {
@@ -300,6 +313,10 @@ function positive(value: unknown, label: string): number {
   if (result === 0) throw new Error(`${label} must be positive`)
   return result
 }
+
+function optionalPositive(value: unknown, fallback: number, label: string): number {
+  return value === undefined || value === null ? fallback : positive(value, label)
+}
 function boolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${label} must be boolean`)
   return value
@@ -315,6 +332,11 @@ function decimal(value: unknown, label: string): string {
   const result = string(value, label)
   if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(result)) throw new Error(`${label} must be a non-negative decimal`)
   return result
+}
+
+function price(value: unknown, label: string): string {
+  const result = string(value, label)
+  return result === '-1' ? result : decimal(result, label)
 }
 function exactKeys(source: Record<string, unknown>, keys: readonly string[], label: string): void {
   const allowed = new Set(keys)

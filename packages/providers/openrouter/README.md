@@ -27,9 +27,9 @@ Deleted instance IDs are retained as tombstones and cannot be rebound. Historica
 
 ## Catalog and account state
 
-The unpaginated default `/models` response is the catalog authority. Companion persists the validated provider payload as a last-known-good generation scoped to the instance route and projects model names, descriptions, input modalities, context capacity, reasoning efforts, and reported USD catalog rates. Rates remain catalog metadata; this package does not turn them into incurred Turn cost.
+The unpaginated default `/models` response is the catalog authority. Companion persists the validated provider payload as a last-known-good generation scoped to the instance route and projects model names, descriptions, input modalities, context capacity, reasoning efforts, and reported USD catalog rates. OpenRouter's `-1` sentinel retains dynamically priced router models but produces no reported rate; the pi-ai compatibility value is zero and never becomes accounting. Router rows whose selected backend capacities are unknown use the route's overall context length as their operational context and output ceiling. Rates remain catalog metadata; this package does not turn them into incurred Turn cost.
 
-`GET /key` provides non-secret key label, free/paid tier, optional per-key credit limit and remaining amount, and the current free-model daily request counter. Account state is scoped to the instance route. Deprecated rate-limit data is ignored. The package does not call the management-key-only `/credits` endpoint.
+`GET /key` provides the non-secret key label, whether credits have ever been purchased, the optional per-key spending cap, and the current free-model daily request counter. The spending-cap remainder is not an account credit balance and is projected only as an allowance percentage. Daily reset times use Unix seconds, as required by the shared account UI. Account state is scoped to the instance route. Deprecated rate-limit data is ignored. Actual purchased and used account credits remain unavailable because the package does not call the management-key-only `/credits` endpoint with an inference key.
 
 An enabled instance publishes its route only after its credential and catalog generation validate. A failed refresh withdraws that route while leaving other OpenRouter instances unaffected.
 

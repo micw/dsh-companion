@@ -3,15 +3,19 @@ import test from 'node:test'
 import { decodeOpenRouterKeyStatus, projectOpenRouterAccount } from '../lib/index.js'
 import { keyPayload } from './fixture.mjs'
 
-test('projects key credits and request allowances without retaining the secret', () => {
+test('projects key limits as allowances without inventing an account balance', () => {
   const status = decodeOpenRouterKeyStatus(keyPayload())
   const view = projectOpenRouterAccount(status)
   assert.equal(view.provider, 'openrouter')
   assert.deepEqual(view.identity, { displayName: 'Companion key' })
-  assert.deepEqual(view.plan, { id: 'paid', name: 'Paid' })
-  assert.deepEqual(view.credits, { unlimited: false, balance: '15', hasCredits: true })
+  assert.deepEqual(view.plan, { id: 'credits-purchased', name: 'Credits purchased' })
+  assert.equal(view.credits, undefined)
+  assert.equal(view.activeAllowance, undefined)
   assert.equal(view.allowances[0].primary.usedPercent, 20)
+  assert.equal(view.allowances[0].primary.windowSeconds, 86_400)
+  assert.ok(view.allowances[0].primary.resetsAt < 100_000_000_000)
   assert.equal(view.allowances[1].primary.usedPercent, 25)
+  assert.equal(view.allowances[1].name, 'API key spending cap')
   assert.equal(JSON.stringify(view).includes('secret'), false)
 })
 
