@@ -7,7 +7,7 @@ import type { OpenRouterCatalog } from './catalog.js'
 export interface OpenRouterKeyStatus {
   readonly label: string
   readonly limit: number | null
-  readonly limit_reset: string | null
+  readonly limit_reset: 'daily' | 'weekly' | 'monthly' | null
   readonly limit_remaining: number | null
   readonly include_byok_in_limit: boolean
   readonly usage: number
@@ -66,11 +66,16 @@ export function decodeOpenRouterKeyStatus(value: unknown): OpenRouterKeyStatus {
   const root = asRecord(value, 'OpenRouter key response')
   const data = asRecord(root.data, 'OpenRouter key response data')
   const free = asRecord(data.free_model_daily_requests, 'OpenRouter free-model daily requests')
+  const limit = nullableNumber(data.limit, 'OpenRouter key limit')
+  const limitRemaining = nullableNumber(data.limit_remaining, 'OpenRouter key limit_remaining')
+  if (limit !== null && limitRemaining !== null && limitRemaining > limit) {
+    throw new Error('OpenRouter key limit_remaining must not exceed limit')
+  }
   return {
     label: asString(data.label, 'OpenRouter key label'),
-    limit: nullableNumber(data.limit, 'OpenRouter key limit'),
-    limit_reset: nullableString(data.limit_reset, 'OpenRouter key limit_reset'),
-    limit_remaining: nullableNumber(data.limit_remaining, 'OpenRouter key limit_remaining'),
+    limit,
+    limit_reset: limitReset(data.limit_reset),
+    limit_remaining: limitRemaining,
     include_byok_in_limit: asBoolean(data.include_byok_in_limit, 'OpenRouter include_byok_in_limit'),
     usage: nonNegative(data.usage, 'OpenRouter key usage'),
     usage_daily: nonNegative(data.usage_daily, 'OpenRouter daily usage'),
@@ -100,8 +105,9 @@ function asString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be a non-empty string`)
   return value
 }
-function nullableString(value: unknown, label: string): string | null {
-  return value === null ? null : asString(value, label)
+function limitReset(value: unknown): OpenRouterKeyStatus['limit_reset'] {
+  if (value === null || value === 'daily' || value === 'weekly' || value === 'monthly') return value
+  throw new Error('OpenRouter key limit_reset must be daily, weekly, monthly, or null')
 }
 function asBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${label} must be boolean`)

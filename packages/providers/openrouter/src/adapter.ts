@@ -15,6 +15,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import { mapOpenRouterAccounting, withOpenRouterAccounting } from './accounting.js'
 import { OPENROUTER_PROVIDER, OpenRouterCatalogGeneration } from './catalog.js'
 
 /** Adapter-owned request bounds required by PiAiAdapter's resolved profile. */
@@ -102,7 +103,7 @@ export class OpenRouterAdapter extends LlmAdapter {
   private adapter(generation: OpenRouterCatalogGeneration): PiAiAdapter {
     const current = this.adapters.get(generation)
     if (current !== undefined) return current
-    const base = openrouterProvider()
+    const base = withOpenRouterAccounting(openrouterProvider())
     const limits = this.options.limits()
     const provider: Provider<'openai-completions'> = {
       id: this.provider,
@@ -130,6 +131,7 @@ export class OpenRouterAdapter extends LlmAdapter {
       profiles: () => profiles,
       resolveApiKey: () => this.options.apiKey(),
       auth: EMPTY_AUTH,
+      mapAccounting: mapOpenRouterAccounting,
       ...this.options.resolveAttachments === undefined ? {} : {
         resolveAttachments: this.options.resolveAttachments,
       },

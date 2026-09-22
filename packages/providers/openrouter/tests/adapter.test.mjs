@@ -77,7 +77,7 @@ async function mockServer(behaviors) {
 const textEvents = [
   '{"choices":[{"delta":{"role":"assistant","content":""},"index":0,"finish_reason":null}]}',
   '{"choices":[{"delta":{"content":"hello"},"index":0,"finish_reason":null}]}',
-  '{"choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}',
+  '{"choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"cost":0.000125}}',
   '[DONE]',
 ]
 
@@ -85,7 +85,7 @@ const reasoningToolEvents = [
   '{"choices":[{"delta":{"role":"assistant","content":""},"index":0,"finish_reason":null}]}',
   '{"choices":[{"delta":{"reasoning":"checking"},"index":0,"finish_reason":null}]}',
   '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"weather","arguments":"{\\"city\\":\\"B\\"}"}}]},"index":0,"finish_reason":null}]}',
-  '{"choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":4}}',
+  '{"choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":4,"cost":0.0003}}',
   '[DONE]',
 ]
 
@@ -98,6 +98,19 @@ test('reuses PiAiAdapter for a complete text stream', async (t) => {
   }))
   assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hello'))
   assert.ok(chunks.some(chunk => chunk.type === 'usage'))
+  assert.deepEqual(chunks.find(chunk => chunk.type === 'accounting'), {
+    type: 'accounting',
+    accounting: {
+      scope: 'call',
+      costs: [{
+        kind: 'reported',
+        amount: { currency: 'USD', nanos: 125_000 },
+        source: 'openrouter-response',
+      }],
+    },
+  })
+  assert.ok(chunks.findIndex(chunk => chunk.type === 'usage') < chunks.findIndex(chunk => chunk.type === 'accounting'))
+  assert.ok(chunks.findIndex(chunk => chunk.type === 'accounting') < chunks.findIndex(chunk => chunk.type === 'finish'))
   assert.equal(chunks.at(-1)?.type, 'finish')
   assert.equal(server.headers[0]?.authorization, 'Bearer test-key')
 })
