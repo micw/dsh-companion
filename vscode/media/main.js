@@ -1136,12 +1136,12 @@ function appendCostBreakdown(panel, cost) {
   appendStatRows(panel, rows);
 }
 
-function compactCostSummary(cost) {
+function compactCostSummary(cost, smallAmountDigits) {
   if (cost.totals.length !== 1) {
     const suffix = cost.coverage?.unaccountedTurns > 0 ? ' · known subtotal' : '';
     return `${String(cost.totals.length)} currencies${suffix}`;
   }
-  const amount = formatMoney(cost.totals[0]);
+  const amount = formatMoney(cost.totals[0], smallAmountDigits);
   if (cost.coverage?.unaccountedTurns > 0) return `≥${amount} known`;
   const kinds = new Set(cost.breakdown.map((bucket) => bucket.kind));
   if (kinds.size > 1) return `Σ ${amount}`;
@@ -1150,18 +1150,19 @@ function compactCostSummary(cost) {
   return amount;
 }
 
-function formatMoney(amount) {
+function formatMoney(amount, smallAmountDigits) {
   const value = amount.nanos / 1_000_000_000;
   const digits = value > 0 && value < 0.000001 ? 9 : value < 0.01 ? 6 : 4;
+  const fixedDigits = smallAmountDigits !== undefined && value < 0.1 ? smallAmountDigits : undefined;
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(amount.currency === 'USD' ? 'en-US' : undefined, {
       style: 'currency',
       currency: amount.currency,
-      minimumFractionDigits: value === 0 ? 2 : value < 0.01 ? Math.min(4, digits) : 2,
-      maximumFractionDigits: digits,
+      minimumFractionDigits: fixedDigits ?? (value === 0 ? 2 : value < 0.01 ? Math.min(4, digits) : 2),
+      maximumFractionDigits: fixedDigits ?? digits,
     }).format(value);
   } catch {
-    return `${value.toFixed(digits)} ${amount.currency}`;
+    return `${value.toFixed(fixedDigits ?? digits)} ${amount.currency}`;
   }
 }
 
@@ -1810,7 +1811,7 @@ function renderSessionCost() {
     if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
     return;
   }
-  sessionCostSummary.textContent = compactCostSummary(sessionCost);
+  sessionCostSummary.textContent = compactCostSummary(sessionCost, 3);
   sessionCostBreakdown.replaceChildren();
   appendCostBreakdown(sessionCostBreakdown, sessionCost);
   if (!sessionInfoPanel.hidden) positionSessionInfoPanel();
@@ -1926,7 +1927,11 @@ function providerUsageSummary(snapshot) {
     return { label: snapshot?.refreshing ? 'Usage…' : 'Usage', tone: snapshot?.status === 'stale' ? 'warning' : 'normal' };
   }
   const reset = formatAllowanceDuration(allowanceResetSeconds(window, snapshot?.observedAt));
-  const label = `${formatAllowancePercent(window.usedPercent)} used${reset === '' ? '' : ` · ${reset}`}`;
+  const money = allowanceMoney(window);
+  const used = money === undefined
+    ? `${formatAllowancePercent(window.usedPercent)} used`
+    : `${formatMoney({ currency: money.currency, nanos: money.remainingNanos })} remaining`;
+  const label = `${used}${reset === '' ? '' : ` · ${reset}`}`;
   const tone = window.usedPercent >= 95 ? 'danger'
     : window.usedPercent >= 80 || snapshot.status === 'stale' ? 'warning' : 'normal';
   return { label, tone };
@@ -1997,7 +2002,12 @@ function renderProviderUsagePanel(snapshot) {
     groupHead.append(groupName, groupState);
     section.append(groupHead);
     if (group.primary !== undefined) {
-      section.append(providerUsageWindow('Primary', group.primary, group.reached === true, snapshot.observedAt));
+      section.append(providerUsageWindow(
+        group.secondary === undefined ? '' : 'Primary',
+        group.primary,
+        group.reached === true,
+        snapshot.observedAt,
+      ));
     }
     if (group.secondary !== undefined) {
       section.append(providerUsageWindow('Secondary', group.secondary, group.reached === true, snapshot.observedAt));
@@ -2022,10 +2032,25 @@ function providerUsageWindow(label, window, reached, observedAt) {
   head.className = 'provider-usage-window-head';
   const duration = formatAllowanceWindow(window.windowSeconds);
   const name = document.createElement('span');
-  name.textContent = `${label}${duration === '' ? '' : ` (${duration})`}`;
-  const value = document.createElement('span');
-  value.textContent = formatAllowancePercent(window.usedPercent);
-  head.append(name, value);
+  const money = allowanceMoney(window);
+  if (label === '') {
+    name.textContent = money === undefined
+      ? `${formatAllowancePercent(window.usedPercent)} used`
+      : `${formatMoney({ currency: money.currency, nanos: money.remainingNanos })} remaining`;
+    head.append(name);
+  } else {
+    name.textContent = `${label}${duration === '' ? '' : ` (${duration})`}`;
+    const value = document.createElement('span');
+    value.textContent = formatAllowancePercent(window.usedPercent);
+    head.append(name, value);
+  }
+  const monetary = money === undefined ? undefined : document.createElement('div');
+  if (monetary !== undefined) {
+    monetary.className = 'provider-usage-reset';
+    monetary.textContent = `${formatMoney({ currency: money.currency, nanos: money.usedNanos })}`
+      + ` of ${formatMoney({ currency: money.currency, nanos: money.limitNanos })} used`
+      + ` · ${formatAllowancePercent(window.usedPercent)}`;
+  }
   const progress = document.createElement('div');
   progress.className = 'provider-usage-progress';
   progress.setAttribute('role', 'progressbar');
@@ -2055,8 +2080,18 @@ function providerUsageWindow(label, window, reached, observedAt) {
   reset.textContent = resetSeconds !== undefined && resetSeconds < 0
     ? 'Does not reset'
     : remaining === '' ? 'Reset unknown' : `Resets in ${remaining}`;
-  block.append(head, progress, reset);
+  block.append(head);
+  if (monetary !== undefined) block.append(monetary);
+  block.append(progress, reset);
   return block;
+}
+
+function allowanceMoney(window) {
+  if (window?.monetary === undefined) return undefined;
+  return {
+    ...window.monetary,
+    usedNanos: window.monetary.limitNanos - window.monetary.remainingNanos,
+  };
 }
 
 function appendProviderUsageMeta(text, className = 'provider-usage-meta') {
@@ -2614,7 +2649,15 @@ function isAllowanceGroup(value) {
 function isAllowanceWindow(value) {
   return isRecord(value) && typeof value.usedPercent === 'number' && Number.isFinite(value.usedPercent)
     && value.usedPercent >= 0 && isOptionalCount(value.windowSeconds)
+    && (value.monetary === undefined || isAllowanceMoney(value.monetary))
     && isOptionalInteger(value.resetsAt) && isOptionalInteger(value.resetsInSeconds);
+}
+
+function isAllowanceMoney(value) {
+  return isRecord(value) && typeof value.currency === 'string' && /^[A-Z]{3,12}$/u.test(value.currency)
+    && isOptionalCount(value.limitNanos) && value.limitNanos !== undefined
+    && isOptionalCount(value.remainingNanos) && value.remainingNanos !== undefined
+    && value.remainingNanos <= value.limitNanos;
 }
 
 function isOptionalInteger(value) {

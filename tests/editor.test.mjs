@@ -87,6 +87,10 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /className = 'provider-usage-time-marker'/);
   assert.match(script, /aria-valuenow', String\(width\)/);
   assert.match(script, /providerUsageRendering/);
+  assert.match(script, /compactCostSummary\(sessionCost, 3\)/);
+  assert.match(script, /amount\.currency === 'USD' \? 'en-US' : undefined/);
+  assert.match(script, /money\.remainingNanos \}\)\} remaining/);
+  assert.match(script, /money\.usedNanos \}\)\}`\s*\+ ` of/);
   assert.doesNotMatch(script, /setInterval\(renderProviderUsage/);
   assert.match(script, /type: 'refreshProviderUsage'/);
   assert.match(script, /function applyCompactionEvent/);
@@ -409,7 +413,12 @@ test('provider account snapshots retain validated allowance and reset facts', ()
         name: 'Overall',
         observedAt: 900,
         ageSeconds: 100,
-        primary: { usedPercent: 24.5, windowSeconds: 18_000, resetsAt: 20_000 },
+        primary: {
+          usedPercent: 24.5,
+          monetary: { currency: 'USD', limitNanos: 20_000_000_000, remainingNanos: 15_100_000_000 },
+          windowSeconds: 18_000,
+          resetsAt: 20_000,
+        },
         secondary: { usedPercent: 70, resetsInSeconds: 300 },
       }],
     },
@@ -428,7 +437,12 @@ test('provider account snapshots retain validated allowance and reset facts', ()
         name: 'Overall',
         observedAt: 900,
         ageSeconds: 100,
-        primary: { usedPercent: 24.5, windowSeconds: 18_000, resetsAt: 20_000 },
+        primary: {
+          usedPercent: 24.5,
+          monetary: { currency: 'USD', limitNanos: 20_000_000_000, remainingNanos: 15_100_000_000 },
+          windowSeconds: 18_000,
+          resetsAt: 20_000,
+        },
         secondary: { usedPercent: 70, resetsInSeconds: 300 },
       }],
     },
@@ -444,6 +458,19 @@ test('provider account snapshots retain validated allowance and reset facts', ()
     provider: 'wrapper', status: 'ready', refreshing: false,
     value: { provider: 'other', accountStatus: 'ready', allowances: [] },
   }), /invalid provider-account value/u);
+  assert.throws(() => parseProviderAccountSnapshot({
+    provider: 'wrapper', status: 'ready', refreshing: false,
+    value: {
+      provider: 'wrapper', accountStatus: 'ready',
+      allowances: [{
+        id: 'global',
+        primary: {
+          usedPercent: 10,
+          monetary: { currency: 'USD', limitNanos: 1, remainingNanos: 2 },
+        },
+      }],
+    },
+  }), /invalid provider allowance money/u);
 });
 
 test('session cost projections validate currencies, kinds, and safe integer nanos', () => {
