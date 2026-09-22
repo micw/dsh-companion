@@ -24,30 +24,47 @@ test('the DSH runtime pin and ordered patch series are integrity checked', async
     'provider-neutral-model-cost-accounting',
     'turn-cost-snapshots-and-model-status',
     'explicit-manual-compaction-route',
+    'provider-families-and-instances',
+    'provider-instance-models-settings',
     'agent-preset-fallbacks',
     'sea-client-module-proxies',
-    'native-deepseek-enablement',
+    'pi-ai-provider-accounting-mapper',
   ]);
 });
 
-test('the native DeepSeek patch hot-switches its route and exposes Web settings enablement', async () => {
+test('the provider-family patch separates installed families, configured instances, and active routes', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[9];
+  const patch = manifest.patches[7];
   assert.ok(patch);
   const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /enabled: z\.boolean\(\)\.default\(true\)/u);
-  assert.match(text, /registration\.replace\(enabled \? \[PROVIDER\] : \[\]\)/u);
-  assert.match(text, /providerEnabled: 'Provider enabled'/u);
-  assert.match(text, /hot-registers and removes the provider route from settings enablement/u);
+  assert.match(text, /interface LlmProviderFamily/u);
+  assert.match(text, /listProviderInstances\(\)/u);
+  assert.match(text, /saveProviderInstance/u);
+  assert.match(text, /PROVIDER_INSTANCE_LIMIT/u);
   assert.deepEqual(patch.affectedModules, [
-    '@deepseek-ai/dsh-llm-deepseek',
+    '@deepseek-ai/dsh-llm',
+    '@deepseek-ai/dsh-tool-cordis',
+  ]);
+});
+
+test('the Models settings patch uses provider instances and removes DeepSeek-specific onboarding', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[8];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /ProviderInstancesSection/u);
+  assert.match(text, /saveProviderInstance/u);
+  assert.match(text, /No providers configured/u);
+  assert.match(text, /deleted file mode 100644[\s\S]*DeepSeekOnboardingDialog\.tsx/u);
+  assert.deepEqual(patch.affectedModules, [
+    '@deepseek-ai/dsh-api-remotes',
     '@deepseek-ai/dsh-client-ui-settings-models',
   ]);
 });
 
 test('the SEA client-module patch follows launcher-generated package proxies', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[8];
+  const patch = manifest.patches[10];
   assert.ok(patch);
   const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
   assert.match(text, /moduleFallback\?\.targets\?\.\['\.\/client'\]/u);
@@ -56,9 +73,20 @@ test('the SEA client-module patch follows launcher-generated package proxies', a
   assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-client-modules']);
 });
 
+test('the pi-ai accounting patch delegates monetary provenance to provider integrations', async () => {
+  const manifest = await loadUpstreamManifest();
+  const patch = manifest.patches[11];
+  assert.ok(patch);
+  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  assert.match(text, /mapAccounting\?:/u);
+  assert.match(text, /optional `accounting`/u);
+  assert.match(text, /type: 'accounting'/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-llm-pi-ai']);
+});
+
 test('the preset fallback patch keeps retired ids out of the roster', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[7];
+  const patch = manifest.patches[9];
   assert.ok(patch);
   const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
   assert.match(text, /fallbacks: z\.dict\(z\.string\(\)\)\.default\(\{\}\)/u);

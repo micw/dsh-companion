@@ -1873,6 +1873,7 @@ function firstAllowanceWindow(group) {
 function allowanceResetSeconds(window, observedAt, now = Date.now()) {
   if (Number.isSafeInteger(window?.resetsAt)) return Math.max(0, window.resetsAt - Math.floor(now / 1000));
   if (Number.isSafeInteger(window?.resetsInSeconds)) {
+    if (window.resetsInSeconds < 0) return -1;
     const elapsed = Number.isSafeInteger(observedAt) ? Math.max(0, Math.floor((now - observedAt) / 1000)) : 0;
     return Math.max(0, window.resetsInSeconds - elapsed);
   }
@@ -1881,14 +1882,15 @@ function allowanceResetSeconds(window, observedAt, now = Date.now()) {
 
 function allowanceTimeMarkerPercent(window, observedAt, now = Date.now()) {
   const remaining = allowanceResetSeconds(window, observedAt, now);
-  if (!Number.isSafeInteger(window?.windowSeconds) || window.windowSeconds <= 0 || remaining === undefined) {
+  if (!Number.isSafeInteger(window?.windowSeconds) || window.windowSeconds <= 0
+    || remaining === undefined || remaining < 0) {
     return undefined;
   }
   return Math.max(0, Math.min(100, (window.windowSeconds - remaining) / window.windowSeconds * 100));
 }
 
 function formatAllowanceDuration(seconds) {
-  if (!Number.isFinite(seconds)) return '';
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
   const value = Math.max(0, Math.floor(seconds));
   if (value < 60) return `${String(value)}s`;
   const minutes = Math.floor(value / 60);
@@ -2048,8 +2050,11 @@ function providerUsageWindow(label, window, reached, observedAt) {
   }
   const reset = document.createElement('div');
   reset.className = 'provider-usage-reset';
-  const remaining = formatAllowanceDuration(allowanceResetSeconds(window, observedAt));
-  reset.textContent = remaining === '' ? 'Reset unknown' : `Resets in ${remaining}`;
+  const resetSeconds = allowanceResetSeconds(window, observedAt);
+  const remaining = formatAllowanceDuration(resetSeconds);
+  reset.textContent = resetSeconds !== undefined && resetSeconds < 0
+    ? 'Does not reset'
+    : remaining === '' ? 'Reset unknown' : `Resets in ${remaining}`;
   block.append(head, progress, reset);
   return block;
 }

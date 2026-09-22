@@ -65,15 +65,15 @@ export class CompanionModelPolicy extends Service {
     )
   }
 
-  /** Whether one exact provider/model route is enabled by current user intent. */
-  isEnabled(provider: string, model: string): boolean {
-    return modelEnabled(this.source(), provider, model)
+  /** Whether one exact provider/model route is enabled, optionally inheriting its family policy. */
+  isEnabled(provider: string, model: string, family?: string): boolean {
+    return modelEnabled(this.source(), provider, model, family)
   }
 }
 
 /** Resolve one exact route without requiring a mounted Cordis service. */
-export function modelEnabled(config: Config, provider: string, model: string): boolean {
-  const policy = config.providers?.[provider]
+export function modelEnabled(config: Config, provider: string, model: string, family?: string): boolean {
+  const policy = config.providers?.[provider] ?? (family === undefined ? undefined : config.providers?.[family])
   if (policy?.enabled === false) return false
   const override = policy?.models?.[model]
   if (override !== undefined) return override === 'enabled'

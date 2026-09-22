@@ -1,0 +1,199 @@
+diff --git a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.i18n.yaml b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.i18n.yaml
+index 5ac8259..7278950 100644
+--- a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.i18n.yaml
++++ b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.md
+-2026-09-15-provider-neutral-model-cost-accounting.md: 08f87a5ab04c8df3b735edf567e076f17c22a324
+-2026-09-15-provider-neutral-model-cost-accounting.zh.md: 80be786685ab61fe220079c3516e595badd8cb1b
++2026-09-15-provider-neutral-model-cost-accounting.md: 41f1598f58d86ecec2d9ed3fbc184bca25981787
++2026-09-15-provider-neutral-model-cost-accounting.zh.md: 449c77aa2d5eb9901675c371fc7dd316c12db8f3
+diff --git a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.md b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.md
+index 08f87a5..41f1598 100644
+--- a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.md
++++ b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.md
+@@ -22,7 +22,7 @@ Adding money to `TokenUsage` was rejected because token measurement and monetary
+ 
+ ## Consequences
+ 
+-Provider adapters own cost classification and source provenance; this change supplies no provider tariff or monetary value by itself. Safe-integer nanos bound one stored amount and every aggregate to `Number.MAX_SAFE_INTEGER`. Normal-Turn totals include failed and retried attempts when call snapshots cover each settlement or one final Turn snapshot replaces them. Session-title, compaction, and child-Session calls remain outside `modelCost`.
++Provider adapters own cost classification and source provenance; this change supplies no provider tariff or monetary value by itself. An SDK-backed adapter may accept a provider-owned mapper that inspects terminal SDK usage and emits the accounting chunk between token usage and finish. Safe-integer nanos bound one stored amount and every aggregate to `Number.MAX_SAFE_INTEGER`. Normal-Turn totals include failed and retried attempts when call snapshots cover each settlement or one final Turn snapshot replaces them. Session-title, compaction, and child-Session calls remain outside `modelCost`.
+ 
+ Accounting extends Assistant settlements and embedded streams without changing model-visible history. Repeatable transient model statuses remain outside `AssistantStreamRecord` for predecessor compatibility and settle as a separately validated, timed top-level `statuses` timeline on `assistant/message` and `assistant/attempt`. The pinned predecessor can therefore open current settlements while omitting accounting and statuses; current-generation verification additionally enforces accounting order, top-level/embedded accounting equality, and exact status timelines.
+ 
+diff --git a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.zh.md b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.zh.md
+index 80be786..449c77a 100644
+--- a/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.zh.md
++++ b/.agents/notes/implemented/architecture/2026-09-15-provider-neutral-model-cost-accounting.zh.md
+@@ -22,7 +22,7 @@ token-meter 包通过持久的 attempt、retry、step 与 Turn 生命周期推
+ 
+ ## Consequences
+ 
+-Provider adapter 负责成本分类与来源 provenance；本变更本身不提供任何 provider tariff 或金额。安全整数 nanos 将单笔存储金额及所有汇总限制在 `Number.MAX_SAFE_INTEGER` 内。当 call 快照覆盖每个 settlement，或一个最终 Turn 快照替换它们时，普通 Turn 总额会包含失败与重试 attempt。Session title、compaction 与子 Session 调用不属于 `modelCost`。
++Provider adapter 负责成本分类与来源 provenance；本变更本身不提供任何 provider tariff 或金额。SDK-backed adapter 可以接受提供方拥有的 mapper，由它检查终结 SDK 用量，并在 token 用量与 finish 之间发出 accounting chunk。安全整数 nanos 将单笔存储金额及所有汇总限制在 `Number.MAX_SAFE_INTEGER` 内。当 call 快照覆盖每个 settlement，或一个最终 Turn 快照替换它们时，普通 Turn 总额会包含失败与重试 attempt。Session title、compaction 与子 Session 调用不属于 `modelCost`。
+ 
+ Accounting 扩展 Assistant settlement 与内嵌 stream，但不改变模型可见历史。可重复的瞬时模型 status 为保持前代兼容性而不进入 `AssistantStreamRecord`，而是作为单独校验、带时间的顶层 `statuses` 时间线与 `assistant/message` 和 `assistant/attempt` 一起 settlement。固定的前代版本因此仍能打开当前 settlement，只是不提供 accounting 与 statuses；当前 generation 校验还会强制 accounting 顺序、顶层与内嵌 accounting 一致，以及精确的 status 时间线。
+ 
+diff --git a/packages/llm/llm-pi-ai/README.i18n.yaml b/packages/llm/llm-pi-ai/README.i18n.yaml
+index 12266ad..fd2f736 100644
+--- a/packages/llm/llm-pi-ai/README.i18n.yaml
++++ b/packages/llm/llm-pi-ai/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/llm/llm-pi-ai/README.md
+-README.md: 7f52d3f04634c805fc69b4c00365b9843d308252
+-README.zh.md: 7916d2e6e03c163f9f8031344ff8aa36cfff379e
++README.md: 75540952c8725f5d20037ed3512c9a90313fb980
++README.zh.md: c2bd1df95c43c372dfe552eda710d7551c1d9109
+diff --git a/packages/llm/llm-pi-ai/README.md b/packages/llm/llm-pi-ai/README.md
+index 7f52d3f..7554095 100644
+--- a/packages/llm/llm-pi-ai/README.md
++++ b/packages/llm/llm-pi-ai/README.md
+@@ -194,7 +194,7 @@ Conversion preserves logical request order, while image handles and offload plac
+ 
+ #### What the model sees
+ 
+-pi-ai events become harness reasoning, text, tool-call, usage, and finish chunks. The adapter passes parsed tool arguments to the harness as raw JSON strings.
++pi-ai events become harness reasoning, text, tool-call, usage, optional provider-projected accounting, and finish chunks. The adapter passes parsed tool arguments to the harness as raw JSON strings. A provider integration may map terminal pi-ai usage to one call-scoped accounting value when it can distinguish provider-reported or otherwise provenance-qualified money from pi-ai's catalog calculation.
+ 
+ #### Token effect
+ 
+diff --git a/packages/llm/llm-pi-ai/README.zh.md b/packages/llm/llm-pi-ai/README.zh.md
+index 7916d2e..c2bd1df 100644
+--- a/packages/llm/llm-pi-ai/README.zh.md
++++ b/packages/llm/llm-pi-ai/README.zh.md
+@@ -194,7 +194,7 @@ Settings 写入会在合并组合层与用户层后严格校验每个新增或
+ 
+ #### 模型看到什么
+ 
+-pi-ai 事件变成 harness 的推理、文本、工具调用、用量与 finish 分片。适配器把解析后的工具参数以原始 JSON 字符串传给 harness。
++pi-ai 事件变成 harness 的推理、文本、工具调用、用量、可选的提供方投影 accounting 与 finish 分片。适配器把解析后的工具参数以原始 JSON 字符串传给 harness。当提供方集成能把提供方报告金额或其他具有明确 provenance 的金额与 pi-ai catalog 计算区分开时，可以把终结 pi-ai 用量映射为一项 call-scoped accounting 值。
+ 
+ #### Token 影响
+ 
+diff --git a/packages/llm/llm-pi-ai/src/adapter.ts b/packages/llm/llm-pi-ai/src/adapter.ts
+index 8dba978..0ac287d 100644
+--- a/packages/llm/llm-pi-ai/src/adapter.ts
++++ b/packages/llm/llm-pi-ai/src/adapter.ts
+@@ -51,6 +51,7 @@ import type {
+   LlmModelInfo,
+   LlmProviderInfo,
+   LlmResolvedModelInfo,
++  ModelCallAccounting,
+   PreparedAdapterCall,
+   ReasoningEffortId as ReasoningEffortIdType,
+   ResolvedRetryPolicy,
+@@ -101,6 +102,8 @@ export interface PiAiAdapterOptions {
+    * conversion because its stored replay state is unusable by this build.
+    */
+   onReplayDegrade?: (detail: { provider: string; model: string; reason: string }) => void
++  /** Project provider-specific terminal SDK usage into durable monetary accounting. */
++  mapAccounting?: (usage: import('@earendil-works/pi-ai').Usage) => ModelCallAccounting | undefined
+ }
+ 
+ /** The two auth injectables a pi-ai collection is built with. */
+@@ -387,7 +390,13 @@ export class PiAiAdapter extends LlmAdapter {
+         // Harness-owned and therefore win collisions.
+         headers: requestHeaders(profile.headers),
+       })
+-      const iterator = toStreamChunks(events, model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
++      const iterator = toStreamChunks(
++        events,
++        model.contextWindow,
++        options.signal,
++        model.id,
++        this.config.mapAccounting,
++      )[Symbol.asyncIterator]()
+       let exhausted = false
+       try {
+         while (true) {
+diff --git a/packages/llm/llm-pi-ai/src/stream.ts b/packages/llm/llm-pi-ai/src/stream.ts
+index 9bc2f98..66c486f 100644
+--- a/packages/llm/llm-pi-ai/src/stream.ts
++++ b/packages/llm/llm-pi-ai/src/stream.ts
+@@ -10,7 +10,7 @@
+ 
+ import { brandString } from '@deepseek-ai/dsh-brand'
+ import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, isContextWindowExceededError, isQuotaExceededError, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+-import type { FinishReason, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
++import type { FinishReason, ModelCallAccounting, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
+ import { isContextOverflow } from '@earendil-works/pi-ai'
+ import type { AssistantMessage, AssistantMessageEvent, Usage as PiUsage } from '@earendil-works/pi-ai'
+ import { toPiReplayState } from './replay.ts'
+@@ -136,7 +136,8 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
+  * @param callerSignal - caller cancellation state; an aborted caller makes any
+  *   in-band terminal error an aborted finish.
+  * @param requestedModel - request model identity for durable replay provenance.
+- * @returns the harness chunks, ending with `usage` then `finish`; throws
++ * @param mapAccounting - optional provider-owned projection from terminal SDK usage.
++ * @returns the harness chunks, ending with `usage`, optional `accounting`, then `finish`; throws
+  *   `LlmError` (`STREAM_CLOSED`) if the source ends without a terminal event.
+  */
+ export async function* toStreamChunks(
+@@ -144,6 +145,7 @@ export async function* toStreamChunks(
+   contextWindow?: number,
+   callerSignal?: AbortSignal,
+   requestedModel?: string,
++  mapAccounting?: (usage: PiUsage) => ModelCallAccounting | undefined,
+ ): AsyncGenerator<StreamChunk> {
+   // pi-ai contentIndex ↔ our block index map 1:1 (both count blocks from 0
+   // in stream order), but we track ids per index for tool calls.
+@@ -207,6 +209,10 @@ export async function* toStreamChunks(
+         break
+       case 'done':
+         yield { type: 'usage', usage: mapUsage(event.message.usage) }
++        if (mapAccounting !== undefined) {
++          const accounting = mapAccounting(event.message.usage)
++          if (accounting !== undefined) yield { type: 'accounting', accounting }
++        }
+         yield {
+           type: 'finish',
+           reason: mapStopReason(event.message, contextWindow),
+@@ -217,6 +223,10 @@ export async function* toStreamChunks(
+         // In-stream error delivery (pi-ai's style) → error finish chunk
+         // (the harness's other sanctioned error path besides throwing).
+         yield { type: 'usage', usage: mapUsage(event.error.usage) }
++        if (mapAccounting !== undefined) {
++          const accounting = mapAccounting(event.error.usage)
++          if (accounting !== undefined) yield { type: 'accounting', accounting }
++        }
+         yield {
+           type: 'finish',
+           reason: mapStopReason(
+diff --git a/packages/llm/llm-pi-ai/tests/convert.spec.ts b/packages/llm/llm-pi-ai/tests/convert.spec.ts
+index 74ecb3d..0dbc3b9 100644
+--- a/packages/llm/llm-pi-ai/tests/convert.spec.ts
++++ b/packages/llm/llm-pi-ai/tests/convert.spec.ts
+@@ -750,6 +750,29 @@ describe('toStreamChunks', () => {
+     ])
+   })
+ 
++  it('projects provider-owned accounting after terminal usage', async () => {
++    const done = assistant({ content: [{ type: 'text', text: 'hi' }], usage: usage(3, 2) })
++    const accounting = {
++      scope: 'call' as const,
++      costs: [{
++        kind: 'reported' as const,
++        amount: { currency: 'USD', nanos: 125_000 },
++        source: 'provider-response',
++      }],
++    }
++    const chunks = await collect(toStreamChunks(
++      feed({ type: 'done', reason: 'stop', message: done }),
++      undefined,
++      undefined,
++      undefined,
++      observed => observed === done.usage ? accounting : undefined,
++    ))
++    expect(chunks.slice(0, 2)).toEqual([
++      { type: 'usage', usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 } },
++      { type: 'accounting', accounting },
++    ])
++  })
++
+   it('maps thinking events to reasoning blocks', async () => {
+     const chunks = await collect(toStreamChunks(feed(
+       { type: 'thinking_start', contentIndex: 0, partial: assistant() },

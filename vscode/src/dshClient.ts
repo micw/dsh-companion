@@ -200,6 +200,8 @@ export interface DshProviderSettingsModel {
 
 export interface DshProviderSettingsEntry {
   readonly id: string;
+  readonly familyId?: string;
+  readonly instanceId?: string;
   readonly name: string;
   readonly kind: 'native' | 'catalog' | 'dynamic' | 'wrapper';
   readonly active: boolean;
@@ -378,20 +380,37 @@ interface ProviderCatalogSnapshot {
   readonly models: readonly { readonly id: string; readonly name: string; readonly description?: string; readonly hidden: boolean }[];
 }
 
+interface ProviderFamilySnapshot {
+  readonly id: string;
+  readonly displayName: string;
+  readonly maxInstances: number | null;
+  readonly settingsNs: string;
+  readonly instancesPath: readonly string[];
+}
+
+interface ProviderInstanceSnapshot {
+  readonly id: string;
+  readonly familyId: string;
+  readonly provider: string;
+  readonly displayName: string;
+  readonly enabled: boolean;
+  readonly active: boolean;
+  readonly settingsNs: string;
+  readonly settingsPath: readonly string[];
+  readonly credential: 'configured' | 'missing' | 'not-required';
+  readonly error?: string;
+}
+
 const MODEL_POLICY_NAMESPACE = 'dsh-companion-model-policy';
-const PROVIDER_SETTINGS = [
-  {
-    id: 'deepseek-official', name: 'DeepSeek', kind: 'native', namespace: 'llm-deepseek',
-    credentialRef: 'DEEPSEEK_API_KEY',
-  },
-  {
-    id: 'openai', name: 'OpenAI', kind: 'catalog', namespace: 'llm-pi-ai',
-    credentialRef: 'OPENAI_API_KEY',
-  },
-  {
-    id: 'openrouter', name: 'OpenRouter', kind: 'dynamic', namespace: 'dsh-companion-openrouter',
-    credentialRef: 'OPENROUTER_API_KEY',
-  },
+interface ProviderSettingsDefinition {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: DshProviderSettingsEntry['kind'];
+  readonly namespace: string;
+  readonly credentialRef: string;
+}
+
+const PROVIDER_SETTINGS: readonly ProviderSettingsDefinition[] = [
   {
     id: 'claude-wrapper-advanced', name: 'Claude Wrapper Advanced', kind: 'wrapper',
     namespace: 'dsh-companion-claude-wrapper-advanced', credentialRef: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
@@ -400,7 +419,7 @@ const PROVIDER_SETTINGS = [
     id: 'codex-wrapper-advanced', name: 'Codex Wrapper Advanced', kind: 'wrapper',
     namespace: 'dsh-companion-codex-wrapper-advanced', credentialRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
   },
-] as const;
+];
 
 let canonicalAssemblyQueue: Promise<void> = Promise.resolve();
 
@@ -496,6 +515,53 @@ function parseConfigurableProviders(value: unknown): ReadonlySet<string> {
     ids.add(item.provider);
   }
   return ids;
+}
+
+function parseProviderFamilies(value: unknown): readonly ProviderFamilySnapshot[] {
+  if (!Array.isArray(value)) throw new Error('DSH returned an invalid provider-family list');
+  return value.map((item) => {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length === 0
+      || typeof item.displayName !== 'string' || item.displayName.length === 0
+      || (item.maxInstances !== null && (!Number.isSafeInteger(item.maxInstances) || Number(item.maxInstances) <= 0))
+      || typeof item.settingsNs !== 'string' || !Array.isArray(item.instancesPath)
+      || !item.instancesPath.every(segment => typeof segment === 'string' && segment.length > 0)) {
+      throw new Error('DSH returned an invalid provider family');
+    }
+    return {
+      id: item.id,
+      displayName: item.displayName,
+      maxInstances: item.maxInstances as number | null,
+      settingsNs: item.settingsNs,
+      instancesPath: item.instancesPath as string[],
+    };
+  });
+}
+
+function parseProviderInstances(value: unknown): readonly ProviderInstanceSnapshot[] {
+  if (!Array.isArray(value)) throw new Error('DSH returned an invalid provider-instance list');
+  return value.map((item) => {
+    if (!isRecord(item) || typeof item.id !== 'string' || item.id.length === 0
+      || typeof item.familyId !== 'string' || typeof item.provider !== 'string'
+      || typeof item.displayName !== 'string' || typeof item.enabled !== 'boolean' || typeof item.active !== 'boolean'
+      || typeof item.settingsNs !== 'string' || !Array.isArray(item.settingsPath)
+      || !item.settingsPath.every(segment => typeof segment === 'string' && segment.length > 0)
+      || !['configured', 'missing', 'not-required'].includes(String(item.credential))
+      || (item.error !== undefined && typeof item.error !== 'string')) {
+      throw new Error('DSH returned an invalid provider instance');
+    }
+    return {
+      id: item.id,
+      familyId: item.familyId,
+      provider: item.provider,
+      displayName: item.displayName,
+      enabled: item.enabled,
+      active: item.active,
+      settingsNs: item.settingsNs,
+      settingsPath: item.settingsPath as string[],
+      credential: item.credential as ProviderInstanceSnapshot['credential'],
+      ...(item.error === undefined ? {} : { error: item.error }),
+    };
+  });
 }
 
 function parseProviderCatalogList(value: unknown): ReadonlyMap<string, ProviderCatalogSnapshot> {
@@ -601,6 +667,83 @@ function providerSettingsRows(
       })),
     };
   });
+}
+
+function providerFamilyRows(
+  settings: SettingsSnapshot,
+  catalogs: ReadonlyMap<string, ProviderCatalogSnapshot>,
+  families: readonly ProviderFamilySnapshot[],
+  instances: readonly ProviderInstanceSnapshot[],
+): DshProviderSettingsEntry[] {
+  const policyNamespace = settings.namespaces.get(MODEL_POLICY_NAMESPACE);
+  const policyProviders = isRecord(policyNamespace?.value.providers) ? policyNamespace.value.providers : {};
+  const rows: DshProviderSettingsEntry[] = [];
+  for (const family of families) {
+    const namespace = settings.namespaces.get(family.settingsNs);
+    if (namespace === undefined) throw new Error(`DSH omits required settings namespace ${family.settingsNs}`);
+    const owned = instances.filter(instance => instance.familyId === family.id);
+    if (owned.length === 0) {
+      rows.push({
+        id: family.id,
+        familyId: family.id,
+        name: family.displayName,
+        kind: 'dynamic',
+        active: false,
+        enabled: false,
+        credential: { ref: '', configured: false, writable: settings.writable },
+        revision: namespace.revision,
+        models: [],
+      });
+      continue;
+    }
+    for (const instance of owned) {
+      const profile = recordAtPath(namespace.value, instance.settingsPath);
+      const catalog = catalogs.get(instance.provider);
+      const exactCandidate = policyProviders[instance.provider];
+      const familyCandidate = policyProviders[family.id];
+      const policy = isRecord(exactCandidate)
+        ? exactCandidate
+        : isRecord(familyCandidate) ? familyCandidate : undefined;
+      const models = policy !== undefined && isRecord(policy.models) ? policy.models : {};
+      const providerDefault = policy?.defaultModelState;
+      const sharedDefault = policyNamespace?.value.defaultModelState;
+      rows.push({
+        id: instance.provider,
+        familyId: family.id,
+        instanceId: instance.id,
+        name: instance.displayName,
+        kind: 'dynamic',
+        active: instance.active,
+        enabled: instance.enabled,
+        ...(typeof profile?.baseURL === 'string' ? { baseURL: profile.baseURL } : {}),
+        credential: {
+          ref: '',
+          configured: instance.credential === 'configured',
+          writable: settings.writable,
+        },
+        revision: namespace.revision,
+        models: (catalog?.models ?? []).filter(model => !model.hidden).map(model => ({
+          id: model.id,
+          name: model.name,
+          ...(model.description === undefined ? {} : { description: model.description }),
+          enabled: policy?.enabled !== false
+            && (models[model.id] === 'enabled'
+              || (models[model.id] !== 'disabled'
+                && (providerDefault ?? sharedDefault ?? 'enabled') === 'enabled')),
+        })),
+      });
+    }
+  }
+  return rows;
+}
+
+function recordAtPath(root: Record<string, unknown>, path: readonly string[]): Record<string, unknown> | undefined {
+  let value: unknown = root;
+  for (const segment of path) {
+    if (!isRecord(value)) return undefined;
+    value = value[segment];
+  }
+  return isRecord(value) ? value : undefined;
 }
 
 /** Validates the DSH-owned permission-preset projection used by the composer selector. */
@@ -1063,14 +1206,16 @@ export class DshClient {
     await this.publishProviderAccounts();
   }
 
-  /** Reads the five Preview provider rows from DSH Settings, Credentials, LLM, and Companion catalogs. */
+  /** Reads configured provider instances and legacy wrapper rows from DSH authorities. */
   async providerSettings(): Promise<DshProviderSettingsSnapshot> {
     const graph = this.requireCanonical().graph;
-    const [settingsResult, providersResult, directoryResult, catalogsResult] = await Promise.all([
+    const [settingsResult, providersResult, directoryResult, catalogsResult, familiesResult, instancesResult] = await Promise.all([
       callCanonicalRemote(graph, 'settings', 'describe'),
       callCanonicalRemote(graph, 'llm', 'listProviders'),
       callCanonicalRemote(graph, 'llm', 'listConfigurableProviders'),
       callCanonicalRemote(graph, 'companionProviderCatalog', 'list'),
+      callCanonicalRemote(graph, 'llm', 'listProviderFamilies'),
+      callCanonicalRemote(graph, 'llm', 'listProviderInstances'),
     ]);
     const settings = parseSettingsDescribe(unwrapCanonicalResult(settingsResult, 'settings.describe'));
     const activeProviders = parseActiveProviders(unwrapCanonicalResult(providersResult, 'llm.listProviders'));
@@ -1080,8 +1225,13 @@ export class DshClient {
     const missing = PROVIDER_SETTINGS.find(definition => !directory.has(definition.id));
     if (missing !== undefined) throw new Error(`DSH omits required configurable provider ${missing.id}`);
     const catalogs = parseProviderCatalogList(unwrapCanonicalResult(catalogsResult, 'companionProviderCatalog.list'));
-    const rows = providerSettingsRows(settings, activeProviders, catalogs, this.modelCatalogValue);
-    const refs = [...new Set(rows.map(row => row.credential.ref))];
+    const families = parseProviderFamilies(unwrapCanonicalResult(familiesResult, 'llm.listProviderFamilies'));
+    const instances = parseProviderInstances(unwrapCanonicalResult(instancesResult, 'llm.listProviderInstances'));
+    const rows = [
+      ...providerFamilyRows(settings, catalogs, families, instances),
+      ...providerSettingsRows(settings, activeProviders, catalogs, this.modelCatalogValue),
+    ];
+    const refs = [...new Set(rows.map(row => row.credential.ref).filter(ref => ref.length > 0))];
     const credentialsResult = await callCanonicalRemote(graph, 'credentials', 'describe', refs);
     const credentials = parseCredentialDescriptions(
       unwrapCanonicalResult(credentialsResult, 'credentials.describe'), refs,
@@ -1091,20 +1241,43 @@ export class DshClient {
       modelPolicyRevision: settings.namespaces.get(MODEL_POLICY_NAMESPACE)?.revision ?? 0,
       providers: rows.map(row => ({
         ...row,
-        credential: { ref: row.credential.ref, ...credentials.get(row.credential.ref)! },
+        credential: row.credential.ref.length === 0
+          ? row.credential
+          : { ref: row.credential.ref, ...credentials.get(row.credential.ref)! },
       })),
     };
   }
 
   /** Writes one provider's canonical DSH settings and optional one-way credential value. */
   async updateProviderSettings(update: DshProviderSettingsUpdate): Promise<DshProviderSettingsSnapshot> {
-    const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === update.provider);
-    if (definition === undefined) throw new Error('The requested provider is not managed by this Preview');
     const graph = this.requireCanonical().graph;
     const before = await this.providerSettings();
-    const legacyOpenRouter = definition.kind === 'dynamic'
-      ? await removeLegacyOpenRouterProfile(graph)
-      : undefined;
+    const current = before.providers.find(candidate => candidate.id === update.provider);
+    if (current?.familyId !== undefined) {
+      const apiKey = update.apiKey?.trim();
+      unwrapCanonicalResult(await callCanonicalRemote(
+        graph,
+        'llm',
+        'saveProviderInstance',
+        current.familyId,
+        {
+          ...(current.instanceId === undefined ? {} : { instanceId: current.instanceId }),
+          displayName: current.name,
+          enabled: update.enabled,
+          config: update.baseURL === undefined || update.baseURL.trim() === ''
+            ? {}
+            : { baseURL: update.baseURL.trim() },
+          ...(apiKey === undefined || apiKey.length === 0
+            ? {}
+            : { credential: { kind: 'replace', value: apiKey } }),
+        },
+      ), 'llm.saveProviderInstance');
+      await this.refreshModelCatalog();
+      await this.publishProviderAccounts();
+      return this.providerSettings();
+    }
+    const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === update.provider);
+    if (definition === undefined) throw new Error('The requested provider is not managed by this Preview');
     const ops: unknown[] = definition.kind === 'catalog'
       ? [update.enabled
         ? { op: 'set', path: ['providers', definition.id, 'apiKeyEnv'], value: definition.credentialRef }
@@ -1117,15 +1290,10 @@ export class DshClient {
             : { op: 'set', path: ['baseURL'], value: update.baseURL.trim() }]
           : []),
       ];
-    try {
-      unwrapCanonicalResult(
-        await callCanonicalRemote(graph, 'settings', 'mutate', definition.namespace, ops, update.revision),
-        'settings.mutate',
-      );
-    } catch (error) {
-      if (legacyOpenRouter !== undefined) await restoreLegacyOpenRouterProfile(graph, legacyOpenRouter);
-      throw error;
-    }
+    unwrapCanonicalResult(
+      await callCanonicalRemote(graph, 'settings', 'mutate', definition.namespace, ops, update.revision),
+      'settings.mutate',
+    );
     const apiKey = update.apiKey?.trim();
     if (apiKey !== undefined && apiKey.length > 0) {
       const credentialRef = definition.kind === 'catalog'
@@ -1143,6 +1311,14 @@ export class DshClient {
 
   /** Verifies one saved dynamic endpoint and credential through its catalog and account operations. */
   async testProviderConnection(provider: string): Promise<DshProviderConnectionTest> {
+    const familySnapshot = await this.providerSettings();
+    const familyRows = familySnapshot.providers.filter(row => row.id === provider || row.familyId === provider);
+    if (familyRows.some(row => row.familyId !== undefined)) {
+      return {
+        snapshot: familySnapshot,
+        modelCount: familyRows.reduce((sum, row) => sum + row.models.length, 0),
+      };
+    }
     const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === provider);
     if (definition?.kind !== 'wrapper' && definition?.kind !== 'dynamic') {
       throw new Error('Connection testing is available only for dynamic providers');
@@ -1178,8 +1354,8 @@ export class DshClient {
     enabled: boolean,
     expectedRevision: number,
   ): Promise<DshProviderSettingsSnapshot> {
-    if (!PROVIDER_SETTINGS.some(candidate => candidate.id === provider)
-      || models.length === 0 || models.length > 1_000 || new Set(models).size !== models.length
+    const known = (await this.providerSettings()).providers.some(candidate => candidate.id === provider);
+    if (!known || models.length === 0 || models.length > 1_000 || new Set(models).size !== models.length
       || models.some(model => model.length === 0)) throw new Error('The requested provider models are invalid');
     unwrapCanonicalResult(await callCanonicalRemote(
       this.requireCanonical().graph,
@@ -1897,42 +2073,6 @@ export class DshClient {
     this.sink.history('error', message);
     this.sink.status('Request failed');
   }
-}
-
-interface LegacyOpenRouterProfile {
-  readonly value: Record<string, unknown>;
-  readonly revision: number;
-}
-
-async function removeLegacyOpenRouterProfile(
-  graph: CanonicalClientGraph,
-): Promise<LegacyOpenRouterProfile | undefined> {
-  const described = parseSettingsDescribe(unwrapCanonicalResult(
-    await callCanonicalRemote(graph, 'settings', 'describe'), 'settings.describe',
-  ));
-  const namespace = described.namespaces.get('llm-pi-ai');
-  const providers = namespace?.value.providers;
-  if (namespace === undefined || !isRecord(providers) || !isRecord(providers.openrouter)) return undefined;
-  const value = structuredClone(providers.openrouter);
-  unwrapCanonicalResult(await callCanonicalRemote(
-    graph, 'settings', 'mutate', 'llm-pi-ai',
-    [{ op: 'unset', path: ['providers', 'openrouter'] }], namespace.revision,
-  ), 'settings.mutate');
-  const after = parseSettingsDescribe(unwrapCanonicalResult(
-    await callCanonicalRemote(graph, 'settings', 'describe'), 'settings.describe',
-  )).namespaces.get('llm-pi-ai');
-  if (after === undefined) throw new Error('DSH omitted llm-pi-ai after removing its legacy OpenRouter profile');
-  return { value, revision: after.revision };
-}
-
-async function restoreLegacyOpenRouterProfile(
-  graph: CanonicalClientGraph,
-  legacy: LegacyOpenRouterProfile,
-): Promise<void> {
-  unwrapCanonicalResult(await callCanonicalRemote(
-    graph, 'settings', 'mutate', 'llm-pi-ai',
-    [{ op: 'set', path: ['providers', 'openrouter'], value: legacy.value }], legacy.revision,
-  ), 'settings.mutate');
 }
 
 /** Exchanges a DSH launch URL for the authority-bound browser cookie. */

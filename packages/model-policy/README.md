@@ -1,6 +1,6 @@
 # @dsh-companion/model-policy
 
-Settings-backed provider/model enablement policy for DSH Companion. The policy stores only user intent: one shared default for newly discovered models, optional provider-specific defaults and switches, and exact model overrides keyed by stable provider and model ids. An exact override wins over defaults, while a disabled provider denies every model. Removed ids remain in the user document and automatically apply if they return.
+Settings-backed provider/model enablement policy for DSH Companion. The policy stores only user intent: one shared default for newly discovered models, optional provider-specific defaults and switches, and exact model overrides keyed by stable provider and model ids. An instance route may inherit its provider-family policy until it receives an exact route policy. Exact route policy wins over family policy, an exact model override wins over defaults, and a disabled selected policy denies every model. Removed ids remain in the user document and automatically apply if they return.
 
 Provider adapters enforce this policy while listing, resolving, preparing, and directly dispatching model calls. DSH Settings remains the durable authority; discovered catalogs are never copied into the policy namespace.
 

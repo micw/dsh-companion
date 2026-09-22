@@ -30,6 +30,14 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 
 **Completion:** Connected clients receive every provider-account snapshot transition without polling, Turn-end coupling, or initiating a redundant refresh, while the provider-account service remains the single state owner.
 
+### COMP-007 — Add dedicated OpenAI and DeepSeek provider families
+
+**Current behavior:** Companion disables DSH's generic pi-ai and native DeepSeek plugins. OpenRouter is the first provider-family implementation; OpenAI and DeepSeek do not appear in Add Provider and publish no Companion route.
+
+**Deferred work:** Implement dedicated OpenAI and DeepSeek family packages over reviewed upstream transport code, a narrow extracted adapter factory, or maintained forks. Each package uses the canonical DSH family/instance operations and starts with an explicit instance limit rather than reintroducing configurable-provider directory rows.
+
+**Completion:** OpenAI and DeepSeek appear as installed families, create independently validated instances without a second settings contract, and pass the same credential, route identity, rollback, restore, REAL-composition, and packaged-runtime checks as OpenRouter.
+
 ## DSH dependencies
 
 ### DSH-001 — Separate Session model selection from the global default
