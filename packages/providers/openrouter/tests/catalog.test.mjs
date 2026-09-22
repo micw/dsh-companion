@@ -57,3 +57,28 @@ test('rejects pagination, malformed prices, and unknown root fields', () => {
   assert.throws(() => decodeOpenRouterCatalog(malformed), /non-negative decimal/u)
   assert.throws(() => decodeOpenRouterCatalog({ ...catalogPayload(), secret: true }), /unknown field secret/u)
 })
+
+test('normalizes OpenRouter none reasoning effort to DSH off', () => {
+  const source = catalogPayload()
+  source.data[0].reasoning.supported_efforts = ['none', 'high']
+  source.data[0].reasoning.default_effort = 'none'
+  const payload = decodeOpenRouterCatalog(source)
+  assert.deepEqual(payload.data[0].reasoning, {
+    mandatory: false,
+    default_enabled: true,
+    supported_efforts: ['off', 'high'],
+    default_effort: 'off',
+  })
+  assert.deepEqual(projectOpenRouterCatalog(payload).models[0].reasoning, {
+    efforts: ['off', 'high'],
+    defaultEffort: 'off',
+  })
+})
+
+test('accepts reasoning metadata without selectable efforts', () => {
+  const source = catalogPayload()
+  delete source.data[0].reasoning.supported_efforts
+  delete source.data[0].reasoning.default_effort
+  const payload = decodeOpenRouterCatalog(source)
+  assert.deepEqual(payload.data[0].reasoning.supported_efforts, [])
+})

@@ -27,6 +27,10 @@ export interface OpenRouterPiAiLimits {
 
 /** Dependencies for the OpenRouter-to-PiAiAdapter bridge. */
 export interface OpenRouterAdapterOptions {
+  /** Stable DSH provider route owned by this adapter instance. */
+  readonly provider?: string
+  /** Editable display name or a live resolver projected without changing the route. */
+  readonly displayName?: string | (() => string)
   /** Resolve and freeze one immutable catalog generation for an operation. */
   readonly generation: (signal?: AbortSignal) => Promise<OpenRouterCatalogGeneration>
   /** Resolve the OpenRouter API key without exposing it to catalog or UI state. */
@@ -51,7 +55,7 @@ export class OpenRouterAdapter extends LlmAdapter {
 
   override providerInfo(provider: string): LlmProviderInfo {
     this.owned(provider)
-    return { id: provider, name: 'OpenRouter' }
+    return { id: provider, name: this.displayName }
   }
 
   override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined {
@@ -101,8 +105,8 @@ export class OpenRouterAdapter extends LlmAdapter {
     const base = openrouterProvider()
     const limits = this.options.limits()
     const provider: Provider<'openai-completions'> = {
-      id: OPENROUTER_PROVIDER,
-      name: 'OpenRouter',
+      id: this.provider,
+      name: this.displayName,
       ...base.baseUrl === undefined ? {} : { baseUrl: base.baseUrl },
       auth: base.auth,
       getModels: () => generation.models,
@@ -110,8 +114,8 @@ export class OpenRouterAdapter extends LlmAdapter {
       streamSimple: (model, context, options) => base.streamSimple(model, context, options),
     }
     const profile: ResolvedPiAiProviderProfile = {
-      provider: OPENROUTER_PROVIDER,
-      displayName: 'OpenRouter',
+      provider: this.provider,
+      displayName: this.displayName,
       streamIdleTimeoutMs: limits.streamIdleTimeoutMs,
       maxRequestImageBytes: limits.maxRequestImageBytes,
       requestImagePixelBudget: limits.requestImagePixelBudget,
@@ -121,7 +125,7 @@ export class OpenRouterAdapter extends LlmAdapter {
       modelErrors: new Map(),
       piProvider: provider,
     }
-    const profiles = new Map([[OPENROUTER_PROVIDER, profile]])
+    const profiles = new Map([[this.provider, profile]])
     const adapter = new PiAiAdapter({
       profiles: () => profiles,
       resolveApiKey: () => this.options.apiKey(),
@@ -135,9 +139,19 @@ export class OpenRouterAdapter extends LlmAdapter {
   }
 
   private owned(provider: string): void {
-    if (provider !== OPENROUTER_PROVIDER) {
+    if (provider !== this.provider) {
       throw new LlmError(`OpenRouter adapter does not own ${provider}`, 'NO_ADAPTER')
     }
+  }
+
+  private get provider(): string {
+    return this.options.provider ?? OPENROUTER_PROVIDER
+  }
+
+  private get displayName(): string {
+    return typeof this.options.displayName === 'function'
+      ? this.options.displayName()
+      : this.options.displayName ?? 'OpenRouter'
   }
 
   private enabled(provider: string, model: string): boolean {

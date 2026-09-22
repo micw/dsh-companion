@@ -5,7 +5,7 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import CompanionProviderAccounts from '@dsh-companion/provider-account'
 import {
   Config,
-  OPENROUTER_PROVIDER,
+  OPENROUTER_FAMILY_ID,
   OPENROUTER_SETTINGS_NAMESPACE,
   apply,
   inject,
@@ -13,13 +13,13 @@ import {
 } from '../lib/index.js'
 import { catalogPayload, keyPayload } from './fixture.mjs'
 
-test('defaults the dedicated provider to disabled', () => {
+test('defaults the provider family to no configured instances', () => {
   const value = Config({})
-  assert.equal(value.enabled, false)
-  assert.equal(value.baseURL, 'https://openrouter.ai/api/v1')
+  assert.deepEqual(value.instances, {})
+  assert.deepEqual(value.retiredInstanceIds, [])
 })
 
-test('registers one configurable route backed by catalog LKG and account services', async () => {
+test('registers one configured instance backed by catalog LKG and account services', async () => {
   const originalFetch = globalThis.fetch
   const calls = []
   globalThis.fetch = async (input, init) => {
@@ -31,50 +31,70 @@ test('registers one configurable route backed by catalog LKG and account service
   }
   const ctx = new Context()
   const catalog = memoryCatalog()
-  ctx.provide('credentials', {
-    resolve: async ref => String(ref) === 'OPENROUTER_API_KEY'
-      ? { value: 'openrouter-key', source: 'test' }
-      : undefined,
+  const settings = memorySettings({
+    instances: {
+      primary: {
+        displayName: 'OpenRouter Work',
+        enabled: true,
+        provider: 'openrouter-primary',
+        baseURL: 'https://openrouter.example/api/v1',
+        apiKeyEnv: 'OPENROUTER_API_KEY',
+      },
+    },
+    retiredInstanceIds: [],
   })
+  ctx.provide('settings', settings)
+  ctx.provide('credentials', memoryCredentials({ OPENROUTER_API_KEY: 'openrouter-key' }))
   ctx.provide('companionProviderCatalog', catalog)
   ctx.provide('companionModelPolicy', { isEnabled: (_provider, model) => model !== 'disabled' })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {
-    enabled: true,
-    baseURL: 'https://openrouter.example/api/v1',
-    apiKeyEnv: 'OPENROUTER_API_KEY',
-  })
+  const fiber = ctx.plugin({ name, inject, apply }, {})
   try {
     await fiber
-    assert.deepEqual(ctx.llm.listProviders(), [{ id: OPENROUTER_PROVIDER, name: 'OpenRouter' }])
-    assert.deepEqual(ctx.llm.listConfigurableProviders(), [{
-      provider: OPENROUTER_PROVIDER,
+    assert.deepEqual(ctx.llm.listProviderFamilies(), [{
+      id: OPENROUTER_FAMILY_ID,
       displayName: 'OpenRouter',
+      maxInstances: null,
       settingsNs: OPENROUTER_SETTINGS_NAMESPACE,
-      settingsPath: [],
+      instancesPath: ['instances'],
     }])
-    await waitFor(() => catalog.snapshot(OPENROUTER_PROVIDER)?.status === 'ready')
-    assert.deepEqual((await ctx.llm.listModels(OPENROUTER_PROVIDER)).map(model => model.id), ['acme/reasoner'])
-    await waitFor(() => ctx.companionProviderAccounts.snapshot(OPENROUTER_PROVIDER)?.status === 'ready')
+    assert.deepEqual(ctx.llm.listConfigurableProviders(), [])
+    await waitFor(() => ctx.llm.listProviders().length === 1)
+    assert.deepEqual(ctx.llm.listProviders(), [{ id: 'openrouter-primary', name: 'OpenRouter Work' }])
+    assert.deepEqual(await ctx.llm.listProviderInstances(), [{
+      id: 'primary',
+      familyId: OPENROUTER_FAMILY_ID,
+      provider: 'openrouter-primary',
+      displayName: 'OpenRouter Work',
+      enabled: true,
+      active: true,
+      settingsNs: OPENROUTER_SETTINGS_NAMESPACE,
+      settingsPath: ['instances', 'primary'],
+      credential: 'configured',
+    }])
+    await waitFor(() => catalog.snapshot('openrouter-primary')?.status === 'ready')
+    assert.deepEqual((await ctx.llm.listModels('openrouter-primary')).map(model => model.id), ['acme/reasoner'])
+    await waitFor(() => ctx.companionProviderAccounts.snapshot('openrouter-primary')?.status === 'ready')
     assert.deepEqual(new Set(calls.map(call => call.url)), new Set([
       'https://openrouter.example/api/v1/models',
       'https://openrouter.example/api/v1/key',
     ]))
     assert.ok(calls.every(call => call.init.headers.authorization === 'Bearer openrouter-key'))
-    assert.equal(ctx.companionProviderAccounts.snapshot(OPENROUTER_PROVIDER).value.credits.balance, '15')
+    assert.equal(ctx.companionProviderAccounts.snapshot('openrouter-primary').value.credits.balance, '15')
   } finally {
     globalThis.fetch = originalFetch
     await fiber.dispose()
     assert.deepEqual(ctx.llm.listProviders(), [])
-    assert.deepEqual(ctx.llm.listConfigurableProviders(), [])
+    assert.deepEqual(ctx.llm.listProviderFamilies(), [])
     await ctx.fiber.dispose()
   }
 })
 
-test('keeps the provider visible but dormant when disabled', async () => {
+test('lists the family but no instance or route for empty settings', async () => {
   const ctx = new Context()
-  ctx.provide('credentials', { resolve: async () => undefined })
+  ctx.provide('settings', memorySettings({ instances: {}, retiredInstanceIds: [] }))
+  ctx.provide('credentials', memoryCredentials({}))
   ctx.provide('companionProviderCatalog', memoryCatalog())
   ctx.provide('companionModelPolicy', { isEnabled: () => false })
   await ctx.plugin(LlmRuntime)
@@ -82,10 +102,164 @@ test('keeps the provider visible but dormant when disabled', async () => {
   const fiber = ctx.plugin({ name, inject, apply }, {})
   await fiber
   assert.deepEqual(ctx.llm.listProviders(), [])
-  assert.equal(ctx.llm.listConfigurableProviders()[0].provider, OPENROUTER_PROVIDER)
+  assert.equal(ctx.llm.listProviderFamilies()[0].id, OPENROUTER_FAMILY_ID)
+  assert.deepEqual(await ctx.llm.listProviderInstances(), [])
   await fiber.dispose()
   await ctx.fiber.dispose()
 })
+
+test('creates, renames, and deletes isolated instances through the DSH family API', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.endsWith('/models')) return Response.json(catalogPayload())
+    if (url.endsWith('/key')) return Response.json(keyPayload())
+    throw new Error(`unexpected request ${url}`)
+  }
+  const ctx = new Context()
+  const settings = memorySettings({ instances: {}, retiredInstanceIds: [] })
+  ctx.provide('settings', settings)
+  ctx.provide('credentials', memoryCredentials({}))
+  ctx.provide('companionProviderCatalog', memoryCatalog())
+  ctx.provide('companionModelPolicy', { isEnabled: () => true })
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(CompanionProviderAccounts)
+  const fiber = ctx.plugin({ name, inject, apply }, {})
+  try {
+    await fiber
+    const signal = new AbortController().signal
+    const first = await ctx.llm.saveProviderInstance(OPENROUTER_FAMILY_ID, {
+      displayName: 'Work',
+      enabled: true,
+      config: { baseURL: 'https://openrouter.example/api/v1' },
+      credential: { kind: 'replace', value: 'work-key' },
+    }, signal)
+    const second = await ctx.llm.saveProviderInstance(OPENROUTER_FAMILY_ID, {
+      displayName: 'Personal',
+      enabled: true,
+      config: { baseURL: 'https://openrouter.example/api/v1' },
+      credential: { kind: 'replace', value: 'personal-key' },
+    }, signal)
+    assert.notEqual(first.id, second.id)
+    assert.notEqual(first.provider, second.provider)
+    await waitFor(() => ctx.llm.listProviders().length === 2)
+
+    const renamed = await ctx.llm.saveProviderInstance(OPENROUTER_FAMILY_ID, {
+      instanceId: first.id,
+      displayName: 'Work renamed',
+      enabled: true,
+      config: { baseURL: 'https://openrouter.example/api/v1' },
+    }, signal)
+    assert.equal(renamed.provider, first.provider)
+    await waitFor(() => ctx.llm.listProviders().some(provider => provider.name === 'Work renamed'))
+
+    await ctx.llm.deleteProviderInstance(OPENROUTER_FAMILY_ID, second.id, signal)
+    await waitFor(async () => (await ctx.llm.listProviderInstances()).length === 1)
+    assert.equal((await ctx.llm.listProviderInstances())[0].id, first.id)
+    assert.ok(settings.get().retiredInstanceIds.includes(second.id))
+  } finally {
+    globalThis.fetch = originalFetch
+    await fiber.dispose()
+    await ctx.fiber.dispose()
+  }
+})
+
+test('removes a staged credential when the instance settings commit fails', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => String(input).endsWith('/models')
+    ? Response.json(catalogPayload())
+    : Response.json(keyPayload())
+  const ctx = new Context()
+  const settings = memorySettings({ instances: {}, retiredInstanceIds: [] })
+  const credentials = memoryCredentials({})
+  settings.failNextReplace(new Error('settings offline'))
+  ctx.provide('settings', settings)
+  ctx.provide('credentials', credentials)
+  ctx.provide('companionProviderCatalog', memoryCatalog())
+  ctx.provide('companionModelPolicy', { isEnabled: () => true })
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(CompanionProviderAccounts)
+  const fiber = ctx.plugin({ name, inject, apply }, {})
+  try {
+    await fiber
+    await assert.rejects(ctx.llm.saveProviderInstance(OPENROUTER_FAMILY_ID, {
+      displayName: 'Rejected',
+      enabled: true,
+      config: {},
+      credential: { kind: 'replace', value: 'temporary-key' },
+    }, new AbortController().signal), /settings offline/u)
+    assert.deepEqual(settings.get().instances, {})
+    assert.deepEqual(credentials.refs(), [])
+    assert.deepEqual(await ctx.llm.listProviderInstances(), [])
+  } finally {
+    globalThis.fetch = originalFetch
+    await fiber.dispose()
+    await ctx.fiber.dispose()
+  }
+})
+
+test('keeps the provider family separate from a legacy configurable-provider directory', async () => {
+  const ctx = new Context()
+  ctx.provide('settings', memorySettings({ instances: {}, retiredInstanceIds: [] }))
+  ctx.provide('credentials', memoryCredentials({}))
+  ctx.provide('companionProviderCatalog', memoryCatalog())
+  ctx.provide('companionModelPolicy', { isEnabled: () => false })
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(CompanionProviderAccounts)
+  ctx.llm.registerConfigurableProviders([{
+    provider: 'openrouter',
+    displayName: 'openrouter',
+    settingsNs: 'llm-pi-ai',
+    settingsPath: ['providers', 'openrouter'],
+  }])
+  const fiber = ctx.plugin({ name, inject, apply }, {})
+  await fiber
+  assert.deepEqual(ctx.llm.listProviders(), [])
+  assert.equal(ctx.llm.listProviderFamilies()[0].id, OPENROUTER_FAMILY_ID)
+  assert.equal(ctx.llm.listConfigurableProviders()[0].settingsNs, 'llm-pi-ai')
+  await fiber.dispose()
+  await ctx.fiber.dispose()
+})
+
+function memorySettings(initial) {
+  let current = structuredClone(initial)
+  let replaceFailure
+  const watchers = new Set()
+  return {
+    get: () => current,
+    failNextReplace: (error) => { replaceFailure = error },
+    register() {
+      return {
+        get: () => current,
+        watch(callback) { watchers.add(callback); return () => watchers.delete(callback) },
+        async update(patch) {
+          current = { ...current, ...structuredClone(patch) }
+          await Promise.all([...watchers].map(callback => callback(current, undefined)))
+        },
+        async replace(section) {
+          if (replaceFailure !== undefined) {
+            const error = replaceFailure
+            replaceFailure = undefined
+            throw error
+          }
+          current = structuredClone(section)
+          await Promise.all([...watchers].map(callback => callback(current, undefined)))
+        },
+      }
+    },
+  }
+}
+
+function memoryCredentials(initial) {
+  const values = new Map(Object.entries(initial))
+  return {
+    refs: () => [...values.keys()],
+    resolve: async ref => values.has(String(ref)) ? { value: values.get(String(ref)), source: 'test' } : undefined,
+    describe: async ref => ({ configured: values.has(String(ref)), writable: true }),
+    set: async (ref, value) => { values.set(String(ref), value) },
+    unset: async ref => { values.delete(String(ref)) },
+  }
+}
 
 function memoryCatalog() {
   const entries = new Map()
@@ -127,7 +301,7 @@ function memoryCatalog() {
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 1000
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() >= deadline) throw new Error('timed out waiting for provider state')
     await new Promise(resolve => setTimeout(resolve, 5))
   }

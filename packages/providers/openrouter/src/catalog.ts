@@ -13,7 +13,7 @@ export const OPENROUTER_PROVIDER = CompanionProviderId('openrouter')
 /** OpenRouter's public API root. */
 export const DEFAULT_OPENROUTER_API_BASE_URL = 'https://openrouter.ai/api/v1'
 
-const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 type InputModality = 'text' | 'image'
 
@@ -154,13 +154,16 @@ function decodeModel(value: unknown, index: number): OpenRouterModel {
 
 function decodeReasoning(value: unknown, label: string): OpenRouterReasoning {
   const source = record(value, `${label} reasoning`)
-  const efforts = strings(source.supported_efforts, `${label} reasoning.supported_efforts`)
-  for (const effort of efforts) {
-    if (!THINKING_LEVELS.has(effort)) throw new Error(`${label} has unsupported reasoning effort ${effort}`)
+  const reportedEfforts = source.supported_efforts === undefined || source.supported_efforts === null
+    ? []
+    : strings(source.supported_efforts, `${label} reasoning.supported_efforts`)
+  const efforts = reportedEfforts.map(normalizeEffort)
+  if (new Set(efforts).size !== efforts.length) {
+    throw new Error(`${label} has duplicate normalized reasoning efforts`)
   }
   const defaultEffort = source.default_effort === undefined || source.default_effort === null
     ? undefined
-    : nonEmpty(source.default_effort, `${label} reasoning.default_effort`)
+    : normalizeEffort(nonEmpty(source.default_effort, `${label} reasoning.default_effort`))
   if (defaultEffort !== undefined && !efforts.includes(defaultEffort)) {
     throw new Error(`${label} reasoning default is not supported`)
   }
@@ -170,6 +173,12 @@ function decodeReasoning(value: unknown, label: string): OpenRouterReasoning {
     supported_efforts: efforts,
     ...defaultEffort === undefined ? {} : { default_effort: defaultEffort },
   }
+}
+
+function normalizeEffort(effort: string): string {
+  const normalized = effort === 'none' ? 'off' : effort
+  if (!THINKING_LEVELS.has(normalized)) throw new Error(`unsupported OpenRouter reasoning effort ${effort}`)
+  return normalized
 }
 
 function toPiModel(source: OpenRouterModel, apiBaseURL: string): Model<'openai-completions'> {

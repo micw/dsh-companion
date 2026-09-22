@@ -20,9 +20,10 @@ export { OpenRouterClient, decodeOpenRouterKeyStatus } from './client.js'
 export {
   Config,
   DEFAULT_OPENROUTER_API_KEY_REF,
+  OPENROUTER_FAMILY_ID,
   OPENROUTER_SETTINGS_NAMESPACE,
   apply,
   inject,
   name,
 } from './plugin.js'
-export type { Config as ProviderConfig } from './plugin.js'
+export type { Config as ProviderConfig, OpenRouterInstanceConfig } from './plugin.js'
