@@ -1,0 +1,59 @@
+{
+  "name": "@dsh-companion/provider-openrouter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-attachment": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-credentials": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.5-rc.2"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "link:../deepseek-harness/vendor/schemastery",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@dsh-companion/model-policy": "link:../dsh-companion/packages/model-policy",
+    "@dsh-companion/provider-account": "link:../dsh-companion/packages/provider-account",
+    "@dsh-companion/provider-catalog": "link:../dsh-companion/packages/provider-catalog"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/dsh-attachment": "link:../deepseek-harness/packages/attachment/attachment",
+    "@deepseek-ai/dsh-credentials": "link:../deepseek-harness/packages/credentials/credentials",
+    "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",
+    "@deepseek-ai/dsh-llm-pi-ai": "link:../deepseek-harness/packages/llm/llm-pi-ai",
+    "@deepseek-ai/dsh-settings": "link:../deepseek-harness/packages/settings/settings",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.7.0"
+}
