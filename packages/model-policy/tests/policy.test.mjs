@@ -8,6 +8,16 @@ test('uses the shared default for newly discovered models', () => {
   assert.equal(modelEnabled({ defaultModelState: 'disabled' }, 'provider', 'new-model'), false)
 })
 
+test('uses a provider default before the shared default', () => {
+  const config = {
+    defaultModelState: 'enabled',
+    providers: { openrouter: { defaultModelState: 'disabled', models: { selected: 'enabled' } } },
+  }
+  assert.equal(modelEnabled(config, 'openrouter', 'new-model'), false)
+  assert.equal(modelEnabled(config, 'openrouter', 'selected'), true)
+  assert.equal(modelEnabled(config, 'other', 'new-model'), true)
+})
+
 test('applies provider denial before exact model overrides', () => {
   const config = {
     defaultModelState: 'enabled',

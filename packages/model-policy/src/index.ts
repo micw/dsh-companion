@@ -10,6 +10,8 @@ export const COMPANION_MODEL_POLICY_SETTINGS_NAMESPACE = 'dsh-companion-model-po
 /** One provider's optional switch and exact model overrides. */
 export interface ProviderModelPolicy {
   readonly enabled?: boolean
+  /** Default for models without an exact override; omission inherits the shared default. */
+  readonly defaultModelState?: 'enabled' | 'disabled'
   readonly models?: Readonly<Record<string, 'enabled' | 'disabled'>>
 }
 
@@ -24,6 +26,7 @@ export const Config: z<Config> = z.object({
   defaultModelState: z.union(['enabled', 'disabled']).default('enabled'),
   providers: z.dict(z.object({
     enabled: z.boolean(),
+    defaultModelState: z.union(['enabled', 'disabled']),
     models: z.dict(z.union(['enabled', 'disabled'])).default({}),
   })).default({}),
 })
@@ -74,6 +77,7 @@ export function modelEnabled(config: Config, provider: string, model: string): b
   if (policy?.enabled === false) return false
   const override = policy?.models?.[model]
   if (override !== undefined) return override === 'enabled'
+  if (policy?.defaultModelState !== undefined) return policy.defaultModelState === 'enabled'
   return (config.defaultModelState ?? 'enabled') === 'enabled'
 }
 

@@ -27,7 +27,7 @@ Build the VSIX with:
 
 ```bash
 DSH_COMPANION_DSH_SOURCE=../deepseek-harness \
-DSH_COMPANION_PROVIDER_BUNDLES='["../dsh-companion-provider-claude-wrapper-advanced","../dsh-companion-provider-codex-wrapper-advanced"]' \
+DSH_COMPANION_PROVIDER_BUNDLES='["../dsh-companion-provider-openrouter","../dsh-companion-provider-claude-wrapper-advanced","../dsh-companion-provider-codex-wrapper-advanced"]' \
 pnpm run vscode:package
 ```
 

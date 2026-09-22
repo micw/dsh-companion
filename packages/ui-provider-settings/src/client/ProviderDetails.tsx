@@ -230,6 +230,7 @@ function modelEnabled(
   if (policy?.enabled === false) return false
   const override = policy?.models?.[model]
   if (override !== undefined) return override === 'enabled'
+  if (policy?.defaultModelState !== undefined) return policy.defaultModelState === 'enabled'
   return (snapshot.value?.defaultModelState ?? 'enabled') === 'enabled'
 }
 

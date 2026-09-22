@@ -44,10 +44,11 @@ test('registers under the provider settings namespace and reads both Host author
   }
   apply(ctx)
   assert.deepEqual(registrations.map(item => item.options.key), [
+    'dsh-companion-openrouter',
     'dsh-companion-codex-wrapper-advanced',
     'dsh-companion-claude-wrapper-advanced',
   ])
-  const registered = registrations[0]
+  const registered = registrations[1]
   assert.equal(registered.options.name, 'settings.models.provider-card')
   assert.equal(registered.options.locale, 'dsh-companion.provider-settings')
   assert.equal(typeof registered.component, 'function')

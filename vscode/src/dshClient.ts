@@ -201,7 +201,7 @@ export interface DshProviderSettingsModel {
 export interface DshProviderSettingsEntry {
   readonly id: string;
   readonly name: string;
-  readonly kind: 'native' | 'catalog' | 'wrapper';
+  readonly kind: 'native' | 'catalog' | 'dynamic' | 'wrapper';
   readonly active: boolean;
   readonly enabled: boolean;
   readonly baseURL?: string;
@@ -389,7 +389,7 @@ const PROVIDER_SETTINGS = [
     credentialRef: 'OPENAI_API_KEY',
   },
   {
-    id: 'openrouter', name: 'OpenRouter', kind: 'catalog', namespace: 'llm-pi-ai',
+    id: 'openrouter', name: 'OpenRouter', kind: 'dynamic', namespace: 'dsh-companion-openrouter',
     credentialRef: 'OPENROUTER_API_KEY',
   },
   {
@@ -571,7 +571,7 @@ function providerSettingsRows(
         ? [{ id: model.id, name: typeof model.name === 'string' ? model.name : model.id }]
         : [])
       : [];
-    const sourceModels = definition.kind === 'wrapper'
+    const sourceModels = definition.kind === 'wrapper' || definition.kind === 'dynamic'
       ? wrapperCatalog?.models.filter(model => !model.hidden) ?? catalogGroup?.models ?? []
       : catalogGroup?.models ?? fallbackModels;
     const policyCandidate = policyProviders[definition.id];
@@ -579,6 +579,8 @@ function providerSettingsRows(
     const modelPolicy = providerPolicy !== undefined && isRecord(providerPolicy.models)
       ? providerPolicy.models
       : {};
+    const providerDefault = providerPolicy?.defaultModelState;
+    const sharedDefault = policyNamespace?.value.defaultModelState;
     return {
       id: definition.id,
       name: definition.name,
@@ -592,7 +594,10 @@ function providerSettingsRows(
         id: model.id,
         name: model.name,
         ...(model.description === undefined ? {} : { description: model.description }),
-        enabled: modelPolicy[model.id] !== 'disabled',
+        enabled: providerPolicy?.enabled !== false
+          && (modelPolicy[model.id] === 'enabled'
+            || (modelPolicy[model.id] !== 'disabled'
+              && (providerDefault ?? sharedDefault ?? 'enabled') === 'enabled')),
       })),
     };
   });
@@ -1097,22 +1102,30 @@ export class DshClient {
     if (definition === undefined) throw new Error('The requested provider is not managed by this Preview');
     const graph = this.requireCanonical().graph;
     const before = await this.providerSettings();
+    const legacyOpenRouter = definition.kind === 'dynamic'
+      ? await removeLegacyOpenRouterProfile(graph)
+      : undefined;
     const ops: unknown[] = definition.kind === 'catalog'
       ? [update.enabled
         ? { op: 'set', path: ['providers', definition.id, 'apiKeyEnv'], value: definition.credentialRef }
         : { op: 'unset', path: ['providers', definition.id] }]
       : [
         { op: 'set', path: ['enabled'], value: update.enabled },
-        ...(definition.kind === 'wrapper'
+        ...(definition.kind === 'wrapper' || definition.kind === 'dynamic'
           ? [update.baseURL === undefined || update.baseURL.trim() === ''
             ? { op: 'unset', path: ['baseURL'] }
             : { op: 'set', path: ['baseURL'], value: update.baseURL.trim() }]
           : []),
       ];
-    unwrapCanonicalResult(
-      await callCanonicalRemote(graph, 'settings', 'mutate', definition.namespace, ops, update.revision),
-      'settings.mutate',
-    );
+    try {
+      unwrapCanonicalResult(
+        await callCanonicalRemote(graph, 'settings', 'mutate', definition.namespace, ops, update.revision),
+        'settings.mutate',
+      );
+    } catch (error) {
+      if (legacyOpenRouter !== undefined) await restoreLegacyOpenRouterProfile(graph, legacyOpenRouter);
+      throw error;
+    }
     const apiKey = update.apiKey?.trim();
     if (apiKey !== undefined && apiKey.length > 0) {
       const credentialRef = definition.kind === 'catalog'
@@ -1128,10 +1141,12 @@ export class DshClient {
     return this.providerSettings();
   }
 
-  /** Verifies one saved wrapper endpoint and credential through its catalog and account operations. */
+  /** Verifies one saved dynamic endpoint and credential through its catalog and account operations. */
   async testProviderConnection(provider: string): Promise<DshProviderConnectionTest> {
     const definition = PROVIDER_SETTINGS.find(candidate => candidate.id === provider);
-    if (definition?.kind !== 'wrapper') throw new Error('Connection testing is available only for wrapper providers');
+    if (definition?.kind !== 'wrapper' && definition?.kind !== 'dynamic') {
+      throw new Error('Connection testing is available only for dynamic providers');
+    }
     const graph = this.requireCanonical().graph;
     const catalogValue = unwrapCanonicalResult(await callCanonicalRemote(
       graph, 'companionProviderCatalog', 'refresh', provider,
@@ -1882,6 +1897,42 @@ export class DshClient {
     this.sink.history('error', message);
     this.sink.status('Request failed');
   }
+}
+
+interface LegacyOpenRouterProfile {
+  readonly value: Record<string, unknown>;
+  readonly revision: number;
+}
+
+async function removeLegacyOpenRouterProfile(
+  graph: CanonicalClientGraph,
+): Promise<LegacyOpenRouterProfile | undefined> {
+  const described = parseSettingsDescribe(unwrapCanonicalResult(
+    await callCanonicalRemote(graph, 'settings', 'describe'), 'settings.describe',
+  ));
+  const namespace = described.namespaces.get('llm-pi-ai');
+  const providers = namespace?.value.providers;
+  if (namespace === undefined || !isRecord(providers) || !isRecord(providers.openrouter)) return undefined;
+  const value = structuredClone(providers.openrouter);
+  unwrapCanonicalResult(await callCanonicalRemote(
+    graph, 'settings', 'mutate', 'llm-pi-ai',
+    [{ op: 'unset', path: ['providers', 'openrouter'] }], namespace.revision,
+  ), 'settings.mutate');
+  const after = parseSettingsDescribe(unwrapCanonicalResult(
+    await callCanonicalRemote(graph, 'settings', 'describe'), 'settings.describe',
+  )).namespaces.get('llm-pi-ai');
+  if (after === undefined) throw new Error('DSH omitted llm-pi-ai after removing its legacy OpenRouter profile');
+  return { value, revision: after.revision };
+}
+
+async function restoreLegacyOpenRouterProfile(
+  graph: CanonicalClientGraph,
+  legacy: LegacyOpenRouterProfile,
+): Promise<void> {
+  unwrapCanonicalResult(await callCanonicalRemote(
+    graph, 'settings', 'mutate', 'llm-pi-ai',
+    [{ op: 'set', path: ['providers', 'openrouter'], value: legacy.value }], legacy.revision,
+  ), 'settings.mutate');
 }
 
 /** Exchanges a DSH launch URL for the authority-bound browser cookie. */

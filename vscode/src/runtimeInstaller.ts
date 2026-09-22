@@ -16,6 +16,7 @@ const MANAGED_PROFILE = 'dsh-companion';
 const DEFAULT_PROFILE_BUNDLES = ['@dsh-companion/bundle'] as const;
 const PRODUCT_PROFILE_BUNDLES = [
   '@dsh-companion/bundle',
+  '@dsh-companion/provider-openrouter',
   '@dsh-companion/provider-claude-wrapper-advanced',
   '@dsh-companion/provider-codex-wrapper-advanced',
 ] as const;

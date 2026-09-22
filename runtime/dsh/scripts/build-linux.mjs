@@ -12,6 +12,7 @@ import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
 
 const TARGET = 'linux-x64';
 const EXPECTED_PROVIDER_BUNDLES = [
+  '@dsh-companion/provider-openrouter',
   '@dsh-companion/provider-claude-wrapper-advanced',
   '@dsh-companion/provider-codex-wrapper-advanced',
 ];
@@ -275,7 +276,7 @@ function parseProviderPackageRoots(value) {
   if (!Array.isArray(parsed) || parsed.length !== EXPECTED_PROVIDER_BUNDLES.length
     || parsed.some(path => typeof path !== 'string' || path.length === 0)
     || new Set(parsed).size !== parsed.length) {
-    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must contain both provider package directories in product order');
+    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must contain every provider package directory in product order');
   }
   return parsed.map(path => resolve(path));
 }

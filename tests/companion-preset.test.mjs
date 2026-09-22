@@ -41,7 +41,7 @@ test('the Companion preset keeps fresh delegation and Goals without fork delegat
   assert.match(preset, /- id: tool-goal\n\s+name: '@deepseek-ai\/dsh-tool-goal'/u);
 });
 
-test('the Companion bundle exposes only its system preset roster', async () => {
+test('the Companion bundle exposes only its system preset roster and dedicated providers', async () => {
   const [patch, packageJson] = await Promise.all([
     readFile(new URL('../packages/bundle/cordis.patch.yml', import.meta.url), 'utf8'),
     readFile(new URL('../packages/bundle/package.json', import.meta.url), 'utf8').then(JSON.parse),
@@ -51,7 +51,8 @@ test('the Companion bundle exposes only its system preset roster', async () => {
   assert.match(patch, /fallbacks:\n\s+standard: dsh-companion/u);
   assert.match(patch, /includeShippedRoot: false/u);
   assert.match(patch, /includeUserRoot: false/u);
-  assert.match(patch, /- id: llm-deepseek\n\s+config:\n\s+enabled: false/u);
+  assert.match(patch, /- id: llm-deepseek\n\s+disabled: true/u);
+  assert.match(patch, /- id: llm-pi-ai\n\s+disabled: true/u);
   assert.match(patch, /- id: session-query-sqlite\n\s+config:\n\s+path: !!js dshHomePath\('session-search\.sqlite'\)\n\s+openAt: first-search/u);
   assert.doesNotMatch(patch, /default: (?:standard|ptc|cordis)/u);
   assert.ok(packageJson.files.includes('presets/**/*.yml'));
