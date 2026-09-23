@@ -48,6 +48,12 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function renderProviderSettings/);
   assert.match(script, /type: 'saveProviderSettings'/);
   assert.match(script, /provider\.kind === 'dynamic' \? 'API URL' : 'Service URL'/);
+  assert.match(script, /\['native', 'catalog', 'dynamic', 'wrapper'\]\.includes\(provider\.kind\)/);
+  assert.doesNotMatch(script, /value\.providers\.length !== 5/);
+  assert.match(script, /providerSettingsStatus\.textContent === 'Loading providers…'/);
+  assert.match(script, /Provider settings request timed out before the Extension returned a result/);
+  assert.match(script, /Provider settings response rejected: \$\{validationError\}/);
+  assert.match(script, /type: 'loadProviderSettings', requestId/);
   assert.match(dshClient, /callCanonicalRemote\(graph, 'llm', 'listProviderFamilies'\)/);
   assert.match(dshClient, /'llm',\s*'saveProviderInstance'/);
   assert.match(dshClient, /current\.instanceId === undefined/);

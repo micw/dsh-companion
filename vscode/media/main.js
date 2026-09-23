@@ -102,6 +102,8 @@ let openEffortRoute;
 let providerSettingsSnapshot;
 let providerSettingsLoading = false;
 let providerSettingsReturnFocus;
+let providerSettingsRequestId = 0;
+let providerSettingsLoadTimer;
 const providerSettingsDrafts = new Map();
 const providerSettingsSaving = new Set();
 const providerModelSaving = new Set();
@@ -437,7 +439,15 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'providerSettings') {
-    if (!isProviderSettingsSnapshot(message.snapshot)) return;
+    if (!isCurrentProviderSettingsRequest(message)) return;
+    const validationError = providerSettingsSnapshotError(message.snapshot);
+    if (validationError !== undefined) {
+      finishProviderSettingsLoad();
+      providerSettingsStatus.textContent = `Provider settings response rejected: ${validationError}`;
+      providerSettingsStatus.dataset.kind = 'error';
+      return;
+    }
+    finishProviderSettingsLoad();
     providerSettingsSnapshot = message.snapshot;
     providerSettingsErrors.clear();
     for (const provider of message.snapshot.providers) {
@@ -454,12 +464,14 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'providerSettingsLoading') {
+    if (!isCurrentProviderSettingsRequest(message)) return;
     providerSettingsLoading = message.value === true;
     renderProviderSettings();
     return;
   }
   if (message.type === 'providerSettingsFailed') {
-    providerSettingsLoading = false;
+    if (!isCurrentProviderSettingsRequest(message)) return;
+    finishProviderSettingsLoad();
     providerSettingsStatus.textContent = typeof message.text === 'string'
       ? message.text
       : 'Provider settings are unavailable.';
@@ -1296,9 +1308,29 @@ function openProviderSettings() {
   closeProviderUsagePanel();
   closeSessionInfoPanel();
   providerSettingsModal.hidden = false;
+  providerSettingsLoading = true;
   renderProviderSettings();
   providerSettingsSearch.focus();
-  vscode.postMessage({ type: 'loadProviderSettings' });
+  const requestId = ++providerSettingsRequestId;
+  clearTimeout(providerSettingsLoadTimer);
+  providerSettingsLoadTimer = setTimeout(() => {
+    if (requestId !== providerSettingsRequestId || !providerSettingsLoading) return;
+    providerSettingsLoading = false;
+    providerSettingsStatus.textContent = 'Provider settings request timed out before the Extension returned a result.';
+    providerSettingsStatus.dataset.kind = 'error';
+  }, 15_000);
+  vscode.postMessage({ type: 'loadProviderSettings', requestId });
+}
+
+function finishProviderSettingsLoad() {
+  providerSettingsLoading = false;
+  clearTimeout(providerSettingsLoadTimer);
+  providerSettingsLoadTimer = undefined;
+}
+
+function isCurrentProviderSettingsRequest(message) {
+  return message.requestId === undefined
+    || (Number.isSafeInteger(message.requestId) && message.requestId === providerSettingsRequestId);
 }
 
 function closeProviderSettings() {
@@ -1319,7 +1351,9 @@ function renderProviderSettings() {
     return;
   }
   if (providerSettingsSnapshot === undefined) {
-    if (!providerSettingsStatus.textContent) providerSettingsStatus.textContent = 'Provider settings are unavailable.';
+    if (!providerSettingsStatus.textContent || providerSettingsStatus.textContent === 'Loading providers…') {
+      providerSettingsStatus.textContent = 'Provider settings are unavailable.';
+    }
     return;
   }
   providerSettingsStatus.textContent = providerSettingsSnapshot.writable
@@ -2570,29 +2604,32 @@ function isSessionInformation(value) {
     && typeof value.backendVersion === 'string' && value.backendVersion.length > 0;
 }
 
-function isProviderSettingsSnapshot(value) {
+function providerSettingsSnapshotError(value) {
   if (!isRecord(value) || typeof value.writable !== 'boolean'
     || !Number.isSafeInteger(value.modelPolicyRevision) || value.modelPolicyRevision < 0
-    || !Array.isArray(value.providers) || value.providers.length !== 5) return false;
+    || !Array.isArray(value.providers) || value.providers.length > 1_000) return 'invalid snapshot header';
   const ids = new Set();
-  return value.providers.every((provider) => {
+  for (const provider of value.providers) {
     if (!isRecord(provider) || typeof provider.id !== 'string' || provider.id.length === 0 || ids.has(provider.id)
-      || typeof provider.name !== 'string' || !['native', 'catalog', 'wrapper'].includes(provider.kind)
+      || (provider.familyId !== undefined && (typeof provider.familyId !== 'string' || provider.familyId.length === 0))
+      || (provider.instanceId !== undefined && (typeof provider.instanceId !== 'string' || provider.instanceId.length === 0))
+      || typeof provider.name !== 'string' || !['native', 'catalog', 'dynamic', 'wrapper'].includes(provider.kind)
       || typeof provider.active !== 'boolean' || typeof provider.enabled !== 'boolean'
       || (provider.baseURL !== undefined && typeof provider.baseURL !== 'string')
       || !Number.isSafeInteger(provider.revision) || provider.revision < 0
       || !isRecord(provider.credential)
       || Object.keys(provider.credential).some(key => !['ref', 'configured', 'writable', 'source'].includes(key))
-      || typeof provider.credential.ref !== 'string' || provider.credential.ref.length === 0
+      || typeof provider.credential.ref !== 'string'
       || typeof provider.credential.configured !== 'boolean' || typeof provider.credential.writable !== 'boolean'
       || (provider.credential.source !== undefined && typeof provider.credential.source !== 'string')
-      || !Array.isArray(provider.models) || !provider.models.every(model => isRecord(model)
+      || !Array.isArray(provider.models) || provider.models.length > 1_000
+      || !provider.models.every(model => isRecord(model)
         && typeof model.id === 'string' && model.id.length > 0
         && typeof model.name === 'string' && typeof model.enabled === 'boolean'
-        && (model.description === undefined || typeof model.description === 'string'))) return false;
+        && (model.description === undefined || typeof model.description === 'string'))) return 'invalid provider entry';
     ids.add(provider.id);
-    return true;
-  });
+  }
+  return undefined;
 }
 
 function isModelSelection(value) {
