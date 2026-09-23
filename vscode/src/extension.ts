@@ -53,6 +53,7 @@ interface RefreshProviderUsageMessage {
 
 interface LoadProviderSettingsMessage {
   readonly type: 'loadProviderSettings';
+  readonly requestId: number;
 }
 
 interface SaveProviderSettingsMessage {
@@ -291,7 +292,7 @@ function configureChatEditor(
     if (isSelectPermissionMessage(message)) void selectPermission(panel, ready, message.preset);
     if (isCompactMessage(message)) void compact(panel, ready);
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
-    if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready);
+    if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready, message.requestId);
     if (isSaveProviderSettingsMessage(message)) void saveProviderSettings(panel, ready, message);
     if (isSetProviderModelEnabledMessage(message)) void setProviderModelEnabled(panel, ready, message);
     if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
@@ -583,14 +584,21 @@ async function refreshProviderUsage(
   }
 }
 
-async function loadProviderSettings(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
-  post(panel, { type: 'providerSettingsLoading', value: true });
+async function loadProviderSettings(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  requestId: number,
+): Promise<void> {
+  post(panel, { type: 'providerSettingsLoading', requestId, value: true });
   try {
-    post(panel, { type: 'providerSettings', snapshot: await (await ready).providerSettings() });
+    post(panel, { type: 'providerSettings', requestId, snapshot: await (await ready).providerSettings() });
   } catch (error) {
-    post(panel, { type: 'providerSettingsFailed', text: error instanceof Error ? error.message : String(error) });
+    post(panel, {
+      type: 'providerSettingsFailed', requestId,
+      text: error instanceof Error ? error.message : String(error),
+    });
   } finally {
-    post(panel, { type: 'providerSettingsLoading', value: false });
+    post(panel, { type: 'providerSettingsLoading', requestId, value: false });
   }
 }
 
@@ -742,7 +750,8 @@ function isRefreshProviderUsageMessage(value: unknown): value is RefreshProvider
 
 function isLoadProviderSettingsMessage(value: unknown): value is LoadProviderSettingsMessage {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'loadProviderSettings';
+    && Object.keys(value).length === 2 && Reflect.get(value, 'type') === 'loadProviderSettings'
+    && Number.isSafeInteger(Reflect.get(value, 'requestId')) && Number(Reflect.get(value, 'requestId')) > 0;
 }
 
 function isSaveProviderSettingsMessage(value: unknown): value is SaveProviderSettingsMessage {
