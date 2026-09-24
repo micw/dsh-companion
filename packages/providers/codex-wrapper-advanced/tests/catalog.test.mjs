@@ -101,3 +101,17 @@ test('does not invent a long variant without measured headroom or ownership', ()
   const other = generation({ id: 'gpt-5.6-terra', model: 'gpt-5.6-terra' })
   assert.deepEqual(other.listModels().map(model => model.id), ['gpt-5.6-terra'])
 })
+
+test('projects the new Sol long-budget choice', () => {
+  const catalog = generation({
+    id: 'gpt-6-sol',
+    model: 'gpt-6-sol-wire',
+    display_name: 'GPT-6-Sol',
+  })
+  assert.deepEqual(catalog.listModels().map(model => ({ id: model.id, name: model.name })), [
+    { id: 'gpt-6-sol', name: 'GPT-6-Sol' },
+    { id: 'gpt-6-sol:long', name: 'GPT-6-Sol (Long context)' },
+  ])
+  assert.equal(catalog.resolveModel('gpt-6-sol:long').context.contextWindow, 872000)
+  assert.equal(catalog.wireModel('gpt-6-sol:long'), 'gpt-6-sol-wire')
+})

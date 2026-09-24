@@ -11,7 +11,7 @@ import { parseCodexWireCatalog } from './wire/validation.js'
 export const CODEX_WRAPPER_ADVANCED_PROVIDER = CompanionProviderId('codex-wrapper-advanced')
 
 /** Models whose independently measured maximum is exposed as a second DSH budget choice. */
-const LONG_CONTEXT_MODELS: ReadonlySet<string> = new Set(['gpt-5.6-sol'])
+const LONG_CONTEXT_MODELS: ReadonlySet<string> = new Set(['gpt-6-sol', 'gpt-5.6-sol'])
 
 /** One exact DSH model projection and the model identifier sent on the wire. */
 interface ProjectedModel {
