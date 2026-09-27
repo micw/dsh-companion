@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
+import { createVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
 import CompanionModelPolicy, { modelEnabled } from '../lib/index.js'
 
 test('uses the shared default for newly discovered models', () => {
@@ -56,18 +57,15 @@ test('retains exact overrides independently of current catalog membership', () =
   assert.equal(modelEnabled(config, 'provider', 'unknown'), false)
 })
 
-test('reads the latest committed DSH Settings source', async () => {
+test('reads the latest profile-owned volatile configuration', async () => {
   const ctx = new Context()
-  let current = { defaultModelState: 'enabled' }
-  ctx.provide('settings', {
-    installSection(_owner, _namespace, _schema, _base, hooks) {
-      hooks.setSource(() => current)
-    },
+  const defaultModelState = createVolatile('enabled')
+  const service = new CompanionModelPolicy(ctx, {
+    defaultModelState,
+    providers: createVolatile({}),
   })
-  const service = new CompanionModelPolicy(ctx, {})
-  service[Service.init]()
   assert.equal(service.isEnabled('provider', 'model'), true)
-  current = { defaultModelState: 'disabled' }
+  updateVolatile(defaultModelState, createVolatile('disabled'))
   assert.equal(service.isEnabled('provider', 'model'), false)
   await ctx.fiber.dispose()
 })

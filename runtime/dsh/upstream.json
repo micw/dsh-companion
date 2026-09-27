@@ -2,16 +2,16 @@
   "formatVersion": 1,
   "upstream": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
-    "version": "0.1.5-rc.2",
-    "tag": "dsh-v0.1.5-rc.2",
-    "commit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
-    "tree": "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38"
+    "version": "0.1.7-rc.2",
+    "tag": "dsh-v0.1.7-rc.2",
+    "commit": "477b4f420553e8a52c2fbccc464d7561b239c443",
+    "tree": "e3e63253d1d35ad07f785273235c40813cb6c8bd"
   },
   "patches": [
     {
       "id": "node-client-object-runtime",
-      "file": "patches/0001-publish-node-client-object-runtime.patch",
-      "sha256": "7d8726466195695caf97bcd7fb770ac96ab997b77996082356458a9187f626c4",
+      "file": "patches/0001-add-node-client-object-runtime.patch",
+      "sha256": "dc9e8df0a99cab8a573e7fb7726f68fe718e1476d3669123e94f9453fb919595",
       "assessment": "patches/node-client-object-runtime.md",
       "upstreamDiscussion": null,
       "affectedModules": [
@@ -20,131 +20,52 @@
       ]
     },
     {
-      "id": "web-runtime-session-title-dependency",
-      "file": "patches/0002-close-web-runtime-session-title-dependency.patch",
-      "sha256": "fa316821317ee6fd6be739bd93dd230431ffd6e0d586105081017bfa363159d9",
-      "assessment": "patches/web-runtime-session-title-dependency.md",
+      "id": "companion-model-runtime-semantics",
+      "file": "patches/0002-add-companion-model-runtime-semantics.patch",
+      "sha256": "930ce7a073ee0b098a0deecf57fde4c588b5e14998638e25dfc711bae2d03866",
+      "assessment": "patches/companion-model-runtime-semantics.md",
       "upstreamDiscussion": null,
       "affectedModules": [
-        "dsh-python-runtime-closure",
-        "@deepseek-ai/dsh-session-title-llm"
-      ]
-    },
-    {
-      "id": "sea-compatible-preset-directory-scan",
-      "file": "patches/0003-scan-presets-with-sea-compatible-directory-stats.patch",
-      "sha256": "27fcc76b9608fd2cb9a5d1f956d7f1cff1fa958cd8599ef1d289c26b8f727778",
-      "assessment": "patches/sea-compatible-preset-directory-scan.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-agent-presets"
-      ]
-    },
-    {
-      "id": "model-capabilities-and-selection-intent",
-      "file": "patches/0004-share-model-capabilities-and-preserve-selection-intent.patch",
-      "sha256": "a9a4fd9440fa7151b0b6526628bf83fe161e084e18e585fe36214bf8e3cc1c1e",
-      "assessment": "patches/model-capabilities-and-selection-intent.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
+        "@deepseek-ai/dsh-agent-loop",
         "@deepseek-ai/dsh-api-session-controller",
-        "@deepseek-ai/dsh-tool-cordis"
-      ]
-    },
-    {
-      "id": "provider-neutral-model-cost-accounting",
-      "file": "patches/0005-add-provider-neutral-model-cost-accounting.patch",
-      "sha256": "2df15f112cfd8843fde4cfaa297c46f08ce0844fc1d10f4d122c27190ffeaa59",
-      "assessment": "patches/provider-neutral-model-cost-accounting.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-headless",
-        "@deepseek-ai/dsh-agent-loop",
-        "@deepseek-ai/dsh-session",
         "@deepseek-ai/dsh-llm",
-        "@deepseek-ai/dsh-token-meter",
+        "@deepseek-ai/dsh-llm-pi-ai",
+        "@deepseek-ai/dsh-session",
+        "@deepseek-ai/dsh-session-format-v3-to-v4",
         "@deepseek-ai/dsh-session-persistence-jsonl",
-        "@deepseek-ai/dsh-tool-cordis"
-      ]
-    },
-    {
-      "id": "turn-cost-snapshots-and-model-status",
-      "file": "patches/0006-add-turn-cost-snapshots-and-model-status.patch",
-      "sha256": "4c359de10886183c684751fb71369fb376d026ba0a2a7e9b676b9ed0009cf77c",
-      "assessment": "patches/turn-cost-snapshots-and-model-status.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-headless",
-        "@deepseek-ai/dsh-agent-loop",
-        "@deepseek-ai/dsh-session",
-        "@deepseek-ai/dsh-llm",
-        "@deepseek-ai/dsh-token-meter",
-        "@deepseek-ai/dsh-session-persistence-jsonl"
+        "@deepseek-ai/dsh-token-meter"
       ]
     },
     {
       "id": "explicit-manual-compaction-route",
-      "file": "patches/0007-add-explicit-manual-compaction-route.patch",
-      "sha256": "075eb1e20a95790a2b0461c6142d85d935e7552179c15e83d4234f60d2ece2e5",
+      "file": "patches/0003-add-manual-compaction-route.patch",
+      "sha256": "87fbd947f9949e41d5fecf51e41d9b2c2bfe51da57a6a1cf044347b96bcad5d7",
       "assessment": "patches/explicit-manual-compaction-route.md",
       "upstreamDiscussion": null,
       "affectedModules": [
         "@deepseek-ai/dsh-compaction",
         "@deepseek-ai/dsh-compaction-basic",
-        "@deepseek-ai/dsh-command-compact",
-        "@deepseek-ai/dsh-tool-cordis"
-      ]
-    },
-    {
-      "id": "provider-families-and-instances",
-      "file": "patches/0008-add-provider-families-and-instances.patch",
-      "sha256": "d238208f08d3900ea50d68786eb52a3d3faf3df3ff04f0e0d86c98fceaff7912",
-      "assessment": "patches/provider-families-and-instances.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-llm",
-        "@deepseek-ai/dsh-tool-cordis"
-      ]
-    },
-    {
-      "id": "provider-instance-models-settings",
-      "file": "patches/0009-manage-provider-instances-in-models-settings.patch",
-      "sha256": "020286156b6aecefd7375df4e122f147eb5b7deb276e5f08387c567f92923f9a",
-      "assessment": "patches/provider-instance-models-settings.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-ui-settings-models"
+        "@deepseek-ai/dsh-command-compact"
       ]
     },
     {
       "id": "agent-preset-fallbacks",
-      "file": "patches/0010-add-agent-preset-fallbacks.patch",
-      "sha256": "8b65d6f27fd5e2bc2fc07f5b3b50b4c2ea1ba8ea664e6ad7e16d200cbe069892",
+      "file": "patches/0004-add-agent-preset-fallback.patch",
+      "sha256": "38e75ae56df756fe17b0d34cd3fa84b51447fa3cd97b1cad79b5f373686a18a4",
       "assessment": "patches/agent-preset-fallbacks.md",
       "upstreamDiscussion": null,
       "affectedModules": [
-        "@deepseek-ai/dsh-agent-presets"
+        "@deepseek-ai/dsh-agent-preset-registry"
       ]
     },
     {
-      "id": "sea-client-module-proxies",
-      "file": "patches/0011-resolve-client-bundles-through-sea-module-proxies.patch",
-      "sha256": "791b827d55dcbabb70e38df57bcc8ac0435121d578c5e17788357cf2277371d4",
-      "assessment": "patches/sea-client-module-proxies.md",
+      "id": "compress-enhanced-sea-assets",
+      "file": "patches/0005-compress-enhanced-sea-assets.patch",
+      "sha256": "90011a176fc7be22d4ac37cddf37b3de31b748f1bdacf9204d46d6a0cd50e4da",
+      "assessment": "patches/compress-enhanced-sea-assets.md",
       "upstreamDiscussion": null,
       "affectedModules": [
-        "@deepseek-ai/dsh-client-modules"
-      ]
-    },
-    {
-      "id": "pi-ai-provider-accounting-mapper",
-      "file": "patches/0012-map-provider-accounting-through-pi-ai.patch",
-      "sha256": "b4441b75dc41ce2d153cf19d6a62d7763d9d50bb578a2922086bee58497fb795",
-      "assessment": "patches/pi-ai-provider-accounting-mapper.md",
-      "upstreamDiscussion": null,
-      "affectedModules": [
-        "@deepseek-ai/dsh-llm-pi-ai"
+        "scripts/build-exe-for-python-sdk"
       ]
     }
   ]

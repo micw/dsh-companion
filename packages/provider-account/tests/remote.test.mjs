@@ -16,6 +16,6 @@ test('publishes strict list and cancellable refresh Remote descriptors', () => {
       cancellation: { parameter: 'signal' },
     },
   ])
-  assert.equal(remote.descriptors[0].result.schema.safeParse([]).success, true)
-  assert.equal(remote.descriptors[1].parameters[0].codec.schema.safeParse('provider').success, true)
+  assert.equal(remote.descriptors[0].result.create().safeParse([]).success, true)
+  assert.equal(remote.descriptors[1].parameters[0].codec.create().safeParse('provider').success, true)
 })

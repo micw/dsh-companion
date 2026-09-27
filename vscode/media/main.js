@@ -1723,7 +1723,6 @@ function renderModelTrigger() {
   const found = modelSelection === undefined
     ? undefined
     : findCatalogModel(modelSelection.provider, modelSelection.model);
-  const usable = selectedModelEnabled();
   const modelName = modelCatalog !== undefined && modelCatalog.routableProviders.length === 0
     ? 'Configure a provider'
     : (found === undefined
@@ -1747,7 +1746,7 @@ function renderModelTrigger() {
     : label;
   modelTrigger.setAttribute('aria-label', `Select model, current ${label}`);
   modelTrigger.disabled = running || compacting || modelSelecting || modelCatalog === undefined;
-  modelTrigger.dataset.configure = usable ? 'false' : 'true';
+  modelTrigger.dataset.configure = modelCatalog?.routableProviders.length === 0 ? 'true' : 'false';
 }
 
 function renderPermissionSelect() {

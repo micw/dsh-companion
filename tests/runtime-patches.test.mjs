@@ -9,101 +9,38 @@ import {
   verifyPatchFiles,
 } from '../runtime/dsh/scripts/manifest.mjs';
 
-test('the DSH runtime pin and ordered patch series are integrity checked', async () => {
+async function patchText(manifest, id) {
+  const patch = manifest.patches.find((candidate) => candidate.id === id);
+  assert.ok(patch, `missing patch ${id}`);
+  return { patch, text: await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8') };
+}
+
+test('the exact DSH runtime pin and ordered patch series are integrity checked', async () => {
   const manifest = await loadUpstreamManifest();
   await verifyPatchFiles(manifest);
-  assert.equal(manifest.upstream.repository, 'https://github.com/deepseek-ai/deepseek-harness.git');
-  assert.equal(manifest.upstream.version, '0.1.5-rc.2');
-  assert.equal(manifest.upstream.tag, 'dsh-v0.1.5-rc.2');
+  assert.deepEqual(manifest.upstream, {
+    repository: 'https://github.com/deepseek-ai/deepseek-harness.git',
+    version: '0.1.7-rc.2',
+    tag: 'dsh-v0.1.7-rc.2',
+    commit: '477b4f420553e8a52c2fbccc464d7561b239c443',
+    tree: 'e3e63253d1d35ad07f785273235c40813cb6c8bd',
+  });
   assert.match(patchSetSha256(manifest), /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.patches.map((patch) => patch.id), [
     'node-client-object-runtime',
-    'web-runtime-session-title-dependency',
-    'sea-compatible-preset-directory-scan',
-    'model-capabilities-and-selection-intent',
-    'provider-neutral-model-cost-accounting',
-    'turn-cost-snapshots-and-model-status',
+    'companion-model-runtime-semantics',
     'explicit-manual-compaction-route',
-    'provider-families-and-instances',
-    'provider-instance-models-settings',
     'agent-preset-fallbacks',
-    'sea-client-module-proxies',
-    'pi-ai-provider-accounting-mapper',
+    'compress-enhanced-sea-assets',
   ]);
 });
 
-test('the provider-family patch separates installed families, configured instances, and active routes', async () => {
+test('the Node Client patch stays outside DSH Agent and Session ownership', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[7];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /interface LlmProviderFamily/u);
-  assert.match(text, /listProviderInstances\(\)/u);
-  assert.match(text, /saveProviderInstance/u);
-  assert.match(text, /PROVIDER_INSTANCE_LIMIT/u);
-  assert.deepEqual(patch.affectedModules, [
-    '@deepseek-ai/dsh-llm',
-    '@deepseek-ai/dsh-tool-cordis',
-  ]);
-});
-
-test('the Models settings patch uses provider instances and removes DeepSeek-specific onboarding', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[8];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /ProviderInstancesSection/u);
-  assert.match(text, /saveProviderInstance/u);
-  assert.match(text, /No providers configured/u);
-  assert.match(text, /deleted file mode 100644[\s\S]*DeepSeekOnboardingDialog\.tsx/u);
-  assert.deepEqual(patch.affectedModules, [
-    '@deepseek-ai/dsh-api-remotes',
-    '@deepseek-ai/dsh-client-ui-settings-models',
-  ]);
-});
-
-test('the SEA client-module patch follows launcher-generated package proxies', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[10];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /moduleFallback\?\.targets\?\.\['\.\/client'\]/u);
-  assert.match(text, /this\.nearestPackage\(fallback, packageName\)/u);
-  assert.match(text, /follows a packaged module proxy to its virtual client bundle metadata/u);
-  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-client-modules']);
-});
-
-test('the pi-ai accounting patch delegates monetary provenance to provider integrations', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[11];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /mapAccounting\?:/u);
-  assert.match(text, /optional `accounting`/u);
-  assert.match(text, /type: 'accounting'/u);
-  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-llm-pi-ai']);
-});
-
-test('the preset fallback patch keeps retired ids out of the roster', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[9];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /fallbacks: z\.dict\(z\.string\(\)\)\.default\(\{\}\)/u);
-  assert.match(text, /presets\.find\(preset => preset\.id === this\.config\.fallbacks\?\.\[wanted\]\)/u);
-  assert.match(text, /some\(preset => preset\.id === 'retired'\)\)\.toBe\(false\)/u);
-  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-agent-presets']);
-});
-
-test('the downstream Client patch stays outside DSH Agent and Session ownership', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[0];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /packages\/api\/client-runtime\/src\/index\.ts/);
-  assert.match(text, /packages\/api\/gateway\/src\/client\/stream-client\.ts/);
-  assert.doesNotMatch(text, /packages\/core\/(?:agent|agent-loop|session)\/src/);
-  assert.equal(patch.upstreamDiscussion, null);
+  const { patch, text } = await patchText(manifest, 'node-client-object-runtime');
+  assert.match(text, /packages\/api\/client-runtime\/src\/index\.ts/u);
+  assert.match(text, /packages\/api\/gateway\/src\/client\/stream-client\.ts/u);
+  assert.doesNotMatch(text, /packages\/core\/(?:agent|agent-loop|session)\/src/u);
   assert.deepEqual(patch.affectedModules, [
     '@deepseek-ai/dsh-api-client-runtime',
     '@deepseek-ai/dsh-api-gateway/client',
@@ -111,88 +48,43 @@ test('the downstream Client patch stays outside DSH Agent and Session ownership'
   assert.equal(DSH_RUNTIME_ROOT.endsWith('/runtime/dsh'), true);
 });
 
-test('the DSH executable closure patch admits only its required title package', async () => {
+test('the model runtime patch carries persistence, migration, accounting, and provider contracts together', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[1];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /python\/sdk-runtime\/package\.json/);
-  assert.match(text, /@deepseek-ai\/dsh-session-title-llm/);
-  assert.doesNotMatch(text, /packages\/.*\/src\//);
-});
-
-test('the SEA compatibility patch retains directory validation for preset candidates', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[2];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /packages\/preset\/agent-presets\/src\/discovery\.ts/);
-  assert.match(text, /await isDirectory\(directory\)/);
-  assert.doesNotMatch(text, /packages\/(?:core\/agent|core\/agent-loop|core\/session)\/src/);
-});
-
-test('the model cost patch persists validated accounting and projects coverage', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[4];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /interface ModelCallAccounting/);
-  assert.match(text, /type: 'accounting'/);
-  assert.match(text, /accounting\?: ModelCallAccounting/);
-  assert.match(text, /key: 'modelCost'/);
-  assert.match(text, /unaccountedTurns/);
-  assert.match(text, /accounting disagrees with its embedded stream/);
-  assert.equal(patch.upstreamDiscussion, null);
-  assert.deepEqual(patch.affectedModules, [
-    '@deepseek-ai/dsh-headless',
-    '@deepseek-ai/dsh-agent-loop',
-    '@deepseek-ai/dsh-session',
-    '@deepseek-ai/dsh-llm',
-    '@deepseek-ai/dsh-token-meter',
-    '@deepseek-ai/dsh-session-persistence-jsonl',
-    '@deepseek-ai/dsh-tool-cordis',
-  ]);
-});
-
-test('the model capabilities patch projects catalog fields without core ownership', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[3];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /packages\/api\/session-controller\/src\/types\.ts/);
-  assert.match(text, /inputModalities/);
-  assert.match(text, /contextWindow/);
-  assert.doesNotMatch(text, /^diff --git a\/packages\/core\/(?:agent|agent-loop|session)\/src/m);
-  assert.equal(patch.upstreamDiscussion, null);
-  assert.deepEqual(patch.affectedModules, [
-    '@deepseek-ai/dsh-api-session-controller',
-    '@deepseek-ai/dsh-tool-cordis',
-  ]);
-});
-
-test('the Turn accounting patch carries its runtime and documentation contracts together', async () => {
-  const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[5];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
-  assert.match(text, /readonly scope: 'call' \| 'turn'/u);
-  assert.match(text, /turnId\?: LlmTurnId/u);
-  assert.match(text, /type: 'status'/u);
+  const { text } = await patchText(manifest, 'companion-model-runtime-semantics');
+  assert.match(text, /interface ModelCallAccounting/u);
   assert.match(text, /statuses\?: readonly TimedModelStatus\[\]/u);
-  assert.match(text, /"symbol": "TimedModelStatus"/u);
-  assert.match(text, /docs\/subsystems\/llm-streaming\.md/u);
-  assert.match(text, /docs\/persistence-catalog\.md/u);
+  assert.match(text, /legacy accounting requires a usage or finish chunk/u);
+  assert.match(text, /2026-09-25-assistant-accounting-status\.md/u);
+  assert.match(text, /interface LlmProviderFamily/u);
+  assert.match(text, /mapAccounting\?:/u);
+  assert.match(text, /turnId\?: LlmTurnId/u);
+  assert.match(text, /latestReleasedVersion: 4/u);
+  assert.doesNotMatch(text, /ProviderInstancesSection/u);
 });
 
-test('the manual compaction route patch carries its API, generator, and documentation together', async () => {
+test('the manual compaction patch routes one summary call without mutating selection', async () => {
   const manifest = await loadUpstreamManifest();
-  const patch = manifest.patches[6];
-  assert.ok(patch);
-  const text = await readFile(new URL(`../runtime/dsh/${patch.file}`, import.meta.url), 'utf8');
+  const { text } = await patchText(manifest, 'explicit-manual-compaction-route');
   assert.match(text, /interface ManualCompactionTarget/u);
   assert.match(text, /--provider <id> --model <id>/u);
   assert.match(text, /target\?: ManualCompactionTarget/u);
-  assert.match(text, /scripts\/gen-cordis-catalog\.ts/u);
   assert.match(text, /docs\/subsystems\/compaction\.md/u);
-  assert.match(text, /2026-07-30-queued-manual-compaction\.md/u);
+});
+
+test('the preset fallback patch keeps retired ids out of the roster', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { patch, text } = await patchText(manifest, 'agent-preset-fallbacks');
+  assert.match(text, /fallbacks: z\.dict\(z\.string\(\)\)\.default\(\{\}\)/u);
+  assert.match(text, /definitionFor\(id: string\)/u);
+  assert.match(text, /some\(row => row\.id === 'retired'\)\)\.toBe\(false\)/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-agent-preset-registry']);
+});
+
+test('the executable patch compresses the existing enhanced SEA closure', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { patch, text } = await patchText(manifest, 'compress-enhanced-sea-assets');
+  assert.match(text, /'--compress',\n\+      'Zstd'/u);
+  assert.match(text, /pkg --sea --compress Zstd/u);
+  assert.doesNotMatch(text, /node2[5-9]/u);
+  assert.deepEqual(patch.affectedModules, ['scripts/build-exe-for-python-sdk']);
 });

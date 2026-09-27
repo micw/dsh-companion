@@ -131,8 +131,9 @@ export async function installPayload(payload: string, globalStorage: string, ext
   try {
     await cp(payload, staging, { recursive: true, errorOnExist: true, force: false });
     await chmod(staging, 0o700);
+    for (const directory of await listPayloadDirectories(staging)) await chmod(join(staging, ...directory.split('/')), 0o700);
     for (const artifact of manifest.artifacts) {
-      await chmod(join(staging, artifact.file), artifact.executable ? 0o700 : 0o600);
+      await chmod(join(staging, ...artifact.file.split('/')), artifact.executable ? 0o700 : 0o600);
     }
     await chmod(join(staging, 'runtime-manifest.json'), 0o600);
     await verifyPayload(staging);
@@ -255,7 +256,8 @@ async function startSupervisor(
   throw new Error('Managed DSH runtime did not become ready', { cause: lastError });
 }
 
-async function ensureManagedProfile(dataHome: string, profileBundles: readonly string[]): Promise<void> {
+/** Refreshes managed composition metadata without replacing the user's profile patch. */
+export async function ensureManagedProfile(dataHome: string, profileBundles: readonly string[]): Promise<void> {
   const profile = join(dataHome, 'profiles', MANAGED_PROFILE);
   await mkdir(profile, { recursive: true, mode: 0o700 });
   await writeJsonAtomic(join(profile, 'package.json'), {
@@ -269,7 +271,11 @@ async function ensureManagedProfile(dataHome: string, profileBundles: readonly s
       },
     },
   });
-  await writeFile(join(profile, 'cordis.patch.yml'), '[]\n', { mode: 0o600 });
+  try {
+    await writeFile(join(profile, 'cordis.patch.yml'), '[]\n', { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+  }
 }
 
 /** Validates one closed runtime payload and every declared artifact digest. */
@@ -298,14 +304,14 @@ export async function verifyPayload(root: string): Promise<RuntimeManifest> {
   const dsh = parseDshProvenance(value.dsh);
   const artifacts: RuntimeArtifact[] = [];
   for (const item of value.artifacts) {
-    if (!isRecord(item) || typeof item.file !== 'string' || !isSafeFileName(item.file)
+    if (!isRecord(item) || typeof item.file !== 'string' || !isSafeRelativePath(item.file)
       || !Number.isSafeInteger(item.bytes) || Number(item.bytes) < 0
       || typeof item.sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(item.sha256)
       || typeof item.executable !== 'boolean' || names.has(item.file)) {
       throw new Error('Invalid DSH Companion runtime artifact declaration');
     }
     names.add(item.file);
-    const bytes = await readFile(join(root, item.file));
+    const bytes = await readFile(join(root, ...item.file.split('/')));
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (bytes.byteLength !== item.bytes || digest !== item.sha256) {
       throw new Error(`DSH Companion runtime artifact integrity failed: ${item.file}`);
@@ -315,9 +321,9 @@ export async function verifyPayload(root: string): Promise<RuntimeManifest> {
   for (const required of [value.launch.executable, 'supervisor.mjs', 'client-runtime.js']) {
     if (!names.has(required)) throw new Error(`DSH Companion runtime omits ${required}`);
   }
-  const entries = await readdir(root, { withFileTypes: true });
   const expected = new Set(['runtime-manifest.json', ...names]);
-  if (entries.some((entry) => !entry.isFile() || !expected.has(entry.name)) || entries.length !== expected.size) {
+  const files = await listPayloadFiles(root);
+  if (files.some(file => !expected.has(file)) || files.length !== expected.size) {
     throw new Error('DSH Companion runtime payload contains undeclared files');
   }
   return {
@@ -477,6 +483,31 @@ async function exists(path: string): Promise<boolean> {
 
 function isSafeFileName(value: string): boolean {
   return value.length > 0 && !value.includes('/') && !value.includes('\\') && value !== '.' && value !== '..';
+}
+
+function isSafeRelativePath(value: string): boolean {
+  return !value.includes('\\') && value.split('/').every(isSafeFileName);
+}
+
+async function listPayloadFiles(root: string, prefix = ''): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(join(root, ...prefix.split('/').filter(Boolean)), { withFileTypes: true })) {
+    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...await listPayloadFiles(root, path));
+    else if (entry.isFile()) files.push(path);
+    else throw new Error('DSH Companion runtime payload contains an unsupported filesystem entry');
+  }
+  return files;
+}
+
+async function listPayloadDirectories(root: string, prefix = ''): Promise<string[]> {
+  const directories: string[] = [];
+  for (const entry of await readdir(join(root, ...prefix.split('/').filter(Boolean)), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    directories.push(path, ...await listPayloadDirectories(root, path));
+  }
+  return directories;
 }
 
 function isGitHubUrl(value: string): boolean {

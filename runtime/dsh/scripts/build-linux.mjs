@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
@@ -65,9 +65,14 @@ try {
   const executableName = 'dsh';
   const sourceExecutable = join(prepared, 'dist-exe', 'deepseek-harness-sdk-runtime-linux-x64');
   const sourceRipgrep = `${sourceExecutable}-rg`;
+  const sourceOffice = `${sourceExecutable}-office`;
+  const sourceResources = join(prepared, 'dist-exe', 'linux-x64');
+  await removeCaseInsensitiveTerminfoAliases(sourceResources);
   const artifacts = [
     await copyArtifact(sourceExecutable, join(output, executableName), true),
     await copyArtifact(sourceRipgrep, join(output, 'dsh-rg'), true),
+    ...await copyArtifactTree(sourceOffice, join(output, 'dsh-office'), output),
+    ...await copyArtifactTree(sourceResources, join(output, 'linux-x64'), output),
     await copyArtifact(clientBundle, join(output, 'client-runtime.js'), false),
     await copyArtifact(
       resolve(import.meta.dirname, '../../../vscode/runtime/supervisor.mjs'),
@@ -129,6 +134,70 @@ async function copyArtifact(from, to, executable) {
   };
 }
 
+async function copyArtifactTree(from, to, payloadRoot) {
+  await cp(from, to, { recursive: true, errorOnExist: true, force: false });
+  const artifacts = [];
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
+      if (!entry.isFile()) throw new Error(`Runtime sidecar contains an unsupported entry: ${path}`);
+      const info = await stat(path);
+      const bytes = await readFile(path);
+      artifacts.push({
+        file: relative(payloadRoot, path).split('\\').join('/'),
+        bytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        executable: (info.mode & 0o111) !== 0,
+      });
+    }
+  };
+  await visit(to);
+  return artifacts;
+}
+
+async function removeCaseInsensitiveTerminfoAliases(resources) {
+  const root = join(resources, 'primary-runtime', 'dependencies', 'python', 'share', 'terminfo');
+  try {
+    if (!(await stat(root)).isDirectory()) return;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  const files = [];
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) files.push(path);
+      else throw new Error(`Terminfo tree contains an unsupported entry: ${path}`);
+    }
+  };
+  await visit(root);
+  const groups = new Map();
+  for (const path of files) {
+    const key = relative(root, path).toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), path]);
+  }
+  for (const paths of groups.values()) {
+    if (paths.length < 2) continue;
+    paths.sort((left, right) => {
+      const leftRelative = relative(root, left);
+      const rightRelative = relative(root, right);
+      const leftLower = leftRelative === leftRelative.toLowerCase();
+      const rightLower = rightRelative === rightRelative.toLowerCase();
+      return Number(rightLower) - Number(leftLower) || leftRelative.localeCompare(rightRelative);
+    });
+    for (const duplicate of paths.slice(1)) {
+      // VSIX paths are case-insensitive even for a Linux-only target; keep the conventional lowercase terminfo name.
+      await rm(duplicate);
+    }
+  }
+}
+
 async function bundleClientRuntime(prepared, outfile) {
   const esbuild = await import(pathToFileURL(resolve(
     import.meta.dirname,
@@ -162,6 +231,20 @@ async function stageCompanionPackages(prepared, providerRoots) {
     }
     await stagePackage(providerRoot, join(destinationRoot, sourceManifest.name.split('/')[1]));
     profileBundles.push(sourceManifest.name);
+  }
+  for (const entry of await readdir(destinationRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifestPath = join(destinationRoot, entry.name, 'package.json');
+    const packageManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    let changed = false;
+    for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const name of Object.keys(packageManifest[section] ?? {})) {
+        if (!name.startsWith('@dsh-companion/')) continue;
+        packageManifest[section][name] = 'workspace:*';
+        changed = true;
+      }
+    }
+    if (changed) await writeFile(manifestPath, `${JSON.stringify(packageManifest, null, 2)}\n`);
   }
   const cliManifestPath = join(prepared, 'apps', 'cli', 'package.json');
   const cliManifest = JSON.parse(await readFile(cliManifestPath, 'utf8'));

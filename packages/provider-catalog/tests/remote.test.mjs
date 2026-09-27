@@ -17,8 +17,8 @@ test('publishes strict list and cancellable refresh Remote descriptors', () => {
     },
   ])
   const [list, refresh] = remote.descriptors
-  assert.equal(list.result.schema.safeParse([]).success, true)
-  assert.equal(list.result.schema.safeParse([{ provider: 'x' }]).success, false)
-  assert.equal(refresh.parameters[0].codec.schema.safeParse('codex-wrapper-advanced').success, true)
-  assert.equal(refresh.parameters[0].codec.schema.safeParse(1).success, false)
+  assert.equal(list.result.create().safeParse([]).success, true)
+  assert.equal(list.result.create().safeParse([{ provider: 'x' }]).success, false)
+  assert.equal(refresh.parameters[0].codec.create().safeParse('codex-wrapper-advanced').success, true)
+  assert.equal(refresh.parameters[0].codec.create().safeParse(1).success, false)
 })
