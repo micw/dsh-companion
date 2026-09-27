@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   DSH_ORIGIN,
+  DshClient,
   PACKAGED_DSH_ORIGIN,
   TurnStats,
   advanceContextPressure,
@@ -57,6 +58,14 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /type: 'loadProviderSettings', requestId/);
   assert.match(dshClient, /callCanonicalRemote\(graph, 'llm', 'listProviderFamilies'\)/);
   assert.match(dshClient, /'llm',\s*'saveProviderInstance'/);
+  assert.match(dshClient, /'llm', 'deleteProviderInstance', familyId, instanceId/);
+  assert.match(dshClient, /families: families\.map\(family =>/);
+  assert.match(script, /`Add \$\{family\.name\} instance`/);
+  assert.match(script, /type: 'createProviderInstance'/);
+  assert.match(script, /type: 'deleteProviderInstance'/);
+  assert.match(script, /provider\.instanceId === undefined \? \{\} : \{ displayName: draft\.displayName \}/);
+  assert.match(extension, /isCreateProviderInstanceMessage/);
+  assert.match(extension, /isDeleteProviderInstanceMessage/);
   assert.match(dshClient, /current\.instanceId === undefined/);
   assert.doesNotMatch(dshClient, /removeLegacyOpenRouterProfile|restoreLegacyOpenRouterProfile/);
   assert.match(script, /testsConnection \? 'Save & Test' : 'Save'/);
@@ -708,6 +717,28 @@ test('a fresh draft derives its pending permission from the DSH settings schema'
     ],
     currentValue: 'workspace-write',
   });
+});
+
+test('a fresh draft stages a selected permission without creating a Session', async () => {
+  const selections = [];
+  const selection = {
+    options: [
+      { value: 'read-only', name: 'Read Only' },
+      { value: 'workspace-write', name: 'Workspace Write' },
+    ],
+    currentValue: 'workspace-write',
+  };
+  const client = new DshClient(undefined, {
+    permissionSelection(value) { selections.push(value); },
+  }, {
+    default: { provider: 'provider', model: 'model' },
+    routableProviders: ['provider'],
+    groups: [],
+    failures: [],
+  }, {}, selection);
+  await client.selectPermission('read-only');
+  assert.equal(client.sessionId, undefined);
+  assert.deepEqual(selections, [{ ...selection, currentValue: 'read-only' }]);
 });
 
 test('model selection restores from DSH projections and rejects stale cross-stream baselines', () => {

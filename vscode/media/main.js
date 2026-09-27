@@ -27,6 +27,7 @@ const providerSettingsBackdrop = document.getElementById('provider-settings-back
 const providerSettingsClose = document.getElementById('provider-settings-close');
 const providerSettingsSearch = document.getElementById('provider-settings-search');
 const providerSettingsFilter = document.getElementById('provider-settings-filter');
+const providerFamilyActions = document.getElementById('provider-family-actions');
 const providerSettingsStatus = document.getElementById('provider-settings-status');
 const providerSettingsList = document.getElementById('provider-settings-list');
 const permissionControl = document.getElementById('permission-control');
@@ -105,6 +106,9 @@ let providerSettingsReturnFocus;
 let providerSettingsRequestId = 0;
 let providerSettingsLoadTimer;
 const providerSettingsDrafts = new Map();
+const providerInstanceDrafts = new Map();
+const providerInstanceCreating = new Set();
+const providerInstanceDeleting = new Set();
 const providerSettingsSaving = new Set();
 const providerModelSaving = new Set();
 const providerModelsSaving = new Set();
@@ -452,10 +456,15 @@ function applyHostMessage(message) {
     providerSettingsErrors.clear();
     for (const provider of message.snapshot.providers) {
       providerSettingsDrafts.set(provider.id, {
+        displayName: provider.name,
         enabled: provider.enabled,
         baseURL: provider.baseURL ?? '',
         apiKey: '',
       });
+    }
+    for (const [familyId, draft] of providerInstanceDrafts) {
+      const family = message.snapshot.families.find(candidate => candidate.id === familyId);
+      if (family !== undefined && family.instanceCount > draft.initialCount) providerInstanceDrafts.delete(familyId);
     }
     renderProviderSettings();
     renderModelTrigger();
@@ -482,6 +491,26 @@ function applyHostMessage(message) {
     if (typeof message.provider !== 'string') return;
     if (message.value === true) providerSettingsSaving.add(message.provider);
     else providerSettingsSaving.delete(message.provider);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerInstanceCreating') {
+    if (typeof message.family !== 'string') return;
+    if (message.value === true) providerInstanceCreating.add(message.family);
+    else providerInstanceCreating.delete(message.family);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerInstanceCreateFailed') {
+    if (typeof message.family !== 'string' || typeof message.text !== 'string') return;
+    providerSettingsErrors.set(`create:${message.family}`, message.text);
+    renderProviderSettings();
+    return;
+  }
+  if (message.type === 'providerInstanceDeleting') {
+    if (typeof message.provider !== 'string') return;
+    if (message.value === true) providerInstanceDeleting.add(message.provider);
+    else providerInstanceDeleting.delete(message.provider);
     renderProviderSettings();
     return;
   }
@@ -1345,6 +1374,7 @@ function renderProviderSettings() {
   if (providerSettingsModal.hidden) return;
   const previousScrollTop = providerSettingsList.scrollTop;
   providerSettingsList.replaceChildren();
+  providerFamilyActions.replaceChildren();
   providerSettingsStatus.dataset.kind = '';
   if (providerSettingsLoading && providerSettingsSnapshot === undefined) {
     providerSettingsStatus.textContent = 'Loading providers…';
@@ -1360,6 +1390,28 @@ function renderProviderSettings() {
     ? 'Credentials are stored by DSH and are never read back.'
     : 'The current DSH settings provider is read-only.';
   providerSettingsStatus.dataset.kind = providerSettingsSnapshot.writable ? '' : 'warning';
+  for (const family of providerSettingsSnapshot.families) {
+    const atLimit = family.maxInstances !== null && family.instanceCount >= family.maxInstances;
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.textContent = `Add ${family.name} instance`;
+    add.disabled = !providerSettingsSnapshot.writable || atLimit || providerInstanceDrafts.has(family.id);
+    add.title = atLimit ? `Maximum of ${String(family.maxInstances)} instances reached` : `Add ${family.name}`;
+    add.addEventListener('click', () => {
+      providerInstanceDrafts.set(family.id, {
+        displayName: family.name,
+        enabled: true,
+        baseURL: '',
+        apiKey: '',
+        initialCount: family.instanceCount,
+      });
+      providerSettingsErrors.delete(`create:${family.id}`);
+      renderProviderSettings();
+    });
+    providerFamilyActions.append(add);
+    const createDraft = providerInstanceDrafts.get(family.id);
+    if (createDraft !== undefined) providerSettingsList.append(providerInstanceDraftCard(family, createDraft));
+  }
   const query = providerSettingsSearch.value.trim().toLocaleLowerCase();
   const filter = providerSettingsFilter.value;
   for (const provider of providerSettingsSnapshot.providers) {
@@ -1376,13 +1428,72 @@ function renderProviderSettings() {
   providerSettingsList.scrollTop = previousScrollTop;
 }
 
+function providerInstanceDraftCard(family, draft) {
+  const creating = providerInstanceCreating.has(family.id);
+  const card = document.createElement('article');
+  card.className = 'provider-settings-card';
+  const title = document.createElement('h3');
+  title.textContent = `New ${family.name} instance`;
+  const form = document.createElement('form');
+  form.className = 'provider-settings-form';
+  form.append(providerSettingsField('Display name', 'text', draft.displayName, creating, (value) => {
+    draft.displayName = value;
+  }, true));
+  form.append(providerSettingsField('API URL · optional', 'url', draft.baseURL, creating, (value) => {
+    draft.baseURL = value;
+  }, false));
+  form.append(providerSettingsField('API key', 'password', draft.apiKey, creating, (value) => {
+    draft.apiKey = value;
+  }, draft.enabled, 'Enter API key'));
+  const actions = document.createElement('div');
+  actions.className = 'provider-settings-actions';
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.disabled = creating;
+  save.textContent = creating ? 'Saving & testing…' : 'Save & Test';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.disabled = creating;
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => {
+    providerInstanceDrafts.delete(family.id);
+    providerSettingsErrors.delete(`create:${family.id}`);
+    renderProviderSettings();
+  });
+  actions.append(save, cancel);
+  form.append(actions);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    providerSettingsErrors.delete(`create:${family.id}`);
+    vscode.postMessage({
+      type: 'createProviderInstance',
+      family: family.id,
+      displayName: draft.displayName,
+      enabled: draft.enabled,
+      ...(draft.baseURL.trim() === '' ? {} : { baseURL: draft.baseURL }),
+      ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
+    });
+  });
+  card.append(title, form);
+  const error = providerSettingsErrors.get(`create:${family.id}`);
+  if (error !== undefined) {
+    const failure = document.createElement('p');
+    failure.className = 'provider-settings-error';
+    failure.setAttribute('role', 'alert');
+    failure.textContent = error;
+    card.append(failure);
+  }
+  return card;
+}
+
 function providerSettingsCard(provider, visibleModels) {
   const draft = providerSettingsDrafts.get(provider.id) ?? {
-    enabled: provider.enabled, baseURL: provider.baseURL ?? '', apiKey: '',
+    displayName: provider.name, enabled: provider.enabled, baseURL: provider.baseURL ?? '', apiKey: '',
   };
   providerSettingsDrafts.set(provider.id, draft);
   const saving = providerSettingsSaving.has(provider.id);
-  const disabled = !providerSettingsSnapshot.writable || saving;
+  const deleting = providerInstanceDeleting.has(provider.id);
+  const disabled = !providerSettingsSnapshot.writable || saving || deleting;
   const card = document.createElement('article');
   card.className = 'provider-settings-card';
   const head = document.createElement('div');
@@ -1414,11 +1525,17 @@ function providerSettingsCard(provider, visibleModels) {
   });
   enabledLabel.append(enabled, document.createTextNode(' Provider enabled'));
   form.append(enabledLabel);
+  if (provider.instanceId !== undefined) {
+    form.append(providerSettingsField('Display name', 'text', draft.displayName, disabled, (value) => {
+      draft.displayName = value;
+      providerSettingsSuccess.delete(provider.id);
+    }, true));
+  }
   if (provider.kind === 'wrapper' || provider.kind === 'dynamic') {
     const serviceUrlField = providerSettingsField(provider.kind === 'dynamic' ? 'API URL' : 'Service URL', 'url', draft.baseURL, disabled, (value) => {
       draft.baseURL = value;
       providerSettingsSuccess.delete(provider.id);
-    }, draft.enabled);
+    }, provider.kind === 'wrapper' && draft.enabled);
     serviceUrlInput = serviceUrlField.querySelector('input');
     form.append(serviceUrlField);
   }
@@ -1444,6 +1561,20 @@ function providerSettingsCard(provider, visibleModels) {
     ? testsConnection ? 'Saving & testing…' : 'Saving…'
     : testsConnection ? 'Save & Test' : 'Save';
   actions.append(save);
+  if (provider.familyId !== undefined && provider.instanceId !== undefined) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.disabled = disabled;
+    remove.textContent = deleting ? 'Deleting…' : 'Delete';
+    remove.addEventListener('click', () => vscode.postMessage({
+      type: 'deleteProviderInstance',
+      family: provider.familyId,
+      instance: provider.instanceId,
+      provider: provider.id,
+      displayName: provider.name,
+    }));
+    actions.append(remove);
+  }
   form.append(actions);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -1452,6 +1583,7 @@ function providerSettingsCard(provider, visibleModels) {
     vscode.postMessage({
       type: 'saveProviderSettings',
       provider: provider.id,
+      ...(provider.instanceId === undefined ? {} : { displayName: draft.displayName }),
       enabled: draft.enabled,
       ...(provider.kind === 'wrapper' || provider.kind === 'dynamic' ? { baseURL: draft.baseURL } : {}),
       ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
@@ -2607,11 +2739,22 @@ function isSessionInformation(value) {
 function providerSettingsSnapshotError(value) {
   if (!isRecord(value) || typeof value.writable !== 'boolean'
     || !Number.isSafeInteger(value.modelPolicyRevision) || value.modelPolicyRevision < 0
+    || !Array.isArray(value.families) || value.families.length > 1_000
     || !Array.isArray(value.providers) || value.providers.length > 1_000) return 'invalid snapshot header';
+  const familyIds = new Set();
+  for (const family of value.families) {
+    if (!isRecord(family) || typeof family.id !== 'string' || family.id.length === 0 || familyIds.has(family.id)
+      || typeof family.name !== 'string' || family.name.length === 0
+      || (family.maxInstances !== null && (!Number.isSafeInteger(family.maxInstances) || family.maxInstances <= 0))
+      || !Number.isSafeInteger(family.instanceCount) || family.instanceCount < 0
+      || (family.maxInstances !== null && family.instanceCount > family.maxInstances)) return 'invalid provider family';
+    familyIds.add(family.id);
+  }
   const ids = new Set();
   for (const provider of value.providers) {
     if (!isRecord(provider) || typeof provider.id !== 'string' || provider.id.length === 0 || ids.has(provider.id)
       || (provider.familyId !== undefined && (typeof provider.familyId !== 'string' || provider.familyId.length === 0))
+      || (provider.familyId !== undefined && !familyIds.has(provider.familyId))
       || (provider.instanceId !== undefined && (typeof provider.instanceId !== 'string' || provider.instanceId.length === 0))
       || typeof provider.name !== 'string' || !['native', 'catalog', 'dynamic', 'wrapper'].includes(provider.kind)
       || typeof provider.active !== 'boolean' || typeof provider.enabled !== 'boolean'
