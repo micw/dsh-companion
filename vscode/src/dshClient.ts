@@ -373,6 +373,7 @@ interface CanonicalState {
 interface SettingsNamespaceSnapshot {
   readonly value: Record<string, unknown>;
   readonly revision: number;
+  readonly schema: unknown;
 }
 
 interface SettingsSnapshot {
@@ -492,9 +493,48 @@ export function parseSettingsDescribe(value: unknown): SettingsSnapshot {
       || namespaces.has(item.ns)) {
       throw new Error('DSH returned an invalid settings namespace');
     }
-    namespaces.set(item.ns, { value: structuredClone(item.value), revision });
+    namespaces.set(item.ns, {
+      value: structuredClone(item.value),
+      revision,
+      schema: structuredClone(item.schema),
+    });
   }
   return { writable: value.writable, namespaces };
+}
+
+/** Derives the DSH-owned default permission picker before a draft has a Session. */
+export function permissionDefaultSelection(settings: SettingsSnapshot): DshPermissionSelection | undefined {
+  const namespace = settings.namespaces.get('permission');
+  if (namespace === undefined) return undefined;
+  const currentValue = namespace.value.defaultPreset;
+  const schema = namespace.schema;
+  if (typeof currentValue !== 'string' || currentValue.length === 0 || !isRecord(schema)
+    || !Number.isSafeInteger(schema.uid) || !isRecord(schema.refs)) {
+    throw new Error('DSH returned an invalid permission settings description');
+  }
+  const refs = schema.refs;
+  const root = refs[String(schema.uid)];
+  const fieldRef = isRecord(root) && root.type === 'object' && isRecord(root.dict)
+    ? root.dict.defaultPreset
+    : undefined;
+  const field = Number.isSafeInteger(fieldRef) ? refs[String(fieldRef)] : undefined;
+  const choiceRefs = isRecord(field) && field.type === 'union' && Array.isArray(field.list)
+    ? field.list
+    : Number.isSafeInteger(fieldRef) ? [fieldRef] : [];
+  const options = choiceRefs.map((ref) => {
+    const choice = Number.isSafeInteger(ref) ? refs[String(ref)] : undefined;
+    if (!isRecord(choice) || choice.type !== 'const' || typeof choice.value !== 'string'
+      || choice.value.length === 0) throw new Error('DSH returned an invalid permission preset choice');
+    const description = isRecord(choice.meta) && typeof choice.meta.description === 'string'
+      ? choice.meta.description
+      : undefined;
+    return {
+      value: choice.value,
+      name: description ?? choice.value,
+      ...(description === undefined ? {} : { description }),
+    };
+  });
+  return parsePermissionSelection({ options, currentValue });
 }
 
 function parseActiveProviders(value: unknown): ReadonlySet<string> {
@@ -1062,17 +1102,20 @@ export class DshClient {
   private sessionRunning = false;
   private sessionCreation: Promise<void> | undefined;
   private pendingModelSelection: DshModelSelection | undefined;
+  private pendingPermissionPreset: string | undefined;
   private canonical: CanonicalState | undefined;
 
   private constructor(
     private readonly cwd: string | undefined,
     private readonly sink: DshOutputSink,
     modelCatalogValue: DshModelCatalog,
+    permissionSelectionValue: DshPermissionSelection | undefined,
     canonical: CanonicalState,
   ) {
     this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
     this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
+    this.permissionSelectionValue = permissionSelectionValue;
     this.canonical = canonical;
   }
 
@@ -1122,9 +1165,14 @@ export class DshClient {
         graph.remote as unknown as Parameters<typeof mountCompanionProviderRemotes>[0],
       );
       disposeProviderRemotes = mountedProviderRemotes;
-      const catalogResult = await callCanonicalRemote(graph, 'session', 'modelCatalog');
+      const [catalogResult, settingsResult] = await Promise.all([
+        callCanonicalRemote(graph, 'session', 'modelCatalog'),
+        callCanonicalRemote(graph, 'settings', 'describe'),
+      ]);
       const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
-      const client = new DshClient(cwd, sink, modelCatalog, {
+      const settings = parseSettingsDescribe(unwrapCanonicalResult(settingsResult, 'settings.describe'));
+      const permissionSelection = permissionDefaultSelection(settings);
+      const client = new DshClient(cwd, sink, modelCatalog, permissionSelection, {
         graph,
         disposers: [],
         disposeProviderRemotes: mountedProviderRemotes,
@@ -1133,7 +1181,7 @@ export class DshClient {
       sink.modelCatalog(modelCatalog);
       sink.modelSelection(modelCatalog.default);
       sink.compactAvailable(false);
-      sink.permissionSelection(undefined);
+      sink.permissionSelection(permissionSelection);
       if (restoredSessionId !== undefined) {
         if (!canonicalSessionIds(graph.sessions.list.getSnapshot()).has(restoredSessionId)) {
           throw new Error(`DSH Session ${restoredSessionId} is not available`);
@@ -1386,6 +1434,16 @@ export class DshClient {
       || !selection.options.some(option => option.value === preset)) {
       throw new Error('The selected permission preset is not available');
     }
+    if (this.sessionIdValue === undefined) {
+      this.pendingPermissionPreset = preset;
+      this.permissionSelectionValue = { ...selection, currentValue: preset };
+      this.sink.permissionSelection(this.permissionSelectionValue);
+      return;
+    }
+    await this.selectPermissionForSession(preset);
+  }
+
+  private async selectPermissionForSession(preset: string): Promise<void> {
     const result = await callCanonicalRemote(
       this.requireCanonical().graph, 'commands', 'execute', this.requireSessionId(), `/permission ${preset}`, [],
     );
@@ -1444,12 +1502,16 @@ export class DshClient {
   }
 
   private async ensureSession(): Promise<void> {
-    if (this.sessionIdValue !== undefined) return;
+    if (this.sessionIdValue !== undefined) {
+      await this.applyPendingPermission();
+      return;
+    }
     if (this.sessionCreation === undefined) {
       const operation = (async () => {
         const graph = this.requireCanonical().graph;
         const sessionId = await graph.sessions.create(this.cwd === undefined ? {} : { cwd: this.cwd });
         await this.attachSession(sessionId);
+        await this.applyPendingPermission();
       })();
       this.sessionCreation = operation;
       void operation.finally(() => {
@@ -1482,6 +1544,14 @@ export class DshClient {
     }
     this.sink.compactAvailable(commands.some((command) => command.name === 'compact'));
     await this.openCanonical();
+  }
+
+  private async applyPendingPermission(): Promise<void> {
+    const pendingPermission = this.pendingPermissionPreset;
+    if (pendingPermission !== undefined) {
+      await this.selectPermissionForSession(pendingPermission);
+      this.pendingPermissionPreset = undefined;
+    }
   }
 
   private validateModelSelection(selection: DshModelSelection): void {
