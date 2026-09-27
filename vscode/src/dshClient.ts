@@ -222,14 +222,23 @@ export interface DshProviderSettingsEntry {
   readonly models: readonly DshProviderSettingsModel[];
 }
 
+export interface DshProviderSettingsFamily {
+  readonly id: string;
+  readonly name: string;
+  readonly maxInstances: number | null;
+  readonly instanceCount: number;
+}
+
 export interface DshProviderSettingsSnapshot {
   readonly writable: boolean;
   readonly modelPolicyRevision: number;
+  readonly families: readonly DshProviderSettingsFamily[];
   readonly providers: readonly DshProviderSettingsEntry[];
 }
 
 export interface DshProviderSettingsUpdate {
   readonly provider: string;
+  readonly displayName?: string;
   readonly enabled: boolean;
   readonly baseURL?: string;
   readonly apiKey?: string;
@@ -727,20 +736,6 @@ function providerFamilyRows(
     const namespace = settings.namespaces.get(family.settingsNs);
     if (namespace === undefined) throw new Error(`DSH omits required settings namespace ${family.settingsNs}`);
     const owned = instances.filter(instance => instance.familyId === family.id);
-    if (owned.length === 0) {
-      rows.push({
-        id: family.id,
-        familyId: family.id,
-        name: family.displayName,
-        kind: 'dynamic',
-        active: false,
-        enabled: false,
-        credential: { ref: '', configured: false, writable: settings.writable },
-        revision: namespace.revision,
-        models: [],
-      });
-      continue;
-    }
     for (const instance of owned) {
       const profile = recordAtPath(namespace.value, instance.settingsPath);
       const catalog = catalogs.get(instance.provider);
@@ -1109,8 +1104,8 @@ export class DshClient {
     private readonly cwd: string | undefined,
     private readonly sink: DshOutputSink,
     modelCatalogValue: DshModelCatalog,
-    permissionSelectionValue: DshPermissionSelection | undefined,
     canonical: CanonicalState,
+    permissionSelectionValue?: DshPermissionSelection,
   ) {
     this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
@@ -1172,12 +1167,12 @@ export class DshClient {
       const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
       const settings = parseSettingsDescribe(unwrapCanonicalResult(settingsResult, 'settings.describe'));
       const permissionSelection = permissionDefaultSelection(settings);
-      const client = new DshClient(cwd, sink, modelCatalog, permissionSelection, {
+      const client = new DshClient(cwd, sink, modelCatalog, {
         graph,
         disposers: [],
         disposeProviderRemotes: mountedProviderRemotes,
         requestAliases: new Map(),
-      });
+      }, permissionSelection);
       sink.modelCatalog(modelCatalog);
       sink.modelSelection(modelCatalog.default);
       sink.compactAvailable(false);
@@ -1292,6 +1287,12 @@ export class DshClient {
     return {
       writable: settings.writable,
       modelPolicyRevision: settings.namespaces.get(MODEL_POLICY_NAMESPACE)?.revision ?? 0,
+      families: families.map(family => ({
+        id: family.id,
+        name: family.displayName,
+        maxInstances: family.maxInstances,
+        instanceCount: instances.filter(instance => instance.familyId === family.id).length,
+      })),
       providers: rows.map(row => ({
         ...row,
         credential: row.credential.ref.length === 0
@@ -1308,6 +1309,8 @@ export class DshClient {
     const current = before.providers.find(candidate => candidate.id === update.provider);
     if (current?.familyId !== undefined) {
       const apiKey = update.apiKey?.trim();
+      const displayName = update.displayName?.trim() ?? current.name;
+      if (displayName.length === 0) throw new Error('Provider instance display name must not be empty');
       unwrapCanonicalResult(await callCanonicalRemote(
         graph,
         'llm',
@@ -1315,7 +1318,7 @@ export class DshClient {
         current.familyId,
         {
           ...(current.instanceId === undefined ? {} : { instanceId: current.instanceId }),
-          displayName: current.name,
+          displayName,
           enabled: update.enabled,
           config: update.baseURL === undefined || update.baseURL.trim() === ''
             ? {}
@@ -1359,6 +1362,59 @@ export class DshClient {
       );
     }
     await this.refreshModelCatalog();
+    return this.providerSettings();
+  }
+
+  /** Creates and tests one new instance through its DSH-owned family controller. */
+  async createProviderInstance(
+    familyId: string,
+    draft: { readonly displayName: string; readonly enabled: boolean; readonly baseURL?: string; readonly apiKey?: string },
+  ): Promise<DshProviderSettingsSnapshot> {
+    const before = await this.providerSettings();
+    const family = before.families.find(candidate => candidate.id === familyId);
+    if (family === undefined || (family.maxInstances !== null && family.instanceCount >= family.maxInstances)) {
+      throw new Error('The requested provider family cannot create another instance');
+    }
+    const displayName = draft.displayName.trim();
+    const apiKey = draft.apiKey?.trim();
+    if (displayName.length === 0) throw new Error('Provider instance display name must not be empty');
+    unwrapCanonicalResult(await callCanonicalRemote(
+      this.requireCanonical().graph,
+      'llm',
+      'saveProviderInstance',
+      familyId,
+      {
+        displayName,
+        enabled: draft.enabled,
+        config: draft.baseURL === undefined || draft.baseURL.trim() === ''
+          ? {}
+          : { baseURL: draft.baseURL.trim() },
+        ...(apiKey === undefined || apiKey.length === 0
+          ? {}
+          : { credential: { kind: 'replace', value: apiKey } }),
+      },
+    ), 'llm.saveProviderInstance');
+    await this.refreshModelCatalog();
+    await this.publishProviderAccounts();
+    return this.providerSettings();
+  }
+
+  /** Deletes one existing instance through its DSH-owned family controller. */
+  async deleteProviderInstance(
+    familyId: string,
+    instanceId: string,
+    provider: string,
+  ): Promise<DshProviderSettingsSnapshot> {
+    const before = await this.providerSettings();
+    if (!before.providers.some(row => row.familyId === familyId
+      && row.instanceId === instanceId && row.id === provider)) {
+      throw new Error('The requested provider instance is unavailable');
+    }
+    unwrapCanonicalResult(await callCanonicalRemote(
+      this.requireCanonical().graph, 'llm', 'deleteProviderInstance', familyId, instanceId,
+    ), 'llm.deleteProviderInstance');
+    await this.refreshModelCatalog();
+    await this.publishProviderAccounts();
     return this.providerSettings();
   }
 

@@ -900,6 +900,18 @@ body {
 }
 #provider-settings-search:focus,
 #provider-settings-filter:focus { outline: 1px solid var(--vscode-focusBorder); }
+#provider-family-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 20px 0; }
+#provider-family-actions button {
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  font: inherit;
+}
+#provider-family-actions button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+#provider-family-actions button:disabled { opacity: 0.55; }
 #provider-settings-status { min-height: 34px; padding: 9px 20px; color: var(--vscode-descriptionForeground); }
 #provider-settings-status[data-kind='error'] { color: var(--vscode-errorForeground); }
 #provider-settings-status[data-kind='warning'] { color: var(--vscode-editorWarning-foreground); }
@@ -931,7 +943,7 @@ body {
   font: inherit;
 }
 .provider-settings-field input:focus { outline: 1px solid var(--vscode-focusBorder); }
-.provider-settings-actions { display: flex; grid-column: 1 / -1; align-items: end; justify-content: flex-end; }
+.provider-settings-actions { display: flex; grid-column: 1 / -1; gap: 8px; align-items: end; justify-content: flex-end; }
 .provider-settings-actions button {
   min-width: 74px;
   height: 30px;

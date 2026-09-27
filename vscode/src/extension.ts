@@ -59,11 +59,29 @@ interface LoadProviderSettingsMessage {
 interface SaveProviderSettingsMessage {
   readonly type: 'saveProviderSettings';
   readonly provider: string;
+  readonly displayName?: string;
   readonly enabled: boolean;
   readonly baseURL?: string;
   readonly apiKey?: string;
   readonly test?: boolean;
   readonly revision: number;
+}
+
+interface CreateProviderInstanceMessage {
+  readonly type: 'createProviderInstance';
+  readonly family: string;
+  readonly displayName: string;
+  readonly enabled: boolean;
+  readonly baseURL?: string;
+  readonly apiKey?: string;
+}
+
+interface DeleteProviderInstanceMessage {
+  readonly type: 'deleteProviderInstance';
+  readonly family: string;
+  readonly instance: string;
+  readonly provider: string;
+  readonly displayName: string;
 }
 
 interface SetProviderModelEnabledMessage {
@@ -294,6 +312,8 @@ function configureChatEditor(
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
     if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready, message.requestId);
     if (isSaveProviderSettingsMessage(message)) void saveProviderSettings(panel, ready, message);
+    if (isCreateProviderInstanceMessage(message)) void createProviderInstance(panel, ready, message);
+    if (isDeleteProviderInstanceMessage(message)) void deleteProviderInstance(panel, ready, message);
     if (isSetProviderModelEnabledMessage(message)) void setProviderModelEnabled(panel, ready, message);
     if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
@@ -629,6 +649,52 @@ async function saveProviderSettings(
   }
 }
 
+async function createProviderInstance(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: CreateProviderInstanceMessage,
+): Promise<void> {
+  post(panel, { type: 'providerInstanceCreating', family: message.family, value: true });
+  try {
+    const snapshot = await (await ready).createProviderInstance(message.family, message);
+    post(panel, { type: 'providerSettings', snapshot });
+  } catch (error) {
+    post(panel, {
+      type: 'providerInstanceCreateFailed', family: message.family,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerInstanceCreating', family: message.family, value: false });
+  }
+}
+
+async function deleteProviderInstance(
+  panel: vscode.WebviewPanel,
+  ready: Promise<DshClient>,
+  message: DeleteProviderInstanceMessage,
+): Promise<void> {
+  const accepted = await vscode.window.showWarningMessage(
+    `Delete provider instance “${message.displayName}”? Existing Sessions retain its route reference, but the route becomes unavailable.`,
+    { modal: true },
+    'Delete',
+  );
+  if (accepted !== 'Delete') return;
+  post(panel, { type: 'providerInstanceDeleting', provider: message.provider, value: true });
+  try {
+    const snapshot = await (await ready).deleteProviderInstance(
+      message.family, message.instance, message.provider,
+    );
+    post(panel, { type: 'providerSettings', snapshot });
+  } catch (error) {
+    post(panel, {
+      type: 'providerSettingsSaveFailed', provider: message.provider,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    post(panel, { type: 'providerInstanceDeleting', provider: message.provider, value: false });
+  }
+}
+
 async function setProviderModelEnabled(
   panel: vscode.WebviewPanel,
   ready: Promise<DshClient>,
@@ -760,15 +826,34 @@ function isSaveProviderSettingsMessage(value: unknown): value is SaveProviderSet
   if (typeof value !== 'object' || value === null || Array.isArray(value)
     || Reflect.get(value, 'type') !== 'saveProviderSettings'
     || typeof provider !== 'string' || provider.length === 0
+    || (Reflect.get(value, 'displayName') !== undefined && typeof Reflect.get(value, 'displayName') !== 'string')
     || typeof Reflect.get(value, 'enabled') !== 'boolean'
     || !Number.isSafeInteger(Reflect.get(value, 'revision')) || Reflect.get(value, 'revision') < 0
     || (Reflect.get(value, 'baseURL') !== undefined && typeof Reflect.get(value, 'baseURL') !== 'string')
     || (Reflect.get(value, 'apiKey') !== undefined && typeof Reflect.get(value, 'apiKey') !== 'string')
-    || (test !== undefined && typeof test !== 'boolean')
-    || (test === true && !['claude-wrapper-advanced', 'codex-wrapper-advanced'].includes(provider))) return false;
+    || (test !== undefined && typeof test !== 'boolean')) return false;
   return Object.keys(value).every(
-    key => ['type', 'provider', 'enabled', 'baseURL', 'apiKey', 'test', 'revision'].includes(key),
+    key => ['type', 'provider', 'displayName', 'enabled', 'baseURL', 'apiKey', 'test', 'revision'].includes(key),
   );
+}
+
+function isCreateProviderInstanceMessage(value: unknown): value is CreateProviderInstanceMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).every(key => ['type', 'family', 'displayName', 'enabled', 'baseURL', 'apiKey'].includes(key))
+    && Reflect.get(value, 'type') === 'createProviderInstance'
+    && typeof Reflect.get(value, 'family') === 'string' && Reflect.get(value, 'family').length > 0
+    && typeof Reflect.get(value, 'displayName') === 'string' && Reflect.get(value, 'displayName').trim().length > 0
+    && typeof Reflect.get(value, 'enabled') === 'boolean'
+    && (Reflect.get(value, 'baseURL') === undefined || typeof Reflect.get(value, 'baseURL') === 'string')
+    && (Reflect.get(value, 'apiKey') === undefined || typeof Reflect.get(value, 'apiKey') === 'string');
+}
+
+function isDeleteProviderInstanceMessage(value: unknown): value is DeleteProviderInstanceMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 5 && Reflect.get(value, 'type') === 'deleteProviderInstance'
+    && ['family', 'instance', 'provider', 'displayName'].every(key => (
+      typeof Reflect.get(value, key) === 'string' && Reflect.get(value, key).length > 0
+    ));
 }
 
 function isSetProviderModelEnabledMessage(value: unknown): value is SetProviderModelEnabledMessage {
@@ -929,6 +1014,7 @@ function editorHtml(
           <option value="disabled">Disabled models</option>
         </select>
       </div>
+      <div id="provider-family-actions"></div>
       <div id="provider-settings-status" role="status"></div>
       <div id="provider-settings-list"></div>
     </section>
