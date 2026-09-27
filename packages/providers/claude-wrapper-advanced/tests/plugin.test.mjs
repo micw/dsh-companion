@@ -19,7 +19,7 @@ const model = {
 }
 
 test('defaults the installed provider to disabled', () => {
-  assert.equal(Config({}).enabled, false)
+  assert.equal(Config({}).enabled.get(), false)
 })
 
 test('registers a configurable native route and loads its catalog through the generic LKG owner', async () => {
@@ -47,7 +47,7 @@ test('registers a configurable native route and loads its catalog through the ge
   ctx.provide('companionModelPolicy', { isEnabled: () => true })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {
+  const fiber = ctx.plugin({ name, inject, Config, apply }, {
     enabled: true,
     baseURL: 'https://wrapper.example/prefix',
     apiKeyEnv: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
@@ -90,7 +90,7 @@ test('keeps an unconfigured provider dormant but visible for repair', async () =
   ctx.provide('companionModelPolicy', { isEnabled: () => true })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, { enabled: true })
+  const fiber = ctx.plugin({ name, inject, Config, apply }, { enabled: true })
   await fiber
   assert.deepEqual(ctx.llm.listProviders(), [])
   assert.equal(ctx.llm.listConfigurableProviders()[0].provider, CLAUDE_WRAPPER_ADVANCED_PROVIDER)

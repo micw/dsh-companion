@@ -6,7 +6,7 @@ test('serializes chat messages, tools, images, and effort', async () => {
     { role: 'system', content: [{ type: 'text', text: 'system' }] },
     { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', attachment: { id: 'image' } }] },
     { role: 'assistant', content: [{ type: 'text', text: 'calling' }, { type: 'tool-call', id: 'call-1', name: 'weather', arguments: '{"city":"B"}' }] },
-    { role: 'user', content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: 'sunny' }] }] },
+    { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: 'sunny' }] },
   ], tools: [{ name: 'weather', description: 'Weather', parameters: { type: 'object' } }] }, { wireModel: 'claude-sonnet-5', imageUrl: async () => 'data:image/png;base64,AA==' })
   assert.equal(body.model, 'claude-sonnet-5'); assert.equal(body.reasoning_effort, 'high'); assert.equal(body.session_id, 'session-1'); assert.equal(body.cost_scope_id, 'session-1:7')
   assert.equal(body.messages[1].content[1].type, 'image_url')

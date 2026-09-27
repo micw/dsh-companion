@@ -1,6 +1,6 @@
 /** Translation from validated Claude wrapper events to DSH stream chunks. */
 import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
-import type { ModelCallAccounting, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
+import type { ModelCallAccounting, ModelStatus, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { ClaudeWireCost, ClaudeWireEvent, ClaudeWireUsage, ClaudeWireUsageReport } from './wire/types.js'
 
 export interface ClaudeStreamObservers {
@@ -13,12 +13,13 @@ export async function* translateClaudeWireStream(events: AsyncIterable<ClaudeWir
   let textOpen: number | undefined
   let text = ''
   let sawTool = false
+  const statuses: ModelStatus[] = []
   const closeText = (): StreamChunk | undefined => textOpen === undefined ? undefined : { type: 'block-end', index: textOpen, block: { type: 'text', text } }
   for await (const event of events) {
     switch (event.type) {
       case 'started': break
       case 'thinking_progress':
-        if (event.tokens > 0) yield { type: 'status', status: { kind: 'reasoning-token-progress', deltaTokens: event.tokens, basis: 'estimated' } }
+        if (event.tokens > 0) statuses.push({ kind: 'reasoning-token-progress', deltaTokens: event.tokens, basis: 'estimated' })
         break
       case 'text_delta':
         if (textOpen === undefined) { textOpen = index++; yield { type: 'block-start', index: textOpen, blockType: 'text' } }
@@ -37,8 +38,12 @@ export async function* translateClaudeWireStream(events: AsyncIterable<ClaudeWir
       case 'limit_status': observers.limitStatus?.(); break
       case 'failed': {
         const closed = closeText(); if (closed !== undefined) yield closed
-        const accounting = toVirtualAccounting(event.cost); if (accounting !== undefined) yield { type: 'accounting', accounting }
-        yield { type: 'finish', reason: { kind: 'error', failure: failureOf(event) } }
+        const accounting = toVirtualAccounting(event.cost)
+        yield {
+          type: 'finish', reason: { kind: 'error', failure: failureOf(event) },
+          ...accounting === undefined ? {} : { accounting },
+          ...statuses.length === 0 ? {} : { statuses },
+        }
         return
       }
       case 'done': {
@@ -53,9 +58,19 @@ export async function* translateClaudeWireStream(events: AsyncIterable<ClaudeWir
           }
           const closed = closeText(); if (closed !== undefined) yield closed
         }
-        const usage = toTokenUsage(event.usage); if (usage !== undefined) yield { type: 'usage', usage }
-        const accounting = toVirtualAccounting(event.cost); if (accounting !== undefined) yield { type: 'accounting', accounting }
-        yield { type: 'finish', reason: sawTool || event.stopReason === 'tool_use' ? { kind: 'tool-calls' } : event.stopReason === 'aborted' ? { kind: 'max-tokens' } : { kind: 'stop' } }
+        const usage = toTokenUsage(event.usage)
+        const accounting = toVirtualAccounting(event.cost)
+        if (usage !== undefined) yield {
+          type: 'usage', usage,
+          ...accounting === undefined ? {} : { accounting },
+          ...statuses.length === 0 ? {} : { statuses },
+        }
+        yield {
+          type: 'finish',
+          reason: sawTool || event.stopReason === 'tool_use' ? { kind: 'tool-calls' } : event.stopReason === 'aborted' ? { kind: 'max-tokens' } : { kind: 'stop' },
+          ...usage !== undefined || accounting === undefined ? {} : { accounting },
+          ...usage !== undefined || statuses.length === 0 ? {} : { statuses },
+        }
         return
       }
     }

@@ -1,6 +1,6 @@
 /** OpenAI-chat-like serialization for Claude Wrapper Advanced `/wire/v1/responses`. */
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, ImageBlock, Message, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, ImageBlock, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ClaudeWireRequest } from './types.js'
 
@@ -35,7 +35,7 @@ export async function serializeClaudeWireRequest(request: GenerateOptions, optio
   }
 }
 
-async function appendMessage(out: unknown[], message: Message, imageUrl: ClaudeWireRequestOptions['imageUrl'], signal?: AbortSignal): Promise<void> {
+async function appendMessage(out: unknown[], message: RequestMessage, imageUrl: ClaudeWireRequestOptions['imageUrl'], signal?: AbortSignal): Promise<void> {
   if (message.role === 'system') {
     out.push({ role: 'system', content: textOnly(message.content, 'system') })
     return
@@ -52,10 +52,12 @@ async function appendMessage(out: unknown[], message: Message, imageUrl: ClaudeW
     out.push({ role: 'assistant', content: text.join(''), ...toolCalls.length === 0 ? {} : { tool_calls: toolCalls } })
     return
   }
-  const results = message.content.filter((block): block is ToolResultBlock => block.type === 'tool-result')
-  if (results.length > 0) {
-    if (results.length !== message.content.length) throw new LlmError('Tool results cannot mix with user content', 'UNSUPPORTED_CONTENT')
-    for (const result of results) out.push({ role: 'tool', tool_call_id: String(result.toolCallId), content: textOnly(result.content, 'tool result') })
+  if (message.role === 'tool') {
+    out.push({ role: 'tool', tool_call_id: String(message.toolCallId), content: textOnly(message.content, 'tool result') })
+    return
+  }
+  if (message.role === 'developer') {
+    out.push({ role: 'developer', content: textOnly(message.content, 'developer') })
     return
   }
   const content: unknown[] = []

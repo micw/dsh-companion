@@ -15,9 +15,10 @@ test('maps thinking progress, reported reasoning usage, and scoped virtual cost'
     { type: 'text_delta', text: 'Hi' },
     { type: 'done', stopReason: 'end_turn', text: 'Hi', usage, cost: { totalUsd: 0.0035, scope: 'turn', coveredRequests: 2, epoch, byModel: {} } },
   ]))) chunks.push(chunk)
-  assert.deepEqual(chunks.find(c => c.type === 'status'), { type: 'status', status: { kind: 'reasoning-token-progress', deltaTokens: 40, basis: 'estimated' } })
-  assert.equal(chunks.find(c => c.type === 'usage').usage.reasoningTokens, 5)
-  assert.deepEqual(chunks.find(c => c.type === 'accounting').accounting, {
+  const settlement = chunks.find(c => c.type === 'usage')
+  assert.deepEqual(settlement.statuses, [{ kind: 'reasoning-token-progress', deltaTokens: 40, basis: 'estimated' }])
+  assert.equal(settlement.usage.reasoningTokens, 5)
+  assert.deepEqual(settlement.accounting, {
     scope: 'turn',
     costs: [{ kind: 'virtual', amount: { currency: 'USD', nanos: 3_500_000 }, source: 'claude-wrapper-advanced done.cost.total_usd; covered_requests=2', tariffVersion: `counter-epoch:${epoch}` }],
   })
@@ -61,7 +62,7 @@ test('maps retryable and terminal failures and preserves failed accounting', asy
     type: 'failed', errorType: 'cli_error', message: 'bad model', upstreamStatus: 404, retryable: false,
     cost: { totalUsd: 0.1, scope: 'call', coveredRequests: 1, epoch, byModel: {} },
   }]))) terminal.push(chunk)
-  assert.equal(terminal.find(c => c.type === 'accounting').accounting.scope, 'call')
+  assert.equal(terminal.at(-1).accounting.scope, 'call')
   assert.deepEqual(terminal.at(-1).reason.failure, { message: 'bad model', code: 'CLAUDE_WRAPPER_ERROR', status: 404 })
 })
 
