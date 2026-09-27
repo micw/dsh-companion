@@ -29,7 +29,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/dsh-settings": "0.1.5-rc.2"
+    "@deepseek-ai/dsh-settings": "0.1.7-rc.2"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "link:../../../deepseek-harness/vendor/schemastery",
@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cosmokit": "link:../../../deepseek-harness/vendor/cosmokit",
     "@deepseek-ai/dsh-settings": "link:../../../deepseek-harness/packages/settings/settings",
     "@deepseek-ai/dsh-typert-generator": "link:../../../deepseek-harness/packages/typert/generator",
     "tsdown": "^0.22.2",

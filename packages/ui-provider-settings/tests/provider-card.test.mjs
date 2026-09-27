@@ -27,8 +27,8 @@ test('registers under the provider settings namespace and reads both Host author
         return () => {}
       },
     },
-    settingsScope: settings.service,
     remote: {
+      settings: settings.service,
       credentials: {
         async set(ref, value) { credentials.push({ ref, value }); return { ok: true, value: undefined } },
       },
@@ -54,6 +54,14 @@ test('registers under the provider settings namespace and reads both Host author
   assert.equal(typeof registered.component, 'function')
   const operations = registered.options.inject()
   assert.deepEqual(await operations.load(provider), { catalog, account })
+  assert.deepEqual(await operations.loadConfiguration(), {
+    status: 'ready',
+    writable: true,
+    providerRevision: 1,
+    policyRevision: 1,
+    provider: { enabled: true, apiKeyEnv: 'CODEX_WRAPPER_ADVANCED_API_KEY' },
+    policy: { defaultModelState: 'enabled', providers: {} },
+  })
   assert.deepEqual(await operations.refresh(provider), { catalog, account })
   await operations.saveProvider(true, 'https://wrapper.example', 'new-key', 1)
   await operations.setModelEnabled(provider, 'gpt-5.6-sol', false, 1)
@@ -95,8 +103,8 @@ test('keeps a successful refresh half while reporting the other Host refusal', a
       inject(_name, register) { return register() },
       register(options) { registered = options; return () => {} },
     },
-    settingsScope: settings.service,
     remote: {
+      settings: settings.service,
       credentials: { async set() { return { ok: true, value: undefined } } },
       companionProviderCatalog: {
         async list() { return { ok: false, error: { message: 'offline' } } },
@@ -166,37 +174,28 @@ function accountSnapshot(provider) {
 
 function settingsBinder() {
   const mutations = []
-  const snapshots = {
-    'dsh-companion-codex-wrapper-advanced': {
-      status: 'ready',
+  const snapshots = [
+    {
+      ns: 'dsh-companion-codex-wrapper-advanced',
       value: { enabled: true, apiKeyEnv: 'CODEX_WRAPPER_ADVANCED_API_KEY' },
-      base: {},
-      user: {},
       revision: 1,
-      writable: true,
-      mode: 'host',
     },
-    'dsh-companion-model-policy': {
-      status: 'ready',
+    {
+      ns: 'dsh-companion-model-policy',
       value: { defaultModelState: 'enabled', providers: {} },
-      base: {},
-      user: {},
       revision: 1,
-      writable: true,
-      mode: 'host',
     },
-  }
+  ]
   return {
     mutations,
     service: {
-      bind({ namespace }) {
-        return {
-          getSnapshot: () => snapshots[namespace],
-          subscribe: () => () => {},
-          async mutate(ops, revision) { mutations.push({ namespace, ops, revision }) },
-          async set() {},
-          async unset() {},
-        }
+      async describe() {
+        return { ok: true, value: { writable: true, hasDocument: true, namespaces: snapshots } }
+      },
+      async mutate(namespace, ops, revision) {
+        mutations.push({ namespace, ops, revision })
+        const snapshot = snapshots.find(candidate => candidate.ns === namespace)
+        return { ok: true, value: snapshot }
       },
     },
   }

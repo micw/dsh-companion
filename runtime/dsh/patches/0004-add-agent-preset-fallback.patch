@@ -1,0 +1,163 @@
+diff --git a/packages/preset/agent-preset-registry/README.i18n.yaml b/packages/preset/agent-preset-registry/README.i18n.yaml
+index 411d7b4a02..cdf54d571d 100644
+--- a/packages/preset/agent-preset-registry/README.i18n.yaml
++++ b/packages/preset/agent-preset-registry/README.i18n.yaml
+@@ -18,8 +18,8 @@
+   en: bbff250eba0f1b89
+   zh: b20a47f82d8ab6e0
+ /deepseek-ai-dsh-agent-preset-registry/use-this-package/minimal-configuration:
+-  en: cd28d9b4f46c46a8
+-  zh: 4921d853f98469fe
++  en: 4041f0bcb78cd1b2
++  zh: 7b14a9f55ab95c59
+ /deepseek-ai-dsh-agent-preset-registry/understand-the-implementation:
+   en: 11a1a4847ffc68b4
+   zh: 9e1ca14d642b43ac
+diff --git a/packages/preset/agent-preset-registry/README.md b/packages/preset/agent-preset-registry/README.md
+index 1db29f2383..520f018e4a 100644
+--- a/packages/preset/agent-preset-registry/README.md
++++ b/packages/preset/agent-preset-registry/README.md
+@@ -42,8 +42,9 @@ Choose an Agent’s tools, prompt sections and skills through declarative preset
+ | Field | Default | Meaning |
+ |---|---|---|
+ | `default` | required | Preset ID used when none is requested |
++| `fallbacks` | `{}` | Missing durable preset IDs mapped to current declarations without adding aliases to the roster |
+ 
+-The Web definitions come from the `dsh-web-app` bundle. Definitions are ordinary plugin rows; the registry neither scans directories nor accepts preset paths. The `selectedDefault` volatile field of the `agent-preset-registry` entry retains the user default, which new sessions resolve over the deployment `default`. A profile patch may still carry the retired `modeSelectionEnabled` field; the registry declares no such field and neither reads nor rewrites it.
++The Web definitions come from the `dsh-web-app` bundle. Definitions are ordinary plugin rows; the registry neither scans directories nor accepts preset paths. The `selectedDefault` volatile field of the `agent-preset-registry` entry retains the user default, which new sessions resolve over the deployment `default`. A fallback preserves the requested durable ID while mounting the target declaration; a direct declaration always takes precedence. A profile patch may still carry the retired `modeSelectionEnabled` field; the registry declares no such field and neither reads nor rewrites it.
+ 
+ The registry writes no declarations. The `read` Remote renders one declaration’s child list back as entry-list YAML (`!!js` conditions included) so a client can show what a preset composes; nothing accepts YAML back. A new preset or an override of a shipped one is a bundle patch: an `insert` of a `@deepseek-ai/dsh-agent-preset` row, or a patch keyed by that row’s id, installed into the profile with `plugin_manager`; Creator mode authors such bundles in conversation.
+ 
+diff --git a/packages/preset/agent-preset-registry/README.zh.md b/packages/preset/agent-preset-registry/README.zh.md
+index 3549afc916..af5269b98f 100644
+--- a/packages/preset/agent-preset-registry/README.zh.md
++++ b/packages/preset/agent-preset-registry/README.zh.md
+@@ -42,8 +42,9 @@ kind: "package-reference"
+ | 字段 | 默认值 | 含义 |
+ |---|---|---|
+ | `default` | 必填 | 未显式指定时使用的 preset ID |
++| `fallbacks` | `{}` | 将缺失的持久化 preset ID 映射到当前声明，但不向清单添加别名 |
+ 
+-Web 内置定义来自 `dsh-web-app` bundle。定义使用普通插件行；注册表不扫描目录，也不接受 preset 路径。`agent-preset-registry` 条目的 volatile 字段 `selectedDefault` 保留用户默认值，新会话优先使用它而不是部署 `default`。profile patch 仍可能带有已废弃的 `modeSelectionEnabled` 字段；注册表未声明该字段，既不读取也不重写它。
++Web 内置定义来自 `dsh-web-app` bundle。定义使用普通插件行；注册表不扫描目录，也不接受 preset 路径。`agent-preset-registry` 条目的 volatile 字段 `selectedDefault` 保留用户默认值，新会话优先使用它而不是部署 `default`。fallback 在挂载目标声明时保留请求的持久化 ID；直接声明始终优先。profile patch 仍可能带有已废弃的 `modeSelectionEnabled` 字段；注册表未声明该字段，既不读取也不重写它。
+ 
+ 注册表不写入任何声明。`read` Remote 把一条声明的子插件列表按 entry-list YAML 方言（含 `!!js` 条件）渲染回来，供客户端展示 preset 的组成；没有任何接口接受 YAML 写回。新建 preset 或覆盖内置 preset 都是 bundle 补丁：插入一行 `@deepseek-ai/dsh-agent-preset`，或按该行 id 写覆盖补丁，再用 `plugin_manager` 安装到 profile；创造模式在对话中编写这类 bundle。
+ 
+diff --git a/packages/preset/agent-preset-registry/src/index.ts b/packages/preset/agent-preset-registry/src/index.ts
+index 54c8ae5cfd..6e3d728992 100644
+--- a/packages/preset/agent-preset-registry/src/index.ts
++++ b/packages/preset/agent-preset-registry/src/index.ts
+@@ -53,6 +53,7 @@ export class AgentPresetRegistry extends TypertRemoteService {
+   static Config = z.object({
+     default: z.string().required(),
+     selectedDefault: z.string().volatile(),
++    fallbacks: z.dict(z.string()).default({}),
+   })
+   private readonly owner: Context
+   private readonly definitions = new Map<string, Definition>()
+@@ -179,7 +180,7 @@ export class AgentPresetRegistry extends TypertRemoteService {
+    */
+   async resolve(id?: string): Promise<AgentPreset> {
+     const wanted = id ?? this.defaultId
+-    const record = this.definitions.get(wanted)
++    const record = this.definitionFor(wanted)
+     if (record === undefined) throw new RemoteError('agent-preset/not-found', `Unknown agent preset: ${wanted}`,
+       { agentPreset: wanted, available: [...this.definitions.keys()] })
+     const broken = await this.diagnostic(record)
+@@ -208,11 +209,11 @@ export class AgentPresetRegistry extends TypertRemoteService {
+   private async retain(id?: string): Promise<Generation> {
+     const wanted = id ?? this.defaultId
+     while (true) {
+-      const record = this.definitions.get(wanted)
++      const record = this.definitionFor(wanted)
+       if (record === undefined) throw new RemoteError('agent-preset/not-found', `Unknown agent preset: ${wanted}`,
+         { agentPreset: wanted, available: [...this.definitions.keys()] })
+       const broken = await this.diagnostic(record)
+-      if (this.definitions.get(wanted) !== record) continue
++      if (this.definitionFor(wanted) !== record) continue
+       const generation = record.generation
+       if (broken !== undefined || generation === undefined) {
+         const reason = broken as string
+@@ -255,10 +256,11 @@ export class AgentPresetRegistry extends TypertRemoteService {
+    * @returns Bound preset identity.
+    */
+   async mount(ctx: Context, id?: string): Promise<AgentPreset> {
++    const wanted = id ?? this.defaultId
+     const generation = await this.retain(id)
+     try {
+       await this.bind(ctx, generation)
+-      return { id: generation.mount.presetId }
++      return { id: wanted }
+     } finally {
+       generation.users--
+       await this.collect(generation)
+@@ -289,6 +291,11 @@ export class AgentPresetRegistry extends TypertRemoteService {
+    */
+   composedPreset(ctx: Context): string | undefined { return standingMountFor(ctx)?.presetId }
+ 
++  /** Resolve one direct declaration or a one-step compatibility fallback. */
++  private definitionFor(id: string): Definition | undefined {
++    return this.definitions.get(id) ?? this.definitions.get(this.config.fallbacks[id] ?? '')
++  }
++
+   /** Read a service supplied inside an Agent's isolated preset group.
+    * @param agent Agent whose composition is queried.
+    * @param name Cordis service name.
+diff --git a/packages/preset/agent-preset-registry/src/preset.ts b/packages/preset/agent-preset-registry/src/preset.ts
+index ae405a05ad..cb26b7fd42 100644
+--- a/packages/preset/agent-preset-registry/src/preset.ts
++++ b/packages/preset/agent-preset-registry/src/preset.ts
+@@ -15,4 +15,6 @@ export interface Config {
+   default: string
+   /** User-selected default; edited through Settings. */
+   selectedDefault: Volatile<string | undefined>
++  /** Missing durable identities mapped to current declarations without entering the roster. */
++  fallbacks: Readonly<Record<string, string>>
+ }
+diff --git a/packages/preset/agent-preset-registry/tests/harness.ts b/packages/preset/agent-preset-registry/tests/harness.ts
+index c420624fe3..85ec5fe9c3 100644
+--- a/packages/preset/agent-preset-registry/tests/harness.ts
++++ b/packages/preset/agent-preset-registry/tests/harness.ts
+@@ -16,7 +16,7 @@ export const liveRegistries = new WeakMap<Context, Awaited<ReturnType<typeof liv
+ 
+ export const plugin = (name: string): string => new URL(`./fixtures/plugins/${name}.js`, import.meta.url).href
+ export const contribution = (tool: string): PresetDefinition => ({ id: tool, plugins: [{ name: plugin('contribute'), config: { tool } }] })
+-export async function harness(options: { live?: boolean } = {}): Promise<Context> {
++export async function harness(options: { live?: boolean; fallbacks?: Record<string, string> } = {}): Promise<Context> {
+   const ctx = new Context()
+   ctx.baseUrl = new URL('./fixtures/', import.meta.url).href
+   await ctx.plugin(Loader)
+@@ -28,8 +28,9 @@ export async function harness(options: { live?: boolean } = {}): Promise<Context
+   await ctx.plugin(ToolRuntime)
+   await ctx.plugin(AgentRegistry)
+   await ctx.plugin(AgentLoop, { agents: [] })
+-  if (options.live) liveRegistries.set(ctx, await liveConfig(ctx, AgentPresets, { default: 'standard' }))
+-  else await ctx.plugin(AgentPresets, { default: 'standard' })
++  const config = { default: 'standard', fallbacks: options.fallbacks ?? {} }
++  if (options.live) liveRegistries.set(ctx, await liveConfig(ctx, AgentPresets, config))
++  else await ctx.plugin(AgentPresets, config)
+   return ctx
+ }
+ export async function declare(ctx: Context, config: PresetDefinition) {
+diff --git a/packages/preset/agent-preset-registry/tests/registry.spec.ts b/packages/preset/agent-preset-registry/tests/registry.spec.ts
+index f504087458..aea34eb868 100644
+--- a/packages/preset/agent-preset-registry/tests/registry.spec.ts
++++ b/packages/preset/agent-preset-registry/tests/registry.spec.ts
+@@ -77,6 +77,17 @@ describe('declarative preset revisions', () => {
+     expect(roster.presets.find(row => row.id === 'standard')?.isDefault).toBe(true)
+   })
+ 
++  it('resolves a missing durable id through a roster-hidden fallback', async () => {
++    const ctx = await harness({ fallbacks: { retired: 'replacement' } })
++    contexts.push(ctx)
++    await declare(ctx, contribution('replacement'))
++    expect(await ctx.agentPresets.resolve('retired')).toEqual({ id: 'retired' })
++    expect((await ctx.agentPresets.remoteExportList()).presets.some(row => row.id === 'retired')).toBe(false)
++    const agent = await agentOn(ctx, 'fallback-agent', 'retired')
++    expect(ctx.agentPresets.composedPreset(agent.ctx)).toBe('replacement')
++    expect(ctx.tools.schemas(agent).map(row => row.name)).toEqual(['replacement'])
++  })
++
+   it('rejects duplicate IDs without disposing the first definition', async () => {
+     const ctx = await setup()
+     await declare(ctx, contribution('standard'))

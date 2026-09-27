@@ -49,8 +49,8 @@ try {
   if (cookie === undefined) throw new Error('Managed DSH authentication returned no cookie');
   const webUi = await fetch(control.origin, { headers: { cookie } });
   const webUiHtml = await webUi.text();
-  if (!webUi.ok || !webUiHtml.includes('"id":"@deepseek-ai/dsh-client-modules"')
-    || !webUiHtml.includes('/plugins/??')) {
+  if (!webUi.ok || !webUiHtml.includes('registration.id==="@deepseek-ai/dsh-client-modules"')
+    || !webUiHtml.includes('href="plugins/??')) {
     throw new Error('Managed DSH Web UI omitted its dynamic client bootstrap');
   }
   const rpcId = randomUUID();
@@ -121,6 +121,42 @@ try {
     || projected.permissionSelections !== 1) {
     throw new Error('Managed DSH Client created or opened a Session before the first prompt');
   }
+  const providerSettings = await sessionClient.providerSettings();
+  if (!providerSettings.families.some(family => family.id === 'openrouter')
+    || providerSettings.providers.some(provider => provider.instanceId !== undefined)) {
+    throw new Error('Managed DSH Client did not project the empty provider-instance baseline');
+  }
+
+  const first = await callRemote(control.origin, cookie, 'session/create', {
+    request: { sessionId: randomUUID(), cwd: storage, agentPreset: 'dsh-companion' },
+  });
+  const second = await callRemote(control.origin, cookie, 'session/create', {
+    request: { sessionId: randomUUID(), cwd: storage, agentPreset: 'dsh-companion' },
+  });
+  const sessionIds = [first?.sessionId, second?.sessionId];
+  if (sessionIds.some(value => typeof value !== 'string') || new Set(sessionIds).size !== sessionIds.length) {
+    throw new Error('Managed DSH Session creation did not return distinct identities');
+  }
+
+  sessionClient.dispose();
+  sessionClient = undefined;
+  const restored = [];
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const state = { sessions: [] };
+      const client = await DshClient.connect(cookie, storage, projectionSink({
+        sessionCreated: sessionId => { state.sessions.push(sessionId); },
+      }), first.sessionId, join(active.directory, 'client-runtime.js'), origin);
+      restored.push(client);
+      if (state.sessions.length !== 1 || state.sessions[0] !== first.sessionId) {
+        throw new Error('Managed DSH Client restore did not bind the requested Session identity');
+      }
+    }
+    restored[0].dispose();
+    await restored[1].loadOlder();
+  } finally {
+    for (const client of restored) client.dispose();
+  }
   console.log(`Managed Runtime smoke passed for ${manifest.companionVersion}`);
 } finally {
   sessionClient?.dispose();
@@ -135,6 +171,51 @@ try {
     await new Promise((resolveDelay) => { setTimeout(resolveDelay, 50); });
   }
   await rm(storage, { recursive: true, force: true });
+}
+
+async function callRemote(origin, cookie, method, args) {
+  const rpcId = randomUUID();
+  const response = await fetch(new URL(`/api/${method.replace('.', '/')}`, origin), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
+  });
+  const envelope = await response.json();
+  if (!response.ok || envelope?.type !== 'server-response' || envelope.rpcId !== rpcId
+    || envelope.result?.ok !== true) {
+    throw new Error(`Managed DSH ${method} smoke returned an invalid response: ${JSON.stringify(envelope)}`);
+  }
+  return envelope.result.value;
+}
+
+function projectionSink(overrides = {}) {
+  return {
+    sessionCreated: () => {},
+    reset: () => {},
+    history: () => {},
+    historyPrependStart: () => {},
+    historyPrependEnd: () => {},
+    historyState: () => {},
+    modelCatalog: () => {},
+    modelSelection: () => {},
+    contextPressure: () => {},
+    sessionCost: () => {},
+    providerAccounts: () => {},
+    permissionSelection: () => {},
+    compactAvailable: () => {},
+    compaction: () => {},
+    compacting: () => {},
+    assistantStart: () => {},
+    assistantDelta: () => {},
+    assistantTime: () => {},
+    process: () => {},
+    queue: () => {},
+    running: () => {},
+    status: () => {},
+    submissionObserved: () => {},
+    userCommitted: () => {},
+    ...overrides,
+  };
 }
 
 async function freePort() {

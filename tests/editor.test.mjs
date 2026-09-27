@@ -11,9 +11,11 @@ import {
   advanceModelSelection,
   contextPressureForModel,
   exchangeLaunchUrl,
+  parseInboxQueue,
   parseCompactionEvent,
   parseCostSummary,
   parseModelCatalog,
+  parsePermissionCatalog,
   parsePermissionSelection,
   permissionDefaultSelection,
   parseProviderAccountSnapshot,
@@ -87,6 +89,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /state\.disclosures\[disclosureId\] = models\.open/);
   assert.match(script, /Credentials are stored by DSH and are never read back/);
   assert.match(script, /send\.disabled = [^;]+!selectedModelEnabled\(\)/);
+  assert.match(script, /modelTrigger\.dataset\.configure = modelCatalog\?\.routableProviders\.length === 0/);
   assert.match(script, /if \(effort === undefined\) return 'Provider default'/);
   assert.match(script, /const efforts = \[\s*\{ id: undefined, name: 'Provider default' \}/);
   assert.doesNotMatch(script, /reasoningEffort \?\? model\.reasoning\.defaultEffort/);
@@ -411,6 +414,10 @@ test('the packaged runtime owns a separate loopback origin', async () => {
   assert.match(smoke, /unauthenticated\.status !== 401/);
   assert.match(smoke, /Managed DSH Web UI omitted its dynamic client bootstrap/);
   assert.match(smoke, /permissionSelection: \(\) => \{ projected\.permissionSelections \+= 1/);
+  assert.match(smoke, /sessionId: randomUUID\(\), cwd: storage, agentPreset: 'dsh-companion'/);
+  assert.match(smoke, /providerSettings\.families\.some\(family => family\.id === 'openrouter'\)/);
+  assert.match(smoke, /for \(let index = 0; index < 2; index \+= 1\)/);
+  assert.match(smoke, /restored\[0\]\.dispose\(\);\s*await restored\[1\]\.loadOlder\(\)/);
 });
 
 test('provider account snapshots retain validated allowance and reset facts', () => {
@@ -692,6 +699,51 @@ test('permission projections retain the DSH-owned options and current preset', (
   }), /does not contain its current value/u);
 });
 
+test('permission catalogs provide the default draft selection', () => {
+  assert.deepEqual(parsePermissionCatalog({
+    options: [
+      { value: 'auto', name: 'Auto' },
+      { value: 'workspace-write', name: 'Workspace Write', description: 'Confined writes.' },
+      { value: 'danger-full-access', name: 'Full Access', description: 'Unconfined access.' },
+    ],
+    defaultOptions: [
+      { value: 'workspace-write', name: 'Workspace Write', description: 'Confined writes.' },
+      { value: 'danger-full-access', name: 'Full Access', description: 'Unconfined access.' },
+    ],
+    defaultPreset: 'workspace-write',
+  }), {
+    options: [
+      { value: 'auto', name: 'Auto' },
+      { value: 'workspace-write', name: 'Workspace Write', description: 'Confined writes.' },
+      { value: 'danger-full-access', name: 'Full Access', description: 'Unconfined access.' },
+    ],
+    currentValue: 'workspace-write',
+  });
+});
+
+test('Inbox projections retain authoritative queue order and request identities', () => {
+  const value = {
+    'next-turn': [{
+      id: 'queued', source: { kind: 'user', rpcId: 'remote-queued' },
+      content: [{ type: 'text', text: 'queued text' }],
+    }],
+    'next-step': [{
+      id: 'steering', source: { kind: 'user', rpcId: 'remote-steering' },
+      content: [{ type: 'text', text: 'steering text' }],
+    }],
+  };
+  assert.deepEqual(parseInboxQueue(value, true, new Map([
+    ['remote-queued', 'local-queued'], ['remote-steering', 'local-steering'],
+  ])), [{
+    id: 'steering', requestId: 'local-steering', text: 'steering text', placement: 'steering',
+  }, {
+    id: 'queued', requestId: 'local-queued', text: 'queued text', placement: 'queued',
+  }]);
+  assert.deepEqual(parseInboxQueue(value, false, new Map())[0], {
+    id: 'steering', requestId: 'remote-steering', text: 'steering text', placement: 'context',
+  });
+});
+
 test('a fresh draft derives its pending permission from the DSH settings schema', () => {
   const settings = parseSettingsDescribe({
     writable: true,
@@ -828,6 +880,7 @@ test('tabs restore through the serializer and Stop uses DSH session cancellation
   assert.match(extension, /registerWebviewPanelSerializer\(CHAT_EDITOR_VIEW_TYPE/);
   assert.match(extension, /restoredSessionId/);
   assert.match(client, /if \(restoredSessionId !== undefined\)[\s\S]*await client\.attachSession\(restoredSessionId\)/);
+  assert.match(client, /graph\.sessions\.create\(\{\s*sessionId: randomUUID\(\),/);
   assert.match(client, /reasoningDisclosureId/);
   assert.match(client, /context:\$\{String\(event\.seq\)\}/);
   assert.match(client, /callCanonicalRemote\(graph, 'session', 'modelCatalog'/);

@@ -40,7 +40,10 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/dsh-companion.patch.yml"
+      ]
     }
   }
 }

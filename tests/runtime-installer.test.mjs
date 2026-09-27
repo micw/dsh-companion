@@ -9,6 +9,7 @@ import {
   cleanupVersions,
   companionDataHome,
   companionLifecycleRoot,
+  ensureManagedProfile,
   installPayload,
   runtimeStoragePath,
   verifyPayload,
@@ -146,6 +147,22 @@ test('runtime cleanup retains active and rollback versions without deleting DSH 
   await assert.rejects(stat(stale), (error) => error?.code === 'ENOENT');
   await assert.rejects(stat(staging), (error) => error?.code === 'ENOENT');
   assert.equal(await readFile(join(data, 'marker'), 'utf8'), data);
+});
+
+test('managed profile refresh preserves the user patch document', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-companion-profile-'));
+  roots.push(home);
+  const profile = join(home, 'profiles', 'dsh-companion');
+  await mkdir(profile, { recursive: true });
+  const patch = '- id: provider\n  config:\n    enabled: true\n';
+  await writeFile(join(profile, 'cordis.patch.yml'), patch);
+
+  await ensureManagedProfile(home, ['@dsh-companion/bundle']);
+
+  assert.equal(await readFile(join(profile, 'cordis.patch.yml'), 'utf8'), patch);
+  assert.deepEqual(JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')).dsh.profile.bundles, [
+    '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@dsh-companion/bundle',
+  ]);
 });
 
 test('runtime data and lifecycle ownership use one stable XDG product root', () => {

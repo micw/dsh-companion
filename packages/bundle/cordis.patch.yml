@@ -1,15 +1,9 @@
 # Generic DSH Companion provider infrastructure. Provider bundles remain optional.
-- id: agent-presets
-  inject: [companionPresetRoot]
+- id: agent-preset-registry
   config:
     default: dsh-companion
-    roots:
-      - path: !!js ctx.companionPresetRoot.path
-        trust: system
     fallbacks:
       standard: dsh-companion
-    includeShippedRoot: false
-    includeUserRoot: false
 
 - id: llm-deepseek
   disabled: true
@@ -25,9 +19,6 @@
     openAt: first-search
 
 - insert:
-    - id: dsh-companion-preset-root
-      name: '@dsh-companion/bundle'
-
     - id: dsh-companion-provider-catalog
       name: '@dsh-companion/provider-catalog'
 

@@ -5,7 +5,6 @@ import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from '@dsh-companion/provider-client/client'
 import type {
@@ -14,15 +13,21 @@ import type {
 } from '@dsh-companion/provider-client/client'
 import { ProviderDetails } from './ProviderDetails.js'
 import type {
+  ProviderConfigurationState,
   ProviderConnectionSettings,
   ProviderDetailsInjected,
   ProviderDetailsState,
 } from './ProviderDetails.js'
-import type { Config as ModelPolicySettings } from '@dsh-companion/model-policy'
+import type { ModelPolicyValue as ModelPolicySettings } from '@dsh-companion/model-policy'
 import { en, zh } from './locales.js'
 import type { ProviderSettingsKey } from './locales.js'
 
-export type { ProviderDetailsInjected, ProviderDetailsProps, ProviderDetailsState } from './ProviderDetails.js'
+export type {
+  ProviderConfigurationState,
+  ProviderDetailsInjected,
+  ProviderDetailsProps,
+  ProviderDetailsState,
+} from './ProviderDetails.js'
 export type { ProviderSettingsKey } from './locales.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -34,10 +39,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 const NS = 'dsh-companion.provider-settings'
 const POLICY_NAMESPACE = 'dsh-companion-model-policy'
 const PROVIDERS = [
-  {
-    settingsNamespace: 'dsh-companion-openrouter',
-    defaultApiKeyRef: 'OPENROUTER_API_KEY',
-  },
+  { settingsNamespace: 'dsh-companion-openrouter', defaultApiKeyRef: 'OPENROUTER_API_KEY' },
   {
     settingsNamespace: 'dsh-companion-codex-wrapper-advanced',
     defaultApiKeyRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
@@ -50,21 +52,17 @@ const PROVIDERS = [
 
 /** Services required by the provider settings card. */
 export const inject = [
-  'slots', 'locale', 'remote', 'remote.companionProviderCatalog', 'remote.companionProviderAccounts',
-  'remote.credentials', 'settingsScope',
+  'slots', 'locale', 'remote', 'remote.settings', 'remote.companionProviderCatalog',
+  'remote.companionProviderAccounts', 'remote.credentials',
 ]
 
 /** Register provider-card details for every Companion-managed dynamic route. */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-companion provider settings: dictionaries')
-  const modelPolicy = ctx.settingsScope.bind<ModelPolicySettings>({ namespace: POLICY_NAMESPACE })
   for (const provider of PROVIDERS) {
-    const providerSettings = ctx.settingsScope.bind<ProviderConnectionSettings>({
-      namespace: provider.settingsNamespace,
-    })
     const operations: ProviderDetailsInjected = {
-      hooks: { providerSettings, modelPolicy },
       load: providerId => loadProvider(ctx, providerId),
+      loadConfiguration: () => loadConfiguration(ctx, provider.settingsNamespace),
       refresh: async (providerId) => {
         const [catalog, account] = await Promise.all([
           ctx.remote.companionProviderCatalog.refresh(providerId),
@@ -79,18 +77,21 @@ export function apply(ctx: Context): void {
             ? { op: 'unset', path: ['baseURL'] }
             : { op: 'set', path: ['baseURL'], value: baseURL },
         ]
-        await providerSettings.mutate(ops, revision)
+        const changed = await ctx.remote.settings.mutate(provider.settingsNamespace, ops, revision)
+        if (!changed.ok) throw changed.error
         const key = apiKey.trim()
         if (key === '') return
-        const ref = providerSettings.getSnapshot().value?.apiKeyEnv ?? provider.defaultApiKeyRef
+        const value = record(changed.value.value)
+        const ref = typeof value?.apiKeyEnv === 'string' ? value.apiKeyEnv : provider.defaultApiKeyRef
         const stored = await ctx.remote.credentials.set(ref, key)
         if (!stored.ok) throw stored.error
       },
       setModelEnabled: async (providerId, model, enabled, revision) => {
-        await modelPolicy.mutate([{
+        const changed = await ctx.remote.settings.mutate(POLICY_NAMESPACE, [{
           op: 'set', path: ['providers', providerId, 'models', model],
           value: enabled ? 'enabled' : 'disabled',
         }], revision)
+        if (!changed.ok) throw changed.error
       },
     }
     ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
@@ -99,6 +100,24 @@ export function apply(ctx: Context): void {
       locale: NS,
       inject: () => operations,
     }, ProviderDetails))
+  }
+}
+
+async function loadConfiguration(ctx: Context, namespace: string): Promise<ProviderConfigurationState> {
+  const result = await ctx.remote.settings.describe()
+  if (!result.ok) return { status: 'error', writable: false }
+  const provider = result.value.namespaces.find(candidate => candidate.ns === namespace)
+  const policy = result.value.namespaces.find(candidate => candidate.ns === POLICY_NAMESPACE)
+  if (provider === undefined || policy === undefined) return { status: 'error', writable: result.value.writable }
+  const providerValue = record(provider.value)
+  const policyValue = record(policy.value)
+  return {
+    status: 'ready',
+    writable: result.value.writable,
+    providerRevision: provider.revision,
+    policyRevision: policy.revision,
+    provider: providerValue ?? {},
+    policy: policyValue ?? {},
   }
 }
 
@@ -133,6 +152,12 @@ function joinResults(
 
 function found<T extends { readonly provider: string }>(values: readonly T[], provider: string): T | undefined {
   return values.find(value => value.provider === provider)
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }
 
 export type { CompanionProviderAccountRemoteSnapshot, CompanionProviderCatalogRemoteSnapshot }

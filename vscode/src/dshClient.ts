@@ -355,11 +355,17 @@ interface CanonicalBinding {
   readonly eventSource: ObservableValue;
 }
 
+interface CanonicalSessionReference {
+  readonly binding: CanonicalBinding;
+  readonly ready: Promise<CanonicalBinding>;
+  release(): void;
+}
+
 interface CanonicalClientGraph {
   readonly sessions: {
     readonly list: ObservableValue;
-    create(options?: { cwd?: string }): Promise<string>;
-    open(sessionId: string): void;
+    create(options?: { cwd?: string; sessionId?: string }): Promise<string>;
+    retain(sessionId: string, options: { source: string }): CanonicalSessionReference;
     binding(sessionId: string): CanonicalBinding | undefined;
     subagentAddress(sessionId: string): unknown;
     refresh(): Promise<void>;
@@ -428,11 +434,11 @@ interface ProviderSettingsDefinition {
 const PROVIDER_SETTINGS: readonly ProviderSettingsDefinition[] = [
   {
     id: 'claude-wrapper-advanced', name: 'Claude Wrapper Advanced', kind: 'wrapper',
-    namespace: 'dsh-companion-claude-wrapper-advanced', credentialRef: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
+    namespace: 'dsh-companion-provider-claude-wrapper-advanced', credentialRef: 'CLAUDE_WRAPPER_ADVANCED_API_KEY',
   },
   {
     id: 'codex-wrapper-advanced', name: 'Codex Wrapper Advanced', kind: 'wrapper',
-    namespace: 'dsh-companion-codex-wrapper-advanced', credentialRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
+    namespace: 'dsh-companion-provider-codex-wrapper-advanced', credentialRef: 'CODEX_WRAPPER_ADVANCED_API_KEY',
   },
 ];
 
@@ -673,16 +679,15 @@ function providerSettingsRows(
   const policyProviders = isRecord(policyNamespace?.value.providers) ? policyNamespace.value.providers : {};
   return PROVIDER_SETTINGS.map((definition): DshProviderSettingsEntry => {
     const namespace = settings.namespaces.get(definition.namespace);
-    if (namespace === undefined) throw new Error(`DSH omits required settings namespace ${definition.namespace}`);
     const profile = definition.kind === 'catalog'
-      ? (isRecord(namespace.value.providers) && isRecord(namespace.value.providers[definition.id])
+      ? (isRecord(namespace?.value.providers) && isRecord(namespace.value.providers[definition.id])
         ? namespace.value.providers[definition.id] as Record<string, unknown>
         : undefined)
-      : namespace.value;
+      : namespace?.value;
     const credentialRef = typeof profile?.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0
       ? profile.apiKeyEnv
       : definition.credentialRef;
-    const enabled = definition.kind === 'catalog' ? profile !== undefined : profile?.enabled !== false;
+    const enabled = definition.kind === 'catalog' ? profile !== undefined : profile?.enabled === true;
     const catalogGroup = modelCatalog.groups.find(group => group.id === definition.id);
     const wrapperCatalog = catalogs.get(definition.id);
     const fallbackModels: { id: string; name: string; description?: string }[] = definition.kind === 'native'
@@ -709,7 +714,7 @@ function providerSettingsRows(
       enabled,
       ...(typeof profile?.baseURL === 'string' ? { baseURL: profile.baseURL } : {}),
       credential: { ref: credentialRef, configured: false, writable: false },
-      revision: namespace.revision,
+      revision: namespace?.revision ?? 0,
       models: sourceModels.map(model => ({
         id: model.id,
         name: model.name,
@@ -734,8 +739,11 @@ function providerFamilyRows(
   const rows: DshProviderSettingsEntry[] = [];
   for (const family of families) {
     const namespace = settings.namespaces.get(family.settingsNs);
-    if (namespace === undefined) throw new Error(`DSH omits required settings namespace ${family.settingsNs}`);
     const owned = instances.filter(instance => instance.familyId === family.id);
+    if (namespace === undefined) {
+      if (owned.length > 0) throw new Error(`DSH omits required settings namespace ${family.settingsNs}`);
+      continue;
+    }
     for (const instance of owned) {
       const profile = recordAtPath(namespace.value, instance.settingsPath);
       const catalog = catalogs.get(instance.provider);
@@ -806,6 +814,15 @@ export function parsePermissionSelection(value: unknown): DshPermissionSelection
     throw new Error('DSH permission projection does not contain its current value');
   }
   return { options, currentValue: value.currentValue };
+}
+
+/** Validates the DSH permission catalog used before a draft owns a Session. */
+export function parsePermissionCatalog(value: unknown): DshPermissionSelection {
+  if (!isRecord(value) || !Array.isArray(value.options)
+    || typeof value.defaultPreset !== 'string' || value.defaultPreset.length === 0) {
+    throw new Error('DSH returned an invalid permission catalog');
+  }
+  return parsePermissionSelection({ options: value.options, currentValue: value.defaultPreset });
 }
 
 /** Applies a durable model-selection projection unless its watermark is stale. */
@@ -1160,13 +1177,14 @@ export class DshClient {
         graph.remote as unknown as Parameters<typeof mountCompanionProviderRemotes>[0],
       );
       disposeProviderRemotes = mountedProviderRemotes;
-      const [catalogResult, settingsResult] = await Promise.all([
+      const [catalogResult, permissionCatalogResult] = await Promise.all([
         callCanonicalRemote(graph, 'session', 'modelCatalog'),
-        callCanonicalRemote(graph, 'settings', 'describe'),
+        callCanonicalRemote(graph, 'permissionPresets', 'catalog'),
       ]);
       const modelCatalog = parseModelCatalog(unwrapCanonicalResult(catalogResult, 'session.modelCatalog'));
-      const settings = parseSettingsDescribe(unwrapCanonicalResult(settingsResult, 'settings.describe'));
-      const permissionSelection = permissionDefaultSelection(settings);
+      const permissionSelection = parsePermissionCatalog(
+        unwrapCanonicalResult(permissionCatalogResult, 'permissionPresets.catalog'),
+      );
       const client = new DshClient(cwd, sink, modelCatalog, {
         graph,
         disposers: [],
@@ -1565,7 +1583,10 @@ export class DshClient {
     if (this.sessionCreation === undefined) {
       const operation = (async () => {
         const graph = this.requireCanonical().graph;
-        const sessionId = await graph.sessions.create(this.cwd === undefined ? {} : { cwd: this.cwd });
+        const sessionId = await graph.sessions.create({
+          sessionId: randomUUID(),
+          ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
+        });
         await this.attachSession(sessionId);
         await this.applyPendingPermission();
       })();
@@ -1579,11 +1600,18 @@ export class DshClient {
 
   private async attachSession(sessionId: string): Promise<void> {
     const canonical = this.requireCanonical();
-    canonical.graph.sessions.open(sessionId);
-    const binding: unknown = canonical.graph.sessions.binding(sessionId);
-    if (!isCanonicalBinding(binding)) {
-      throw new Error(`DSH did not create a valid Client binding for Session ${sessionId}`);
+    const reference = canonical.graph.sessions.retain(sessionId, { source: 'companionEditor' });
+    let binding: CanonicalBinding;
+    try {
+      binding = await reference.ready;
+      if (!isCanonicalBinding(binding) || reference.binding !== binding) {
+        throw new Error(`DSH did not create a valid Client binding for Session ${sessionId}`);
+      }
+    } catch (error) {
+      reference.release();
+      throw error;
     }
+    canonical.disposers.push(() => { reference.release(); });
     const commands = canonical.graph.sessions.subagentAddress(sessionId) === undefined
       ? unwrapCommandCatalog(await callCanonicalRemote(canonical.graph, 'commands', 'list', sessionId))
       : [];
@@ -1672,16 +1700,22 @@ export class DshClient {
     const canonical = this.requireCanonical();
     const binding = this.requireBinding();
     const session = binding.session;
+    const inboxProjection = session.projections.faceOf('inbox');
+    const projectInbox = (): void => {
+      this.sink.queue(parseInboxQueue(
+        inboxProjection.getSnapshot(), this.sessionRunning, canonical.requestAliases,
+      ));
+    };
     const projectSession = (): void => {
       const snapshot = session.getSnapshot();
-      if (!isRecord(snapshot) || !Array.isArray(snapshot.queue) || typeof snapshot.running !== 'boolean'
+      if (!isRecord(snapshot) || typeof snapshot.running !== 'boolean'
         || typeof snapshot.hasMore !== 'boolean' || typeof snapshot.openState !== 'string') {
         throw new Error('DSH Client returned an invalid Session snapshot');
       }
-      this.sink.queue(snapshot.queue.map((item) => canonicalQueueItem(item, canonical.requestAliases)));
       this.sessionRunning = snapshot.running;
       this.sink.running(snapshot.running);
       this.sink.historyState(snapshot.hasMore);
+      projectInbox();
     };
     const projectEvents = (): void => { this.receiveCanonicalWindow(binding.eventSource.getSnapshot()); };
     const modelProjection = session.projections.faceOf('modelSelection');
@@ -1700,7 +1734,10 @@ export class DshClient {
     };
     const projectPermission = (): void => {
       const snapshot = permissionProjection.getSnapshot();
-      this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection(snapshot);
+      this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection({
+        ...snapshot,
+        options: this.permissionSelectionValue?.options ?? [],
+      });
       this.sink.permissionSelection(this.permissionSelectionValue);
     };
     const projectConnection = (): void => {
@@ -1724,6 +1761,7 @@ export class DshClient {
     canonical.disposers.push(
       session.subscribe(projectSession),
       binding.eventSource.subscribe(projectEvents),
+      inboxProjection.subscribe(projectInbox),
       modelProjection.subscribe(projectModel),
       contextProjection.subscribe(projectContext),
       costProjection.subscribe(projectCost),
@@ -2268,7 +2306,7 @@ function assembleCanonicalClient(
 
 function isCanonicalClientGraph(value: unknown): value is CanonicalClientGraph {
   return isRecord(value) && isRecord(value.sessions) && isObservable(value.sessions.list)
-    && typeof value.sessions.create === 'function' && typeof value.sessions.open === 'function'
+    && typeof value.sessions.create === 'function' && typeof value.sessions.retain === 'function'
     && typeof value.sessions.binding === 'function' && typeof value.sessions.subagentAddress === 'function'
     && typeof value.sessions.refresh === 'function' && typeof value.sessions.search === 'function'
     && isRecord(value.remote) && typeof value.remote.$mount === 'function'
@@ -2366,18 +2404,35 @@ export function parseSessionListSnapshot(value: unknown): DshSessionListSnapshot
   return { phase: value.phase, sessions };
 }
 
-function canonicalQueueItem(value: unknown, aliases: ReadonlyMap<string, string>): DshQueuedPrompt {
-  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.preview !== 'string'
-    || !['queued', 'steering', 'context'].includes(String(value.placement))
-    || (value.rpcId !== undefined && typeof value.rpcId !== 'string')) {
-    throw new Error('DSH Client returned an invalid queue item');
+/** Validates and projects the DSH-owned Inbox queue for the composer dock. */
+export function parseInboxQueue(
+  value: unknown,
+  running: boolean,
+  aliases: ReadonlyMap<string, string>,
+): DshQueuedPrompt[] {
+  if (value === undefined) return [];
+  if (!isRecord(value) || !Array.isArray(value['next-turn']) || !Array.isArray(value['next-step'])) {
+    throw new Error('DSH Client returned an invalid Inbox projection');
   }
-  return {
-    id: value.id,
-    text: typeof value.text === 'string' ? value.text : value.preview,
-    placement: value.placement as DshQueuedPrompt['placement'],
-    ...(value.rpcId === undefined ? {} : { requestId: aliases.get(value.rpcId) ?? value.rpcId }),
-  };
+  const rows: DshQueuedPrompt[] = [];
+  for (const [target, messages] of [
+    ['next-step', value['next-step']],
+    ['next-turn', value['next-turn']],
+  ] as const) {
+    for (const message of messages) {
+      if (!isRecord(message) || typeof message.id !== 'string' || !isRecord(message.source)) {
+        throw new Error('DSH Client returned an invalid Inbox message');
+      }
+      const rpcId = typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
+      rows.push({
+        id: message.id,
+        text: contentText(message.content),
+        placement: target === 'next-turn' ? 'queued' : running ? 'steering' : 'context',
+        ...(rpcId === undefined ? {} : { requestId: aliases.get(rpcId) ?? rpcId }),
+      });
+    }
+  }
+  return rows;
 }
 
 async function waitForCanonicalSession(session: CanonicalSession): Promise<void> {

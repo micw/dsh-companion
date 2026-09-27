@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { Config as ModelPolicySettings } from '@dsh-companion/model-policy'
+import type { ModelPolicyValue as ModelPolicySettings } from '@dsh-companion/model-policy'
 import type {
   CompanionProviderAccountRemoteSnapshot,
   CompanionProviderCatalogRemoteSnapshot,
@@ -24,13 +23,20 @@ export interface ProviderConnectionSettings {
   readonly apiKeyEnv?: string
 }
 
-/** Registration-injected hooks and operations over canonical DSH services. */
+/** Joined editable configuration needed by one provider card. */
+export interface ProviderConfigurationState {
+  readonly status: 'loading' | 'ready' | 'error'
+  readonly writable: boolean
+  readonly providerRevision?: number
+  readonly policyRevision?: number
+  readonly provider?: ProviderConnectionSettings
+  readonly policy?: ModelPolicySettings
+}
+
+/** Registration-injected operations over canonical DSH services. */
 export interface ProviderDetailsInjected {
-  hooks: {
-    readonly providerSettings: SettingsScope<ProviderConnectionSettings>
-    readonly modelPolicy: SettingsScope<ModelPolicySettings>
-  }
   load(provider: string): Promise<ProviderDetailsState>
+  loadConfiguration(): Promise<ProviderConfigurationState>
   refresh(provider: string): Promise<ProviderDetailsState>
   saveProvider(enabled: boolean, baseURL: string, apiKey: string, revision?: number): Promise<void>
   setModelEnabled(provider: string, model: string, enabled: boolean, revision?: number): Promise<void>
@@ -56,9 +62,12 @@ export interface ProviderDetailsViewProps {
 export function ProviderDetails(props: ProviderDetailsProps) {
   const {
     provider, keyConfigured, load, refresh, saveProvider, setModelEnabled,
-    useProviderSettings, useModelPolicy, t,
+    loadConfiguration, t,
   } = props
   const [state, setState] = useState<ProviderDetailsState>({})
+  const [configuration, setConfiguration] = useState<ProviderConfigurationState>({
+    status: 'loading', writable: false,
+  })
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [draftDirty, setDraftDirty] = useState(false)
@@ -67,20 +76,19 @@ export function ProviderDetails(props: ProviderDetailsProps) {
   const [draftApiKey, setDraftApiKey] = useState('')
   const [saveError, setSaveError] = useState<string>()
   const providerId = provider.provider
-  const settings = useProviderSettings(snapshot => snapshot)
-  const policy = useModelPolicy(snapshot => snapshot)
 
   useEffect(() => {
-    if (draftDirty || settings.value === undefined) return
-    setDraftEnabled(settings.value.enabled ?? true)
-    setDraftBaseURL(settings.value.baseURL ?? '')
-  }, [draftDirty, settings.value])
+    if (draftDirty || configuration.provider === undefined) return
+    setDraftEnabled(configuration.provider.enabled ?? true)
+    setDraftBaseURL(configuration.provider.baseURL ?? '')
+  }, [configuration.provider, draftDirty])
 
   useEffect(() => {
     let active = true
     void load(providerId).then((next) => { if (active) setState(next) })
+    void loadConfiguration().then((next) => { if (active) setConfiguration(next) })
     return () => { active = false }
-  }, [load, providerId])
+  }, [load, loadConfiguration, providerId])
 
   const runRefresh = useCallback(() => {
     setRefreshing(true)
@@ -90,25 +98,29 @@ export function ProviderDetails(props: ProviderDetailsProps) {
   const runSave = useCallback(() => {
     setSaving(true)
     setSaveError(undefined)
-    void saveProvider(draftEnabled, draftBaseURL, draftApiKey, settings.revision)
-      .then(() => {
+    void saveProvider(draftEnabled, draftBaseURL, draftApiKey, configuration.providerRevision)
+      .then(async () => {
+        setConfiguration(await loadConfiguration())
         setDraftApiKey('')
         setDraftDirty(false)
       })
       .catch((error: unknown) => { setSaveError(error instanceof Error ? error.message : String(error)) })
       .finally(() => { setSaving(false) })
-  }, [draftApiKey, draftBaseURL, draftEnabled, saveProvider, settings.revision])
+  }, [configuration.providerRevision, draftApiKey, draftBaseURL, draftEnabled, loadConfiguration, saveProvider])
 
-  const enabled = useCallback((model: string) => modelEnabled(policy, providerId, model), [policy, providerId])
+  const enabled = useCallback(
+    (model: string) => modelEnabled(configuration.policy, providerId, model),
+    [configuration.policy, providerId],
+  )
   const setEnabled = useCallback((model: string, value: boolean) => {
-    void setModelEnabled(providerId, model, value, policy.revision).catch((error: unknown) => {
-      setSaveError(error instanceof Error ? error.message : String(error))
-    })
-  }, [policy.revision, providerId, setModelEnabled])
+    void setModelEnabled(providerId, model, value, configuration.policyRevision).then(async () => {
+      setConfiguration(await loadConfiguration())
+    }).catch((error: unknown) => { setSaveError(error instanceof Error ? error.message : String(error)) })
+  }, [configuration.policyRevision, loadConfiguration, providerId, setModelEnabled])
 
   return (
     <>
-      {settings.status !== 'ready' || settings.value === undefined
+      {configuration.status !== 'ready' || configuration.provider === undefined
         ? <p>{t('settingsUnavailable')}</p>
         : (
           <form onSubmit={(event) => { event.preventDefault(); runSave() }}>
@@ -116,7 +128,7 @@ export function ProviderDetails(props: ProviderDetailsProps) {
               <input
                 type="checkbox"
                 checked={draftEnabled}
-                disabled={!settings.writable || saving}
+                disabled={!configuration.writable || saving}
                 onChange={(event) => { setDraftEnabled(event.currentTarget.checked); setDraftDirty(true) }}
               />{' '}{t('providerEnabled')}
             </label>
@@ -125,7 +137,7 @@ export function ProviderDetails(props: ProviderDetailsProps) {
               <input
                 type="url"
                 value={draftBaseURL}
-                disabled={!settings.writable || saving}
+                disabled={!configuration.writable || saving}
                 onChange={(event) => { setDraftBaseURL(event.currentTarget.value); setDraftDirty(true) }}
               />
             </label>
@@ -135,14 +147,14 @@ export function ProviderDetails(props: ProviderDetailsProps) {
                 type="password"
                 value={draftApiKey}
                 placeholder={keyConfigured ? t('apiKeyConfigured') : t('apiKeyPlaceholder')}
-                disabled={!settings.writable || saving}
+                disabled={!configuration.writable || saving}
                 onChange={(event) => { setDraftApiKey(event.currentTarget.value) }}
               />
             </label>
-            <button type="submit" disabled={!settings.writable || saving}>
+            <button type="submit" disabled={!configuration.writable || saving}>
               {saving ? t('saving') : t('save')}
             </button>
-            {!settings.writable && <p>{t('settingsReadOnly')}</p>}
+            {!configuration.writable && <p>{t('settingsReadOnly')}</p>}
           </form>
         )}
       {saveError === undefined ? null : <p role="alert">{saveError}</p>}
@@ -222,16 +234,16 @@ export function ProviderDetailsView({
 }
 
 function modelEnabled(
-  snapshot: SettingsScopeSnapshot<ModelPolicySettings>,
+  policyValue: ModelPolicySettings | undefined,
   provider: string,
   model: string,
 ): boolean {
-  const policy = snapshot.value?.providers?.[provider]
+  const policy = policyValue?.providers?.[provider]
   if (policy?.enabled === false) return false
   const override = policy?.models?.[model]
   if (override !== undefined) return override === 'enabled'
   if (policy?.defaultModelState !== undefined) return policy.defaultModelState === 'enabled'
-  return (snapshot.value?.defaultModelState ?? 'enabled') === 'enabled'
+  return (policyValue?.defaultModelState ?? 'enabled') === 'enabled'
 }
 
 function statusLabel(

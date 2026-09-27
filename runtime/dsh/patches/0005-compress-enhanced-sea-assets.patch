@@ -1,0 +1,104 @@
+diff --git a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.i18n.yaml b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.i18n.yaml
+index 5e078a7885..69990f2673 100644
+--- a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.i18n.yaml
++++ b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.i18n.yaml
+@@ -12,8 +12,8 @@
+   en: a15c7c13f167e5ac
+   zh: 63bcc2ef60c2f344
+ /agent-note-single-file-executable-sdk-runtime-distribution-single-exe/decision/packaging-route-yao-pkg-pkg-s-sea-mode:
+-  en: f1c2b60e9474111d
+-  zh: 5de398b5e8554429
++  en: 1b0daa57ae80f130
++  zh: 18080b55e9cbb624
+ /agent-note-single-file-executable-sdk-runtime-distribution-single-exe/decision/the-serving-interface-is-a-plugin-inside-the-dsh-application:
+   en: 5fdde26e9e8c6108
+   zh: 629559d733c1f0c5
+@@ -21,8 +21,8 @@
+   en: c35ea4b858448b49
+   zh: 1f8ff0a9f82ca881
+ /agent-note-single-file-executable-sdk-runtime-distribution-single-exe/decision/build-pipeline-and-artifacts:
+-  en: 53ba44431d2ce411
+-  zh: 4159475549273422
++  en: 42836ce3ef5b76de
++  zh: 732b10ec83965ac7
+ /agent-note-single-file-executable-sdk-runtime-distribution-single-exe/decision/python-sdk-distribution-two-carriers-exe-for-production-node-for-development:
+   en: 9bd60549d4a52ec0
+   zh: e2343b7210212ee0
+diff --git a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.md b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.md
+index 7260d11c84..f759cdae95 100644
+--- a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.md
++++ b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.md
+@@ -16,7 +16,7 @@ DeepSeek Harness needs a dedicated SDK distribution form for the Python library
+ 
+ ### Packaging route: @yao-pkg/pkg's `--sea` mode
+ 
+-The exe is packaged with the **`--sea` (enhanced SEA) mode** of [@yao-pkg/pkg](https://github.com/yao-pkg/pkg) (the actively maintained fork after vercel/pkg was archived). Relative to Node's native SEA, pkg adds a `/snapshot` VFS and runtime module hooks on top, hands the ESM entry to Node's default ESM loader unchanged, and depends on no ESM→CJS transpilation.
++The exe is packaged with the **`--sea` (enhanced SEA) mode** of [@yao-pkg/pkg](https://github.com/yao-pkg/pkg) (the actively maintained fork after vercel/pkg was archived). Relative to Node's native SEA, pkg adds a `/snapshot` VFS and runtime module hooks on top, hands the ESM entry to Node's default ESM loader unchanged, and depends on no ESM→CJS transpilation. Zstd compression keeps the complete VFS blob within the injector's practical resource-size range while preserving byte-exact files after runtime decompression.
+ > Measured (macos-arm64, node24 target, pkg 6.21.0): bare-specifier ESM dynamic import inside the VFS (including top-level await), CJS interop, `node:sqlite`, fail-loud on package names outside the set, and on-disk ESM import outside the VFS all pass; `import.meta.url` comes through unchanged as `file:///snapshot/...`.
+ 
+ `--sea` requires target ≥ node22; the exe uniformly targets node24. One pkg invocation packages exactly one target; multi-platform builds invoke it once per platform.
+@@ -48,7 +48,7 @@ The [Office kit](2026-09-14-independent-libreoffice-kit.md) and its installed de
+ 
+ ### Build pipeline and artifacts
+ 
+-[`scripts/build-exe-for-python-sdk.ts`](../../../../scripts/build-exe-for-python-sdk.ts): runtime closure verification → `pnpm run build` → (after clearing) `pnpm --filter dsh-python-runtime-closure deploy --legacy --prod --config.allow-unused-patches=true --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true` **directly into** `python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/`, including [`python/sdk-runtime/runtime-bootstrap.mjs`](../../../../python/sdk-runtime/runtime-bootstrap.mjs) as the carrier-root `runtime-bootstrap.mjs` → restore direct workspace packages omitted by legacy deploy and reject any remaining manifest gap → replace staged dependency symlinks with their target bytes, remove package-manager `.bin` links, and fail if any symlink remains → verify the deployed bootstrap and inject pkg configuration with that bin plus assets covering dynamic profile, bundle, frontend, preset, native-library, and configuration reads → stage the target `node-pty` addon → invoke `pkg --sea` once per target → write `deepseek-harness-sdk-runtime-<platform>-<arch>` under `dist-exe/` and copy it with its target-specific Office directory into the runtime directory. The Python runtime owns that bootstrap. It calls the public CLI export for ordinary launches and dispatches a provider-private selection to the same `@deepseek-ai/dsh-subprocess-local/runner` core without changing CLI grammar or adding another executable; the [native-containment decision](2026-08-28-subprocess-native-containment.md) owns that private path. Linux CI rebuilds `pty.node` inside the matching manylinux 2.28 container because legacy deploy omits that install side effect. Every target copies its native `@vscode/ripgrep` binary beside the executable as the required `-rg` sidecar; pkg runtimes select that sidecar through `process.pkg`, while ordinary Node execution uses `@vscode/ripgrep` directly. macOS uses its target prebuild and also emits the required `-spawn-helper`. The deploy flags preserve the measured runtime layout: `--legacy` is the mandatory path with inject-workspace-packages off; hoisted gives pkg a stable single-instance layout that the explicit materialization pass makes symlink-free; disabling automatic peer installation prevents undeclared peers from expanding the closure; link-workspace-packages selects direct workspace dependencies. [`pnpm-workspace.yaml`](../../../../pnpm-workspace.yaml) overrides the transitive `@deepseek-ai/cosmokit` and `@deepseek-ai/schemastery` semver requests to the pinned vendor sources so legacy deploy never resolves those unpublished names from a registry. Production deployment permits unused workspace patches because development-only tools can be absent from its closure; included-package patch failures still fail deployment. Workspace installs retain strict unused-patch validation.
++[`scripts/build-exe-for-python-sdk.ts`](../../../../scripts/build-exe-for-python-sdk.ts): runtime closure verification → `pnpm run build` → (after clearing) `pnpm --filter dsh-python-runtime-closure deploy --legacy --prod --config.allow-unused-patches=true --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true` **directly into** `python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/`, including [`python/sdk-runtime/runtime-bootstrap.mjs`](../../../../python/sdk-runtime/runtime-bootstrap.mjs) as the carrier-root `runtime-bootstrap.mjs` → restore direct workspace packages omitted by legacy deploy and reject any remaining manifest gap → replace staged dependency symlinks with their target bytes, remove package-manager `.bin` links, and fail if any symlink remains → verify the deployed bootstrap and inject pkg configuration with that bin plus assets covering dynamic profile, bundle, frontend, preset, native-library, and configuration reads → stage the target `node-pty` addon → invoke `pkg --sea --compress Zstd` once per target → write `deepseek-harness-sdk-runtime-<platform>-<arch>` under `dist-exe/` and copy it with its target-specific Office directory into the runtime directory. The Python runtime owns that bootstrap. It calls the public CLI export for ordinary launches and dispatches a provider-private selection to the same `@deepseek-ai/dsh-subprocess-local/runner` core without changing CLI grammar or adding another executable; the [native-containment decision](2026-08-28-subprocess-native-containment.md) owns that private path. Linux CI rebuilds `pty.node` inside the matching manylinux 2.28 container because legacy deploy omits that install side effect. Every target copies its native `@vscode/ripgrep` binary beside the executable as the required `-rg` sidecar; pkg runtimes select that sidecar through `process.pkg`, while ordinary Node execution uses `@vscode/ripgrep` directly. macOS uses its target prebuild and also emits the required `-spawn-helper`. The deploy flags preserve the measured runtime layout: `--legacy` is the mandatory path with inject-workspace-packages off; hoisted gives pkg a stable single-instance layout that the explicit materialization pass makes symlink-free; disabling automatic peer installation prevents undeclared peers from expanding the closure; link-workspace-packages selects direct workspace dependencies. [`pnpm-workspace.yaml`](../../../../pnpm-workspace.yaml) overrides the transitive `@deepseek-ai/cosmokit` and `@deepseek-ai/schemastery` semver requests to the pinned vendor sources so legacy deploy never resolves those unpublished names from a registry. Production deployment permits unused workspace patches because development-only tools can be absent from its closure; included-package patch failures still fail deployment. Workspace installs retain strict unused-patch validation.
+ 
+ CI: [`.github/workflows/build-exe-for-python-sdk.yml`](../../../../.github/workflows/build-exe-for-python-sdk.yml) runs [installed-wheel validation](../testing/2026-08-23-installed-python-wheel-black-box-ci.md) on Linux/Windows x64 for pull requests and Linux ARM64 plus both macOS architectures for master pushes. The [public publication workflow](../../archived/process/2026-08-11-python-publication-workflow.md) calls it for all five targets; `workflow_dispatch` can still select a subset. Native builds run on linux-x64 / linux-arm64 (`ubuntu-24.04-arm`) / macos-arm64 / macos-x64 (`macos-15-intel`) / win-x64 (`windows-2025`), with `~/.pkg-cache` cached where applicable, and pkg handles macOS ad-hoc signing. Each leg installs the release-shaped SDK and runtime wheels into a clean venv outside the checkout, verifies their package and executable origin, then drives the complete keyless scenario set through the public SDK and direct NDJSON JSON-RPC. Trusted pull requests and master pushes additionally run a real DeepSeek two-turn tool smoke on their selected targets; fork and Dependabot heads receive no key. Linux inspects the executable and native addon's GLIBC requirements and runs an additional manylinux 2.28 smoke, while macOS checks the runtime, ripgrep, and PTY helper architectures and verifies that all three deployment targets fit the wheel tag. A full five-target run retains six artifacts, each containing one release file: the platform-independent SDK wheel and five native runtime wheels; a subset dispatch retains the SDK wheel and selected runtime wheels. Bare executables and source bundles remain intermediate test inputs. [`.gitlab-ci.yml`](../../../../.gitlab-ci.yml) accepts `python-v<repository-version>` tag pipelines whose version matches the root `package.json`, builds one SDK wheel and five native runtime wheels, then a single serialized job checks and publishes all six to the project PyPI registry. The [`python/sdk-runtime` README](../../../../python/sdk-runtime/README.md) owns the Windows target and the explicit exclusion of Windows arm64.
+ 
+diff --git a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.zh.md b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.zh.md
+index 653fb3d9b7..5e36ee6830 100644
+--- a/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.zh.md
++++ b/.agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.zh.md
+@@ -16,7 +16,7 @@ DeepSeek Harness 需要为 Python 库专门提供一种无需安装 Node、可
+ 
+ ### 打包路线：@yao-pkg/pkg 的 `--sea` 模式
+ 
+-exe 使用 [@yao-pkg/pkg](https://github.com/yao-pkg/pkg)（vercel/pkg 归档后的活跃维护 fork）的 **`--sea`（enhanced SEA）模式**打包。相比 Node 原生 SEA，pkg 在其上增加 `/snapshot` 虚拟文件系统（VFS）与运行时模块钩子，将 ESM 入口原样交给 Node 默认的 ESM loader，不依赖任何 ESM→CJS 转译。
++exe 使用 [@yao-pkg/pkg](https://github.com/yao-pkg/pkg)（vercel/pkg 归档后的活跃维护 fork）的 **`--sea`（enhanced SEA）模式**打包。相比 Node 原生 SEA，pkg 在其上增加 `/snapshot` 虚拟文件系统（VFS）与运行时模块钩子，将 ESM 入口原样交给 Node 默认的 ESM loader，不依赖任何 ESM→CJS 转译。Zstd 压缩使完整 VFS blob 保持在注入器的实际资源大小范围内，同时在运行时解压后保留字节完全一致的文件。
+ > 实测（macos-arm64、node24 构建目标、pkg 6.21.0）：VFS 内裸包名 ESM 动态 `import()`（含顶层 `await`）、CJS 互操作、`node:sqlite`、集合外包名明确报错、VFS 外磁盘 ESM `import()` 全部通过，`import.meta.url` 原样为 `file:///snapshot/...`。
+ 
+ `--sea` 要求构建目标 ≥ node22，exe 统一以 node24 为构建目标；每次 pkg 调用只打包一个构建目标，多平台各调用一次。
+@@ -48,7 +48,7 @@ exe 的 VFS 内是**构建产物形态的真实包树**（各包的 `lib/` + 真
+ 
+ ### 构建流水线与产物
+ 
+-[`scripts/build-exe-for-python-sdk.ts`](../../../../scripts/build-exe-for-python-sdk.ts)：运行时闭包校验 → `pnpm run build` →（清空后）`pnpm --filter dsh-python-runtime-closure deploy --legacy --prod --config.allow-unused-patches=true --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true` **直接写入** `python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/`，其中包含作为载体根目录 `runtime-bootstrap.mjs` 的 [`python/sdk-runtime/runtime-bootstrap.mjs`](../../../../python/sdk-runtime/runtime-bootstrap.mjs) → 恢复 legacy deploy 遗漏的直接工作区包，并拒绝剩余的 manifest 缺口 → 将暂存依赖中的符号链接替换为目标文件内容，删除包管理器的 `.bin` 链接，并在仍有任何符号链接时失败 → 验证已部署的 bootstrap，并注入以该文件为 bin 的 pkg 配置及覆盖动态读取 profile、bundle、前端、preset、原生库与配置文件的 assets → 暂存目标平台的 `node-pty` addon → 每个构建目标调用一次 `pkg --sea` → 将 `deepseek-harness-sdk-runtime-<platform>-<arch>` 写入 `dist-exe/`，并将它与对应目标的 Office 目录一同拷回运行时目录。该 bootstrap 由 Python runtime 拥有；普通启动时它调用公开 CLI export，而提供方私有选择会分派到同一个 `@deepseek-ai/dsh-subprocess-local/runner` 核心，不改变 CLI 语法，也不增加另一个可执行文件；[原生 containment 决策](2026-08-28-subprocess-native-containment.zh.md)负责这条私有路径。Linux CI 会在匹配的 manylinux 2.28 容器中重新构建 `pty.node`，因为 legacy deploy 会遗漏这一安装副作用。每个目标都会把对应的原生 `@vscode/ripgrep` 二进制复制到可执行文件旁，作为必需的 `-rg` 伴随文件；pkg 运行时通过 `process.pkg` 选择该伴随文件，普通 Node 执行则直接使用 `@vscode/ripgrep`。macOS 使用对应目标的预构建产物，并额外生成所需的 `-spawn-helper`。部署标志都有实测依据：未启用 `inject-workspace-packages` 时必须使用 `--legacy`；`hoisted` 为 pkg 提供稳定的单实例布局，再由显式物化步骤消除符号链接；关闭对等依赖自动安装可防止未声明的对等依赖扩大闭包；`link-workspace-packages` 选择直接工作区依赖。[`pnpm-workspace.yaml`](../../../../pnpm-workspace.yaml) 将传递的 `@deepseek-ai/cosmokit` 与 `@deepseek-ai/schemastery` semver 请求覆盖到固定的 vendor 源码，使 legacy deploy 不会从注册表解析这些未发布名称。 生产部署允许未使用的工作区补丁，因为开发工具可能不属于运行时闭包；闭包内包的补丁应用失败仍会中止部署。工作区安装继续严格校验未使用的补丁。
++[`scripts/build-exe-for-python-sdk.ts`](../../../../scripts/build-exe-for-python-sdk.ts)：运行时闭包校验 → `pnpm run build` →（清空后）`pnpm --filter dsh-python-runtime-closure deploy --legacy --prod --config.allow-unused-patches=true --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true` **直接写入** `python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/`，其中包含作为载体根目录 `runtime-bootstrap.mjs` 的 [`python/sdk-runtime/runtime-bootstrap.mjs`](../../../../python/sdk-runtime/runtime-bootstrap.mjs) → 恢复 legacy deploy 遗漏的直接工作区包，并拒绝剩余的 manifest 缺口 → 将暂存依赖中的符号链接替换为目标文件内容，删除包管理器的 `.bin` 链接，并在仍有任何符号链接时失败 → 验证已部署的 bootstrap，并注入以该文件为 bin 的 pkg 配置及覆盖动态读取 profile、bundle、前端、preset、原生库与配置文件的 assets → 暂存目标平台的 `node-pty` addon → 每个构建目标调用一次 `pkg --sea --compress Zstd` → 将 `deepseek-harness-sdk-runtime-<platform>-<arch>` 写入 `dist-exe/`，并将它与对应目标的 Office 目录一同拷回运行时目录。该 bootstrap 由 Python runtime 拥有；普通启动时它调用公开 CLI export，而提供方私有选择会分派到同一个 `@deepseek-ai/dsh-subprocess-local/runner` 核心，不改变 CLI 语法，也不增加另一个可执行文件；[原生 containment 决策](2026-08-28-subprocess-native-containment.zh.md)负责这条私有路径。Linux CI 会在匹配的 manylinux 2.28 容器中重新构建 `pty.node`，因为 legacy deploy 会遗漏这一安装副作用。每个目标都会把对应的原生 `@vscode/ripgrep` 二进制复制到可执行文件旁，作为必需的 `-rg` 伴随文件；pkg 运行时通过 `process.pkg` 选择该伴随文件，普通 Node 执行则直接使用 `@vscode/ripgrep`。macOS 使用对应目标的预构建产物，并额外生成所需的 `-spawn-helper`。部署标志都有实测依据：未启用 `inject-workspace-packages` 时必须使用 `--legacy`；`hoisted` 为 pkg 提供稳定的单实例布局，再由显式物化步骤消除符号链接；关闭对等依赖自动安装可防止未声明的对等依赖扩大闭包；`link-workspace-packages` 选择直接工作区依赖。[`pnpm-workspace.yaml`](../../../../pnpm-workspace.yaml) 将传递的 `@deepseek-ai/cosmokit` 与 `@deepseek-ai/schemastery` semver 请求覆盖到固定的 vendor 源码，使 legacy deploy 不会从注册表解析这些未发布名称。 生产部署允许未使用的工作区补丁，因为开发工具可能不属于运行时闭包；闭包内包的补丁应用失败仍会中止部署。工作区安装继续严格校验未使用的补丁。
+ 
+ CI 使用 [`.github/workflows/build-exe-for-python-sdk.yml`](../../../../.github/workflows/build-exe-for-python-sdk.yml)：[安装后 wheel 包验证](../testing/2026-08-23-installed-python-wheel-black-box-ci.zh.md)在拉取请求上运行 Linux/Windows x64，在 master 推送上运行 Linux ARM64 与两种 macOS 架构。[公开发布工作流](../../archived/process/2026-08-11-python-publication-workflow.md)调用它构建全部五个目标；`workflow_dispatch` 仍可选择部分目标。linux-x64、linux-arm64（`ubuntu-24.04-arm`）、macos-arm64、macos-x64（`macos-15-intel`）与 win-x64（`windows-2025`）分别进行原生构建，并在适用平台缓存 `~/.pkg-cache`；macOS 的 ad-hoc 签名由 pkg 处理。每个平台都把发布形态的 SDK wheel 包与运行时 wheel 包安装到 checkout 外的干净 venv，证明包与可执行文件来源，再通过公开 SDK 与直接 NDJSON JSON-RPC 运行完整 keyless 场景。可信拉取请求与 master 推送还会在各自选定的目标上运行真实 DeepSeek 双轮工具冒烟测试；fork 与 Dependabot head 不会获得密钥。Linux 会检查可执行文件和原生 addon 各自的 GLIBC 依赖，并额外运行 manylinux 2.28 冒烟测试；macOS 则检查 runtime、ripgrep 与 PTY helper 的架构，并验证三个载荷的部署目标都符合 wheel 包标签。完整构建五个目标时保留 6 个产物，每个产物只含一个发布文件：平台无关的 SDK wheel 包与 5 个原生运行时 wheel 包；手动选择部分目标时保留 SDK wheel 与所选运行时 wheel。裸 exe 与源码包只作为测试中间输入。[`.gitlab-ci.yml`](../../../../.gitlab-ci.yml) 只接受版本与根目录 `package.json` 匹配的 `python-v<repository-version>` 标签流水线，构建一个 SDK wheel 包和 5 个原生运行时 wheel 包，再由单个串行任务校验并将这 6 个文件发布到项目的 PyPI 注册表。[`python/sdk-runtime` README](../../../../python/sdk-runtime/README.zh.md)负责 Windows 目标及对 Windows arm64 的明确排除。
+ 
+diff --git a/scripts/build-exe-for-python-sdk.spec.ts b/scripts/build-exe-for-python-sdk.spec.ts
+index f2f563fd61..44968f9c45 100644
+--- a/scripts/build-exe-for-python-sdk.spec.ts
++++ b/scripts/build-exe-for-python-sdk.spec.ts
+@@ -100,7 +100,7 @@ describe('Python runtime executable builder CLI', () => {
+ 
+     expect(result.status).toBe(0)
+     expect(result.stdout).toContain('exec pkg')
+-    expect(result.stdout).toContain('--sea --targets node24-macos-x64')
++    expect(result.stdout).toContain('--sea --compress Zstd --targets node24-macos-x64')
+     expect(result.stdout).toContain('prepare Python and Office skills for mac-x64')
+     expect(result.stdout).toContain(join(root, 'dist-exe', 'macos-x64'))
+   })
+diff --git a/scripts/build-exe-for-python-sdk.ts b/scripts/build-exe-for-python-sdk.ts
+index ba4f2bc726..ab26c1c96d 100644
+--- a/scripts/build-exe-for-python-sdk.ts
++++ b/scripts/build-exe-for-python-sdk.ts
+@@ -1,6 +1,6 @@
+ /**
+  * Build the dsh executables and development Node carrier for the Python runtime wheel. The fixed
+- * `@yao-pkg/pkg --sea` route, deploy flags, and artifact layout are owned by
++ * `@yao-pkg/pkg --sea --compress Zstd` route, deploy flags, and artifact layout are owned by
+  * .agents/notes/implemented/architecture/2026-07-10-single-file-executable-sdk-runtime-distribution.md.
+  * The staged closure is symlink-free, and whole-tree assets cover Cordis's
+  * runtime imports that pkg cannot discover statically.
+@@ -433,6 +433,8 @@ class SingleExeBuild {
+       'pkg',
+       this.staging,
+       '--sea',
++      '--compress',
++      'Zstd',
+       '--targets',
+       target.spec,
+       '--output',
