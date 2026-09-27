@@ -97,20 +97,16 @@ test('reuses PiAiAdapter for a complete text stream', async (t) => {
     provider: 'openrouter', model: 'acme/reasoner', messages: TEXT,
   }))
   assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hello'))
-  assert.ok(chunks.some(chunk => chunk.type === 'usage'))
-  assert.deepEqual(chunks.find(chunk => chunk.type === 'accounting'), {
-    type: 'accounting',
-    accounting: {
-      scope: 'call',
-      costs: [{
-        kind: 'reported',
-        amount: { currency: 'USD', nanos: 125_000 },
-        source: 'openrouter-response',
-      }],
-    },
+  const usage = chunks.find(chunk => chunk.type === 'usage')
+  assert.deepEqual(usage.accounting, {
+    scope: 'call',
+    costs: [{
+      kind: 'reported',
+      amount: { currency: 'USD', nanos: 125_000 },
+      source: 'openrouter-response',
+    }],
   })
-  assert.ok(chunks.findIndex(chunk => chunk.type === 'usage') < chunks.findIndex(chunk => chunk.type === 'accounting'))
-  assert.ok(chunks.findIndex(chunk => chunk.type === 'accounting') < chunks.findIndex(chunk => chunk.type === 'finish'))
+  assert.ok(chunks.findIndex(chunk => chunk.type === 'usage') < chunks.findIndex(chunk => chunk.type === 'finish'))
   assert.equal(chunks.at(-1)?.type, 'finish')
   assert.equal(server.headers[0]?.authorization, 'Bearer test-key')
 })

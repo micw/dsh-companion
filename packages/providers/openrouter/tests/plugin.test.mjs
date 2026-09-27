@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import CompanionProviderAccounts from '@dsh-companion/provider-account'
 import {
@@ -15,8 +16,8 @@ import { catalogPayload, keyPayload } from './fixture.mjs'
 
 test('defaults the provider family to no configured instances', () => {
   const value = Config({})
-  assert.deepEqual(value.instances, {})
-  assert.deepEqual(value.retiredInstanceIds, [])
+  assert.deepEqual(value.instances.get(), {})
+  assert.deepEqual(value.retiredInstanceIds.get(), [])
 })
 
 test('registers one configured instance backed by catalog LKG and account services', async () => {
@@ -49,7 +50,7 @@ test('registers one configured instance backed by catalog LKG and account servic
   ctx.provide('companionModelPolicy', { isEnabled: (_provider, model) => model !== 'disabled' })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {})
+  const fiber = mountProvider(ctx, settings)
   try {
     await fiber
     assert.deepEqual(ctx.llm.listProviderFamilies(), [{
@@ -97,13 +98,14 @@ test('registers one configured instance backed by catalog LKG and account servic
 
 test('lists the family but no instance or route for empty settings', async () => {
   const ctx = new Context()
-  ctx.provide('settings', memorySettings({ instances: {}, retiredInstanceIds: [] }))
+  const settings = memorySettings({ instances: {}, retiredInstanceIds: [] })
+  ctx.provide('settings', settings)
   ctx.provide('credentials', memoryCredentials({}))
   ctx.provide('companionProviderCatalog', memoryCatalog())
   ctx.provide('companionModelPolicy', { isEnabled: () => false })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {})
+  const fiber = mountProvider(ctx, settings)
   await fiber
   assert.deepEqual(ctx.llm.listProviders(), [])
   assert.equal(ctx.llm.listProviderFamilies()[0].id, OPENROUTER_FAMILY_ID)
@@ -128,7 +130,7 @@ test('creates, renames, and deletes isolated instances through the DSH family AP
   ctx.provide('companionModelPolicy', { isEnabled: () => true })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {})
+  const fiber = mountProvider(ctx, settings)
   try {
     await fiber
     const signal = new AbortController().signal
@@ -183,7 +185,7 @@ test('removes a staged credential when the instance settings commit fails', asyn
   ctx.provide('companionModelPolicy', { isEnabled: () => true })
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(CompanionProviderAccounts)
-  const fiber = ctx.plugin({ name, inject, apply }, {})
+  const fiber = mountProvider(ctx, settings)
   try {
     await fiber
     await assert.rejects(ctx.llm.saveProviderInstance(OPENROUTER_FAMILY_ID, {
@@ -204,7 +206,8 @@ test('removes a staged credential when the instance settings commit fails', asyn
 
 test('keeps the provider family separate from a legacy configurable-provider directory', async () => {
   const ctx = new Context()
-  ctx.provide('settings', memorySettings({ instances: {}, retiredInstanceIds: [] }))
+  const settings = memorySettings({ instances: {}, retiredInstanceIds: [] })
+  ctx.provide('settings', settings)
   ctx.provide('credentials', memoryCredentials({}))
   ctx.provide('companionProviderCatalog', memoryCatalog())
   ctx.provide('companionModelPolicy', { isEnabled: () => false })
@@ -216,7 +219,7 @@ test('keeps the provider family separate from a legacy configurable-provider dir
     settingsNs: 'llm-pi-ai',
     settingsPath: ['providers', 'openrouter'],
   }])
-  const fiber = ctx.plugin({ name, inject, apply }, {})
+  const fiber = mountProvider(ctx, settings)
   await fiber
   assert.deepEqual(ctx.llm.listProviders(), [])
   assert.equal(ctx.llm.listProviderFamilies()[0].id, OPENROUTER_FAMILY_ID)
@@ -225,6 +228,31 @@ test('keeps the provider family separate from a legacy configurable-provider dir
   await ctx.fiber.dispose()
 })
 
+function mountProvider(ctx, settings) {
+  const config = Config(settings.get())
+  let ownerContext
+  const entry = { get fiber() { return ownerContext?.fiber } }
+  ctx.provide('configEditor', {
+    entries: () => ownerContext === undefined ? [] : [entry],
+    async edit(_entry, change) {
+      const next = change(settings.get(), {})
+      await settings.replace(next)
+      const candidate = Config(next)
+      updateVolatile(config.instances, candidate.instances)
+      updateVolatile(config.retiredInstanceIds, candidate.retiredInstanceIds)
+      ownerContext.emit('loader/volatile-update', [['instances'], ['retiredInstanceIds']])
+    },
+  })
+  return ctx.plugin({
+    name,
+    inject,
+    apply(child) {
+      ownerContext = child
+      return apply(child, config)
+    },
+  })
+}
+
 function memorySettings(initial) {
   let current = structuredClone(initial)
   let replaceFailure
@@ -232,6 +260,16 @@ function memorySettings(initial) {
   return {
     get: () => current,
     failNextReplace: (error) => { replaceFailure = error },
+    configure: () => () => {},
+    async replace(section) {
+      if (replaceFailure !== undefined) {
+        const error = replaceFailure
+        replaceFailure = undefined
+        throw error
+      }
+      current = structuredClone(section)
+      await Promise.all([...watchers].map(callback => callback(current, undefined)))
+    },
     register() {
       return {
         get: () => current,

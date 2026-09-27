@@ -2,8 +2,11 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-config-editor'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import {
@@ -21,7 +24,7 @@ import type {
   LlmProviderInstanceSave,
   RetryPolicyConfig,
 } from '@deepseek-ai/dsh-llm'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@dsh-companion/model-policy'
 import type {
   CompanionProviderAccountRegistration,
@@ -46,7 +49,7 @@ import type { OpenRouterCatalog } from './catalog.js'
 import { OpenRouterClient } from './client.js'
 
 /** DSH Settings namespace owned by this provider family. */
-export const OPENROUTER_SETTINGS_NAMESPACE = 'dsh-companion-openrouter'
+export const OPENROUTER_SETTINGS_NAMESPACE = 'dsh-companion-provider-openrouter'
 /** Legacy credential reference retained only for explicit manual migration. */
 export const DEFAULT_OPENROUTER_API_KEY_REF = 'OPENROUTER_API_KEY'
 /** Installed OpenRouter family identity. */
@@ -79,9 +82,9 @@ export interface OpenRouterInstanceConfig {
 /** User-configurable OpenRouter family state. */
 export interface Config {
   /** Configured instances by opaque DSH-owned identity. */
-  instances?: Record<string, OpenRouterInstanceConfig>
+  instances: Volatile<Record<string, OpenRouterInstanceConfig>>
   /** Retired identities that may never be rebound to another route. */
-  retiredInstanceIds?: string[]
+  retiredInstanceIds: Volatile<string[]>
 }
 
 const InstanceConfig: z<OpenRouterInstanceConfig> = z.object({
@@ -98,16 +101,16 @@ const InstanceConfig: z<OpenRouterInstanceConfig> = z.object({
 })
 
 /** Runtime schema for OpenRouter family settings. */
-export const Config: z<Config> = z.object({
-  instances: z.dict(InstanceConfig).default({}),
-  retiredInstanceIds: z.array(z.string()).default([]),
+export const Config = z.object({
+  instances: z.dict(InstanceConfig).default({}).volatile(),
+  retiredInstanceIds: z.array(z.string()).default([]).volatile(),
 })
 
 /** Cordis plugin identity. */
 export const name = 'dsh-companion/provider-openrouter'
 /** Required canonical DSH and Companion services. */
 export const inject = [
-  'llm', 'credentials', 'settings', 'companionProviderCatalog', 'companionProviderAccounts', 'companionModelPolicy',
+  'llm', 'credentials', 'configEditor', 'companionProviderCatalog', 'companionProviderAccounts', 'companionModelPolicy',
 ]
 
 interface ResolvedInstanceConfig {
@@ -125,14 +128,14 @@ interface ResolvedInstanceConfig {
 
 /** Register the settings-driven OpenRouter provider family. */
 export function apply(ctx: Context, config: Config): () => Promise<void> {
-  const scope = ctx.settings.register(OPENROUTER_SETTINGS_NAMESPACE, Config, {
-    base: config,
-    validate: validateConfig,
+  ctx.inject(['settings'], (child) => {
+    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
   const runtimes = new Map<string, OpenRouterInstanceRuntime>()
 
   const reconcile = (): void => {
-    const configured = scope.get().instances ?? {}
+    const configured = config.instances.get()
+    validateConfig({ instances: configured, retiredInstanceIds: config.retiredInstanceIds.get() })
     for (const [id, runtime] of runtimes) {
       if (configured[id] !== undefined) continue
       runtime.dispose()
@@ -147,14 +150,14 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
   }
 
   const controller: LlmProviderFamilyController = {
-    listInstances: async () => Promise.all(Object.entries(scope.get().instances ?? {}).map(async ([id, value]) => {
+    listInstances: async () => Promise.all(Object.entries(config.instances.get()).map(async ([id, value]) => {
       const resolved = resolveInstance(id, value)
       const credential = await ctx.credentials.describe(resolved.apiKeyEnv)
       const active = ctx.llm.listProviders().some(provider => provider.id === resolved.provider)
       return projectInstance(id, resolved, credential.configured, active)
     })),
-    saveAndTest: (save, signal) => saveAndTest(ctx, scope, save, signal),
-    deleteInstance: (instanceId, signal) => deleteInstance(ctx, scope, instanceId, signal),
+    saveAndTest: (save, signal) => saveAndTest(ctx, config, save, signal),
+    deleteInstance: (instanceId, signal) => deleteInstance(ctx, config, instanceId, signal),
   }
   const family = ctx.llm.registerProviderFamily({
     id: OPENROUTER_FAMILY_ID,
@@ -165,7 +168,7 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
   }, controller)
 
   reconcile()
-  const unwatch = scope.watch(() => {
+  ctx.on('loader/volatile-update', () => {
     reconcile()
     family.changed()
   })
@@ -174,7 +177,6 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
   })
 
   return async () => {
-    unwatch()
     family()
     const disposing = [...runtimes.values()].map(runtime => runtime.dispose())
     runtimes.clear()
@@ -324,14 +326,13 @@ class OpenRouterInstanceRuntime {
 
 async function saveAndTest(
   ctx: Context,
-  scope: SettingsScope<Config>,
+  config: Config,
   save: LlmProviderInstanceSave,
   signal?: AbortSignal,
 ): Promise<LlmProviderInstance> {
   signal?.throwIfAborted()
-  const state = scope.get()
-  const instances = state.instances ?? {}
-  const retired = new Set(state.retiredInstanceIds ?? [])
+  const instances = config.instances.get()
+  const retired = new Set(config.retiredInstanceIds.get())
   const id = String(save.instanceId)
   if (save.create && retired.has(id)) throw new LlmError('OpenRouter instance identity was retired', 'INVALID_CONFIG')
   const previous = instances[id]
@@ -369,10 +370,7 @@ async function saveAndTest(
   await client.keyStatus(signal)
   if (stagedRef !== undefined) await ctx.credentials.set(stagedRef, apiKey)
   try {
-    await scope.replace({
-      instances: { ...instances, [id]: storedInstance(candidate) },
-      retiredInstanceIds: [...retired],
-    })
+    await replaceConfig(ctx, { ...instances, [id]: storedInstance(candidate) }, [...retired])
   } catch (error) {
     if (stagedRef !== undefined) await ctx.credentials.unset(stagedRef)
     throw error
@@ -387,21 +385,30 @@ async function saveAndTest(
 
 async function deleteInstance(
   ctx: Context,
-  scope: SettingsScope<Config>,
+  config: Config,
   instanceId: LlmProviderInstanceId,
   signal?: AbortSignal,
 ): Promise<void> {
   signal?.throwIfAborted()
-  const state = scope.get()
-  const instances = { ...state.instances }
+  const instances = { ...config.instances.get() }
   const previous = instances[instanceId]
   if (previous === undefined) throw new LlmError('OpenRouter instance does not exist', 'NO_PROVIDER_INSTANCE')
   const resolved = resolveInstance(instanceId, previous)
   delete instances[instanceId]
-  const retired = new Set(state.retiredInstanceIds ?? [])
+  const retired = new Set(config.retiredInstanceIds.get())
   retired.add(instanceId)
-  await scope.replace({ instances, retiredInstanceIds: [...retired] })
+  await replaceConfig(ctx, instances, [...retired])
   if (ownsCredential(resolved.apiKeyEnv)) await ctx.credentials.unset(resolved.apiKeyEnv)
+}
+
+async function replaceConfig(
+  ctx: Context,
+  instances: Readonly<Record<string, VolatileSnapshot<OpenRouterInstanceConfig>>>,
+  retiredInstanceIds: string[],
+): Promise<void> {
+  const entry = ctx.fiber.entry ?? ctx.configEditor.entries().find(candidate => candidate.fiber === ctx.fiber)
+  if (entry === undefined) throw new LlmError('OpenRouter configuration entry is unavailable', 'INVALID_CONFIG')
+  await ctx.configEditor.edit(entry, current => ({ ...current, instances, retiredInstanceIds }))
 }
 
 function decodeDraft(value: Readonly<Record<string, unknown>>): OpenRouterInstanceConfig {
@@ -499,13 +506,16 @@ function accountSource(
   }
 }
 
-function validateConfig(config: Config): void {
-  const retired = new Set(config.retiredInstanceIds ?? [])
-  if (retired.size !== (config.retiredInstanceIds ?? []).length) {
+function validateConfig(config: {
+  readonly instances: Readonly<Record<string, VolatileSnapshot<OpenRouterInstanceConfig>>>
+  readonly retiredInstanceIds: readonly string[]
+}): void {
+  const retired = new Set(config.retiredInstanceIds)
+  if (retired.size !== config.retiredInstanceIds.length) {
     throw new LlmError('OpenRouter retired instance ids must be unique', 'INVALID_CONFIG')
   }
   const routes = new Set<string>()
-  for (const [id, value] of Object.entries(config.instances ?? {})) {
+  for (const [id, value] of Object.entries(config.instances)) {
     if (retired.has(id)) throw new LlmError(`OpenRouter instance ${id} is retired`, 'INVALID_CONFIG')
     const resolved = resolveInstance(id, value)
     if (routes.has(resolved.provider)) throw new LlmError(`OpenRouter route ${resolved.provider} is duplicated`, 'INVALID_CONFIG')
@@ -513,7 +523,7 @@ function validateConfig(config: Config): void {
   }
 }
 
-function resolveInstance(id: string, config: OpenRouterInstanceConfig): ResolvedInstanceConfig {
+function resolveInstance(id: string, config: VolatileSnapshot<OpenRouterInstanceConfig>): ResolvedInstanceConfig {
   if (id.length === 0) throw new LlmError('OpenRouter instance id must be non-empty', 'INVALID_CONFIG')
   const positive = (value: number | undefined, fallback: number, field: string): number => {
     const result = value ?? fallback
@@ -533,12 +543,29 @@ function resolveInstance(id: string, config: OpenRouterInstanceConfig): Resolved
     provider,
     baseURL: normalizeApiRoot(config.baseURL ?? DEFAULT_OPENROUTER_API_BASE_URL),
     apiKeyEnv: credentialRef(apiKeyEnv),
-    retryPolicy: resolveRetryPolicy(config.retryPolicy, `provider-openrouter ${id} retryPolicy`),
+    retryPolicy: resolveRetryPolicy(detachRetryPolicy(config.retryPolicy), `provider-openrouter ${id} retryPolicy`),
     streamIdleTimeoutMs: positive(config.streamIdleTimeoutMs, 300_000, 'streamIdleTimeoutMs'),
     maxRequestImageBytes: positive(config.maxRequestImageBytes, 20 * 1024 * 1024, 'maxRequestImageBytes'),
     requestImagePixelBudget: positive(config.requestImagePixelBudget, 2048 * 2048, 'requestImagePixelBudget'),
     requestImageMaxBytes: positive(config.requestImageMaxBytes, 1024 * 1024, 'requestImageMaxBytes'),
   }
+}
+
+function detachRetryPolicy(
+  value: VolatileSnapshot<RetryPolicyConfig> | undefined,
+): RetryPolicyConfig | undefined {
+  if (value === undefined) return undefined
+  return value.mode === 'normal'
+    ? {
+        mode: 'normal',
+        ...value.maxRetries === undefined ? {} : { maxRetries: value.maxRetries },
+        ...value.retryableCodes === undefined ? {} : { retryableCodes: [...value.retryableCodes] },
+        ...value.backoff === undefined ? {} : { backoff: { ...value.backoff } },
+      }
+    : {
+        mode: 'always',
+        ...value.backoff === undefined ? {} : { backoff: { ...value.backoff } },
+      }
 }
 
 function ownsCredential(ref: CredentialRef): boolean {

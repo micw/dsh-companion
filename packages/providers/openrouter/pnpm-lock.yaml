@@ -27,9 +27,18 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../deepseek-harness/vendor/cordis
         version: link:../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../deepseek-harness/vendor/loader
+        version: link:../deepseek-harness/vendor/loader
+      '@deepseek-ai/cosmokit':
+        specifier: link:../deepseek-harness/vendor/cosmokit
+        version: link:../deepseek-harness/vendor/cosmokit
       '@deepseek-ai/dsh-attachment':
         specifier: link:../deepseek-harness/packages/attachment/attachment
         version: link:../deepseek-harness/packages/attachment/attachment
+      '@deepseek-ai/dsh-config-editor':
+        specifier: link:../deepseek-harness/packages/boot/config-editor
+        version: link:../deepseek-harness/packages/boot/config-editor
       '@deepseek-ai/dsh-credentials':
         specifier: link:../deepseek-harness/packages/credentials/credentials
         version: link:../deepseek-harness/packages/credentials/credentials
