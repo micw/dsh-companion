@@ -14,6 +14,7 @@ import {
   parseCostSummary,
   parseModelCatalog,
   parsePermissionSelection,
+  permissionDefaultSelection,
   parseProviderAccountSnapshot,
   parseSessionListSnapshot,
   parseSettingsDescribe,
@@ -360,7 +361,7 @@ test('the canonical Session list rejects duplicate and malformed identities', ()
   }), /invalid Session list entry/);
 });
 
-test('provider settings descriptions retain only redacted namespace values', () => {
+test('provider settings descriptions retain only redacted values and their public schemas', () => {
   const parsed = parseSettingsDescribe({
     writable: true,
     hasDocument: true,
@@ -377,6 +378,7 @@ test('provider settings descriptions retain only redacted namespace values', () 
   assert.deepEqual(parsed.namespaces.get('llm-deepseek'), {
     value: { enabled: false, apiKeyEnv: 'DEEPSEEK_API_KEY' },
     revision: 7,
+    schema: {},
   });
   assert.throws(() => parseSettingsDescribe({
     writable: true,
@@ -679,6 +681,33 @@ test('permission projections retain the DSH-owned options and current preset', (
     options: [{ value: 'workspace-write', name: 'Workspace Write' }],
     currentValue: 'danger-full-access',
   }), /does not contain its current value/u);
+});
+
+test('a fresh draft derives its pending permission from the DSH settings schema', () => {
+  const settings = parseSettingsDescribe({
+    writable: true,
+    namespaces: [{
+      ns: 'permission', revision: 2, value: { defaultPreset: 'workspace-write' },
+      schema: {
+        uid: 6,
+        refs: {
+          1: { type: 'const', value: 'read-only' },
+          2: { type: 'const', meta: { description: 'Workspace' }, value: 'workspace-write' },
+          3: { type: 'const', value: 'danger-full-access' },
+          4: { type: 'union', list: [1, 2, 3] },
+          6: { type: 'object', dict: { defaultPreset: 4 } },
+        },
+      },
+    }],
+  });
+  assert.deepEqual(permissionDefaultSelection(settings), {
+    options: [
+      { value: 'read-only', name: 'read-only' },
+      { value: 'workspace-write', name: 'Workspace', description: 'Workspace' },
+      { value: 'danger-full-access', name: 'danger-full-access' },
+    ],
+    currentValue: 'workspace-write',
+  });
 });
 
 test('model selection restores from DSH projections and rejects stale cross-stream baselines', () => {
