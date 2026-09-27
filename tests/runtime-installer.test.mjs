@@ -12,6 +12,7 @@ import {
   ensureManagedProfile,
   installPayload,
   runtimeStoragePath,
+  shouldReuseSourceRuntime,
   verifyPayload,
 } from '../vscode/out/runtimeInstaller.js';
 
@@ -185,9 +186,12 @@ test('native runtime installation accepts VS Code local user-data storage', () =
   );
 });
 
-test('source runtime reuse precedes packaged-storage URI requirements', async () => {
+test('only an Extension Development Host reuses a source runtime', async () => {
   const source = await readFile(new URL('../vscode/src/runtimeInstaller.ts', import.meta.url), 'utf8');
-  const reuse = source.indexOf("if (shared?.runtimeId === 'source') return shared;");
+  assert.equal(shouldReuseSourceRuntime('source', 2), true);
+  assert.equal(shouldReuseSourceRuntime('source', 1), false);
+  assert.equal(shouldReuseSourceRuntime('installed-version', 2), false);
+  const reuse = source.indexOf('if (shouldReuseSourceRuntime(shared?.runtimeId, context.extensionMode)) return shared;');
   const storageCheck = source.indexOf('runtimeStoragePath(context.globalStorageUri)');
   assert.ok(reuse >= 0 && storageCheck > reuse);
   assert.match(source, /manifest\.dsh\.upstreamVersion[\s\S]*upstreamCommit\.slice\(0, 8\)[\s\S]*patchSetSha256\.slice\(0, 8\)/);

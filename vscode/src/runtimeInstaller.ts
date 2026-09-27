@@ -66,7 +66,7 @@ interface ActiveRuntime {
 export async function connectRuntime(context: vscode.ExtensionContext): Promise<RuntimeControl | undefined> {
   const lifecycleRoot = companionLifecycleRoot();
   const shared = await RuntimeControl.fromStateFile(join(lifecycleRoot, 'runtime.json'));
-  if (shared?.runtimeId === 'source') return shared;
+  if (shouldReuseSourceRuntime(shared?.runtimeId, context.extensionMode)) return shared;
   if (context.extensionUri.scheme !== 'file') return undefined;
   const globalStorage = runtimeStoragePath(context.globalStorageUri);
   if (globalStorage === undefined) {
@@ -76,7 +76,13 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
   try {
     await stat(join(payload, 'runtime-manifest.json'));
   } catch (error) {
-    if (isFileNotFound(error)) return shared ?? RuntimeControl.discover(context.extensionUri);
+    if (isFileNotFound(error)) {
+      if (shared?.runtimeId === 'source') {
+        shared.dispose();
+        return undefined;
+      }
+      return shared ?? RuntimeControl.discover(context.extensionUri);
+    }
     throw error;
   }
   shared?.dispose();
@@ -88,6 +94,12 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
     companionDataHome(),
     PACKAGED_DSH_ORIGIN,
   );
+}
+
+/** Source ownership is valid only for an Extension Development Host; packaged activation replaces it. */
+export function shouldReuseSourceRuntime(runtimeId: string | undefined, extensionMode: number): boolean {
+  // VS Code's stable ExtensionMode.Development enum value is 2; keep vscode a type-only dependency for Node tests.
+  return runtimeId === 'source' && extensionMode === 2;
 }
 
 /** Installs, activates, and connects one already verified packaged payload. */
