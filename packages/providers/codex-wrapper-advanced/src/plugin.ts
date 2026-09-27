@@ -2,6 +2,8 @@
 
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
@@ -13,7 +15,6 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@dsh-companion/model-policy'
-import { COMPANION_MODEL_POLICY_SETTINGS_NAMESPACE } from '@dsh-companion/model-policy'
 import type { CompanionProviderAccountRegistration, CompanionProviderAccountSource } from '@dsh-companion/provider-account'
 import type { CompanionProviderCatalogRegistration, CompanionProviderCatalogSource } from '@dsh-companion/provider-catalog'
 import { CodexAccountProjection } from './account.js'
@@ -29,28 +30,35 @@ import { CodexWireClient, normalizeServiceRoot } from './wire/client.js'
 import type { CodexWireCatalog } from './wire/types.js'
 
 /** DSH Settings namespace owned by this provider integration. */
-export const CODEX_WRAPPER_ADVANCED_SETTINGS_NAMESPACE = 'dsh-companion-codex-wrapper-advanced'
+export const CODEX_WRAPPER_ADVANCED_SETTINGS_NAMESPACE = 'dsh-companion-provider-codex-wrapper-advanced'
 /** Conventional DSH credential reference for the external service API key. */
 export const DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF = 'CODEX_WRAPPER_ADVANCED_API_KEY'
 
 /** User-configurable provider connection and routing policy. */
 export interface Config {
   /** Whether a configured endpoint registers the DSH provider route. */
-  enabled?: boolean
+  enabled: Volatile<boolean>
   /** Root URL of the independently operated wrapper service. */
-  baseURL?: string
+  baseURL: Volatile<string | undefined>
   /** DSH credential reference holding the wrapper API key. */
-  apiKeyEnv?: string
+  apiKeyEnv: Volatile<string>
   /** Provider-owned retry policy captured with the DSH route registration. */
-  retryPolicy?: RetryPolicyConfig
+  retryPolicy: Volatile<RetryPolicyConfig | undefined>
+}
+
+interface ConfigValue {
+  readonly enabled?: boolean
+  readonly baseURL?: string
+  readonly apiKeyEnv?: string
+  readonly retryPolicy?: RetryPolicyConfig
 }
 
 /** Runtime schema for provider settings and composition config. */
-export const Config: z<Config> = z.object({
-  enabled: z.boolean().default(false),
-  baseURL: z.string(),
-  apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF),
-  retryPolicy: RetryPolicySchema,
+export const Config = z.object({
+  enabled: z.boolean().default(false).volatile(),
+  baseURL: z.string().volatile(),
+  apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
 
 /** Cordis plugin identity. */
@@ -69,7 +77,6 @@ interface ResolvedConfig {
 
 /** Register the configurable provider and its settings-driven native adapter. */
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
   let adapterRegistration: AdapterRegistrationHandle | undefined
   let catalogRegistration: CompanionProviderCatalogRegistration<CodexWireCatalog> | undefined
   let accountRegistration: CompanionProviderAccountRegistration | undefined
@@ -78,6 +85,16 @@ export function apply(ctx: Context, config: Config): void {
   let accountIdentity: string | undefined
   let generationQueue: Promise<void> = Promise.resolve()
 
+  const current = (): ConfigValue => {
+    const baseURL = config.baseURL.get()
+    const retryPolicy = detachRetryPolicy(config.retryPolicy.get())
+    return {
+      enabled: config.enabled.get(),
+      ...baseURL === undefined ? {} : { baseURL },
+      apiKeyEnv: config.apiKeyEnv.get(),
+      ...retryPolicy === undefined ? {} : { retryPolicy },
+    }
+  }
   const resolved = (): ResolvedConfig => resolveConfig(current())
   const adapter = new CodexWrapperAdvancedAdapter({
     generation: signal => queueGeneration(signal),
@@ -196,17 +213,15 @@ export function apply(ctx: Context, config: Config): void {
 
   syncRoute()
   warmConfiguredGeneration()
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, CODEX_WRAPPER_ADVANCED_SETTINGS_NAMESPACE, Config, config, {
-      validate: value => { resolveConfig(value) },
-      setSource: source => { current = source },
-      onChange: () => {
-        catalogRegistration?.cancelRefresh()
-        accountRegistration?.cancelRefresh()
-        syncRoute()
-        warmConfiguredGeneration()
-      },
-    })
+  ctx.inject(['settings'], (child) => {
+    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
+  })
+  ctx.on('loader/volatile-update', () => {
+    resolveConfig(current())
+    catalogRegistration?.cancelRefresh()
+    accountRegistration?.cancelRefresh()
+    syncRoute()
+    warmConfiguredGeneration()
   })
 
   ctx.on('credentials/reference-updated', (ref) => {
@@ -214,9 +229,6 @@ export function apply(ctx: Context, config: Config): void {
     catalogRegistration?.cancelRefresh()
     accountRegistration?.cancelRefresh()
     warmConfiguredGeneration()
-  })
-  ctx.on('settings/updated', (namespace) => {
-    if (namespace === COMPANION_MODEL_POLICY_SETTINGS_NAMESPACE) syncRoute()
   })
 }
 
@@ -248,7 +260,7 @@ function catalogSource(
   }
 }
 
-function resolveConfig(config: Config): ResolvedConfig {
+function resolveConfig(config: ConfigValue): ResolvedConfig {
   if (config.baseURL === '') throw new LlmError('Codex Wrapper Advanced baseURL must not be empty', 'INVALID_CONFIG')
   const baseURL = config.baseURL === undefined ? undefined : normalizeServiceRoot(config.baseURL)
   const apiKeyEnv = credentialRef(config.apiKeyEnv ?? DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF)
@@ -258,6 +270,23 @@ function resolveConfig(config: Config): ResolvedConfig {
     apiKeyEnv,
     retryPolicy: resolveRetryPolicy(config.retryPolicy, 'provider-codex-wrapper-advanced retryPolicy'),
   }
+}
+
+function detachRetryPolicy(
+  value: VolatileSnapshot<RetryPolicyConfig> | undefined,
+): RetryPolicyConfig | undefined {
+  if (value === undefined) return undefined
+  return value.mode === 'normal'
+    ? {
+        mode: 'normal',
+        ...value.maxRetries === undefined ? {} : { maxRetries: value.maxRetries },
+        ...value.retryableCodes === undefined ? {} : { retryableCodes: [...value.retryableCodes] },
+        ...value.backoff === undefined ? {} : { backoff: { ...value.backoff } },
+      }
+    : {
+        mode: 'always',
+        ...value.backoff === undefined ? {} : { backoff: { ...value.backoff } },
+      }
 }
 
 function sourceIdentity(baseURL: string, apiKey: string): string {

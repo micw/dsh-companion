@@ -1,7 +1,7 @@
 /** Serialization from immutable DSH requests to the wrapper Responses vocabulary. */
 
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, ImageBlock, Message, ToolResultBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, ImageBlock, Message, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { CodexWireRequest } from './types.js'
 
@@ -45,6 +45,8 @@ export async function serializeCodexWireRequest(
   for (const message of messages) {
     if (message.role === 'assistant') {
       appendAssistant(input, message)
+    } else if (message.role === 'system') {
+      throw new LlmError('Codex Wrapper Advanced retained a system message after instruction extraction', 'INVALID_REQUEST')
     } else {
       await appendUser(input, message, options.imageUrl, request.signal)
     }
@@ -82,7 +84,7 @@ function rejectUnsupportedControls(request: GenerateOptions): void {
   }
 }
 
-function systemInstructions(request: GenerateOptions): { instructions?: string; messages: readonly Message[] } {
+function systemInstructions(request: GenerateOptions): { instructions?: string; messages: readonly RequestMessage[] } {
   const systemMessages = request.messages.filter(message => message.role === 'system')
   if (request.system !== undefined && systemMessages.length > 0) {
     throw new LlmError(
@@ -126,30 +128,24 @@ function systemText(message: Message): string {
 
 async function appendUser(
   input: unknown[],
-  message: Message,
+  message: Exclude<RequestMessage, { role: 'assistant' | 'system' }>,
   imageUrl: CodexWireRequestOptions['imageUrl'],
   signal?: AbortSignal,
 ): Promise<void> {
-  const toolResults = message.content.filter((block): block is ToolResultBlock => block.type === 'tool-result')
-  if (toolResults.length > 0) {
-    if (toolResults.length !== message.content.length) {
-      throw new LlmError('Codex Wrapper Advanced user message mixes tool results with ordinary input', 'UNSUPPORTED_CONTENT')
-    }
-    for (const result of toolResults) {
-      const output = await inputContent(result.content, imageUrl, signal)
-      input.push({
-        type: 'function_call_output',
-        call_id: String(result.toolCallId),
-        output: output.length === 1 && output[0]?.type === 'input_text'
-          ? output[0].text
-          : output,
-      })
-    }
+  if (message.role === 'tool') {
+    const output = await inputContent(message.content, imageUrl, signal)
+    input.push({
+      type: 'function_call_output',
+      call_id: String(message.toolCallId),
+      output: output.length === 1 && output[0]?.type === 'input_text'
+        ? output[0].text
+        : output,
+    })
     return
   }
   input.push({
     type: 'message',
-    role: 'user',
+    role: message.role,
     content: await inputContent(message.content, imageUrl, signal),
   })
 }

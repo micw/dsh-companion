@@ -73,11 +73,11 @@ test('replays opaque reasoning in block order and preserves raw tool arguments',
           blocks: [{ reasoningItem }, null, null, null],
         },
       }),
-      message('user', [{
-        type: 'tool-result',
-        toolCallId: 'call-1',
+      {
+        id: 'tool-1', role: 'tool', toolCallId: 'call-1',
         content: [{ type: 'text', text: 'file body' }],
-      }], { kind: 'tool', callId: 'call-1' }),
+        source: { kind: 'tool', callId: 'call-1' },
+      },
     ],
   }, { wireModel: 'gpt-5.6-sol', imageUrl })
 
