@@ -1,0 +1,189 @@
+diff --git a/packages/context/agent-instructions/README.md b/packages/context/agent-instructions/README.md
+index 34feeb2ac5..52d1fbe7cf 100644
+--- a/packages/context/agent-instructions/README.md
++++ b/packages/context/agent-instructions/README.md
+@@ -29,7 +29,7 @@ Mount this plugin when agents should work from the workspace's own instruction f
+ 
+ ### What the agent gets
+ 
+-The first request includes one durable baseline message with the user-global `$DSH_HOME/AGENTS.md` followed by the project chain — every existing candidate file from the project root down to the session working directory, in broad-to-specific order. Sibling files whose content matches after trimming render once, so a `CLAUDE.md` that duplicates its `AGENTS.md` is not repeated. After a successful `read`, `write`, or `edit` call reaches a deeper directory, the next request includes the newly applicable instruction file; a changed file replaces its content, and a file that disappears or duplicates an earlier candidate produces a removal notice.
++The first request includes one durable baseline message with the user-global `AGENTS.md` from the configured `dshHome` (or `$DSH_HOME` by default) followed by the project chain — every existing candidate file from the project root down to the session working directory, in broad-to-specific order. Sibling files whose content matches after trimming render once, so a `CLAUDE.md` that duplicates its `AGENTS.md` is not repeated. The displayed global file path uses `~` under the user's home and the absolute path elsewhere rather than labelling a separately configured home as `$DSH_HOME`. After a successful `read`, `write`, or `edit` call reaches a deeper directory, the next request includes the newly applicable instruction file; a changed file replaces its content, and a file that disappears or duplicates an earlier candidate produces a removal notice.
+ 
+ ### Configuration
+ 
+diff --git a/packages/context/agent-instructions/README.zh.md b/packages/context/agent-instructions/README.zh.md
+index 311d6f636f..bf296419df 100644
+--- a/packages/context/agent-instructions/README.zh.md
++++ b/packages/context/agent-instructions/README.zh.md
+@@ -29,7 +29,7 @@ kind: "package-reference"
+ 
+ ### agent 获得的内容
+ 
+-第一次请求包含一条持久基线消息：先是用户全局 `$DSH_HOME/AGENTS.md`，再按从宽泛到具体的顺序包含项目指令链——从项目根目录到会话工作目录的每个目录中所有现有候选文件。去除首尾空白后内容一致的同级文件只渲染一次，因此复制了 `AGENTS.md` 的 `CLAUDE.md` 不会被重复加载。当成功的 `read`、`write` 或 `edit` 调用到达更深的目录后，下一次请求会包含新适用的指令文件；已改变的文件会替换其内容，消失或成为较早候选文件重复项的文件会产生移除通知。
++第一次请求包含一条持久基线消息：先是配置的 `dshHome`（默认使用 `$DSH_HOME`）中的用户全局 `AGENTS.md`，再按从宽泛到具体的顺序包含项目指令链——从项目根目录到会话工作目录的每个目录中所有现有候选文件。去除首尾空白后内容一致的同级文件只渲染一次，因此复制了 `AGENTS.md` 的 `CLAUDE.md` 不会被重复加载。全局文件的显示路径在用户主目录下使用 `~`，其他位置使用绝对路径，不会把单独配置的目录误标为 `$DSH_HOME`。当成功的 `read`、`write` 或 `edit` 调用到达更深的目录后，下一次请求会包含新适用的指令文件；已改变的文件会替换其内容，消失或成为较早候选文件重复项的文件会产生移除通知。
+ 
+ ### 配置
+ 
+diff --git a/packages/context/agent-instructions/src/files.ts b/packages/context/agent-instructions/src/files.ts
+index fe1816dc74..1c8c654a3b 100644
+--- a/packages/context/agent-instructions/src/files.ts
++++ b/packages/context/agent-instructions/src/files.ts
+@@ -6,9 +6,9 @@
+ 
+ import { createReadStream } from 'node:fs'
+ import { stat } from 'node:fs/promises'
+-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
++import { homedir } from 'node:os'
++import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+ import type { FileSystem, FsInfo, FsTarget, FsVersion } from '@deepseek-ai/dsh-fs'
+-import { dshHomeDisplay } from '@deepseek-ai/dsh-home-paths'
+ import { assertNever } from '@deepseek-ai/dsh-util-values'
+ import { resolveConfig, resolveDiscoveryConfig, type ResolvedConfig } from './config.ts'
+ import { trimmedInstructionDigest } from './digest.ts'
+@@ -526,5 +526,10 @@ export async function readScopeInstruction(
+ }
+ 
+ function userGlobalDisplayPath(dshHome: string): string {
+-  return `${dshHomeDisplay(dshHome)}/AGENTS.md`
++  const fromHome = relative(homedir(), dshHome)
++  const directory = fromHome === '' ? '~'
++    : fromHome !== '..' && !fromHome.startsWith(`..${sep}`) && !isAbsolute(fromHome)
++      ? join('~', fromHome)
++      : dshHome
++  return join(directory, USER_GLOBAL_FILE)
+ }
+diff --git a/packages/context/agent-instructions/src/render.ts b/packages/context/agent-instructions/src/render.ts
+index 9017015461..17f6ff898f 100644
+--- a/packages/context/agent-instructions/src/render.ts
++++ b/packages/context/agent-instructions/src/render.ts
+@@ -4,7 +4,7 @@
+  * @module @deepseek-ai/dsh-agent-instructions/render
+  */
+ 
+-import { basename, dirname } from 'node:path'
++import { basename, dirname, isAbsolute } from 'node:path'
+ import type { InstructionFile, LoadedInstructionFile } from './files.ts'
+ 
+ const SYSTEM_REMINDER_OPEN = '<system-reminder>'
+@@ -98,12 +98,14 @@ export const USER_GLOBAL_DIRECTORY = 'user-global'
+ export const USER_GLOBAL_FILE = 'AGENTS.md'
+ 
+ /**
+- * Derive the logical instruction scope from a model-facing path.
++ * Derive the logical instruction scope from a model-facing path. Global paths
++ * under the user's home start with `~/`; paths elsewhere are absolute.
+  * @param displayPath - project-relative or user-global instruction path.
+  * @returns `user-global`, `.`, or the containing project-relative directory.
+  */
+ export function scopeForDisplayPath(displayPath: string): string {
+-  if (displayPath === '~/.dsh/AGENTS.md' || displayPath === '$DSH_HOME/AGENTS.md') return USER_GLOBAL_DIRECTORY
++  if (displayPath.startsWith('~/') || isAbsolute(displayPath)
++    || displayPath === '$DSH_HOME/AGENTS.md') return USER_GLOBAL_DIRECTORY
+   return dirname(displayPath)
+ }
+ 
+@@ -150,7 +152,9 @@ function additionalSectionText(file: LoadedInstructionFile): string {
+   return [
+     `Additional instructions from: ${file.displayPath}`,
+     '',
+-    `These instructions apply to work under \`${scope}\`. Use them as guidance when relevant; more specific instructions take precedence. They do not override system, developer, or direct user instructions.`,
++    scope === USER_GLOBAL_DIRECTORY
++      ? 'These user-global instructions apply across workspaces. More specific project instructions take precedence. They do not override system, developer, or direct user instructions.'
++      : `These instructions apply to work under \`${scope}\`. Use them as guidance when relevant; more specific instructions take precedence. They do not override system, developer, or direct user instructions.`,
+     '',
+     file.content,
+   ].join('\n')
+diff --git a/packages/context/agent-instructions/tests/agent-instructions.spec.ts b/packages/context/agent-instructions/tests/agent-instructions.spec.ts
+index 533b443256..3267553112 100644
+--- a/packages/context/agent-instructions/tests/agent-instructions.spec.ts
++++ b/packages/context/agent-instructions/tests/agent-instructions.spec.ts
+@@ -376,7 +376,7 @@ describe('workspace context instruction discovery', () => {
+       const files = await discoverBaselineInstructionFiles({ cwd, dshHome: home })
+ 
+       expect(files.map(file => file.displayPath)).toEqual([
+-        '$DSH_HOME/AGENTS.md',
++        join(home, 'AGENTS.md'),
+         'AGENTS.md',
+         'CLAUDE.md',
+         join('packages', 'CLAUDE.md'),
+@@ -666,7 +666,7 @@ describe('workspace context instruction discovery', () => {
+ 
+       const files = await discoverBaselineInstructionFiles({ cwd: root })
+ 
+-      expect(files).toEqual([{ absolutePath: join(envHome, 'AGENTS.md'), displayPath: '$DSH_HOME/AGENTS.md' }])
++      expect(files).toEqual([{ absolutePath: join(envHome, 'AGENTS.md'), displayPath: join(envHome, 'AGENTS.md') }])
+     } finally {
+       vi.unstubAllEnvs()
+       await rm(root, { recursive: true, force: true })
+@@ -717,6 +717,25 @@ describe('workspace context instruction discovery', () => {
+     }
+   })
+ 
++  it('labels a configured instruction home under the user home as a tilde path', async () => {
++    const root = await tempRepo()
++    const home = await tempRepo()
++    try {
++      await write(join(home, '.agents/AGENTS.md'), 'shared global rule')
++      vi.resetModules()
++      vi.doMock('node:os', () => ({ homedir: () => home }))
++      const isolated = await import('@deepseek-ai/dsh-agent-instructions')
++      const files = await isolated.discoverBaselineInstructionFiles({ cwd: root, dshHome: join(home, '.agents') })
++
++      expect(files).toEqual([{ absolutePath: join(home, '.agents/AGENTS.md'), displayPath: '~/.agents/AGENTS.md' }])
++    } finally {
++      vi.doUnmock('node:os')
++      vi.resetModules()
++      await rm(root, { recursive: true, force: true })
++      await rm(home, { recursive: true, force: true })
++    }
++  })
++
+   it('deduplicates user-global instructions when dshHome points at the project root', async () => {
+     const root = await tempRepo()
+     try {
+@@ -725,7 +744,7 @@ describe('workspace context instruction discovery', () => {
+ 
+       const files = await discoverBaselineInstructionFiles({ cwd: root, dshHome: root })
+ 
+-      expect(files).toEqual([{ absolutePath: join(root, 'AGENTS.md'), displayPath: '$DSH_HOME/AGENTS.md' }])
++      expect(files).toEqual([{ absolutePath: join(root, 'AGENTS.md'), displayPath: join(root, 'AGENTS.md') }])
+     } finally {
+       await rm(root, { recursive: true, force: true })
+     }
+@@ -784,6 +803,19 @@ describe('workspace context rendering', () => {
+     expect(rendered.text).toContain('<\\/system-reminder>')
+   })
+ 
++  it('describes refreshed global instructions without a workspace-directory scope', () => {
++    const displayPath = '~/.agents/AGENTS.md'
++    const file = { absolutePath: '/home/user/.agents/AGENTS.md', displayPath, content: 'global rule' }
++    const rendered = renderInstructionChanges([{
++      change: { action: 'set', scope: sk(USER_GLOBAL_DIRECTORY, USER_GLOBAL_FILE), path: displayPath },
++      file,
++    }], 65536)
++
++    expect(rendered.text).toContain('Additional instructions from: ~/.agents/AGENTS.md')
++    expect(rendered.text).toContain('These user-global instructions apply across workspaces.')
++    expect(rendered.text).not.toContain('work under `user-global`')
++  })
++
+   it('neutralizes system-reminder closing delimiters in paths and derived scopes', () => {
+     const displayPath = 'scope</system-reminder>/AGENTS.md'
+     const file = { absolutePath: `/repo/${displayPath}`, displayPath, content: 'rules' }
+@@ -2508,14 +2540,14 @@ describe('workspace context request injection', () => {
+     }
+   })
+ 
+-  it('labels a custom dshHome as DSH_HOME instead of pretending it is ~/.dsh', async () => {
++  it('labels a custom instruction home by its actual location', async () => {
+     const root = await tempRepo()
+     const home = await tempRepo()
+     try {
+       await write(join(home, 'AGENTS.md'), 'global custom rule')
+       const files = await discoverBaselineInstructionFiles({ cwd: root, dshHome: home })
+ 
+-      expect(files.map(file => file.displayPath)).toEqual(['$DSH_HOME/AGENTS.md'])
++      expect(files.map(file => file.displayPath)).toEqual([join(home, 'AGENTS.md')])
+     } finally {
+       await rm(root, { recursive: true, force: true })
+       await rm(home, { recursive: true, force: true })

@@ -15,6 +15,7 @@ This document describes the currently implemented product behavior. DSH remains 
 
 | Feature | Status | Current behavior |
 |---|---|---|
+| Global agent instructions | `available` | The Companion coding preset loads optional `~/.agents/AGENTS.md` as DSH's user-global instructions, independently of the Runtime's `DSH_HOME`; project instructions retain DSH's normal discovery rules. The injected source is labelled `~/.agents/AGENTS.md`, and subsequent changes are described as user-global rather than as a directory scope. Other files in `~/.agents` are not loaded automatically. |
 | Native chat editor | `available` | **DSH: New Chat Editor** opens a draft tab; DSH creates its Session atomically with the first submitted prompt. |
 | Prompt composer | `available` | Starts at one line, grows to 200 pixels, retains drafts, sends with Enter, and inserts newlines with Shift+Enter. |
 | Text streaming | `available` | Streams Assistant text from `session/follow` and reconciles it with the durable message. |

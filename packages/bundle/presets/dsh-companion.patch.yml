@@ -14,6 +14,7 @@
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
+              dshHome: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(), '.agents')
               maxBytes: 65536
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'

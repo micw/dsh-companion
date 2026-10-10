@@ -78,6 +78,16 @@
         "@deepseek-ai/dsh-session-title",
         "@deepseek-ai/dsh-tool-cordis"
       ]
+    },
+    {
+      "id": "label-configured-user-global-instructions",
+      "file": "patches/0007-label-configured-user-global-instructions.patch",
+      "sha256": "1115952dc330299d16fa34febba3f4f2fa719a18e217f8254b8d15681d28ccaf",
+      "assessment": "patches/label-configured-user-global-instructions.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-agent-instructions"
+      ]
     }
   ]
 }
