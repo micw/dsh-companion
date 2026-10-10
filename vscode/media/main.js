@@ -2,6 +2,7 @@ const {
   activityStatusText,
   advanceTurnProcessSegment,
   createScrollBoundsRefresher,
+  fileLinkRequest,
   mergePrependedTurnState,
   placeEmptyTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
@@ -95,6 +96,29 @@ let activeAssistant;
 let activeAssistantMessage;
 let activeAssistantIdentity;
 const pendingAssistantRenders = new Map();
+const assistantMarkdown = new WeakMap();
+const mermaid = globalThis.dshCompanionMermaid;
+const mermaidSvgCache = new Map();
+const mermaidImages = new Map();
+const mermaidPending = new Map();
+let mermaidSequence = 0;
+let mermaidGeneration = 0;
+let mermaidTheme = document.body.classList.contains('vscode-dark') ? 'dark' : 'default';
+if (mermaid !== undefined) {
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: mermaidTheme });
+  new MutationObserver(() => {
+    const theme = document.body.classList.contains('vscode-dark') ? 'dark' : 'default';
+    if (theme === mermaidTheme) return;
+    mermaidTheme = theme;
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme });
+    clearMermaidImages();
+    for (const block of output.querySelectorAll('.mermaid-block')) {
+      block.querySelector('.mermaid-diagram')?.remove();
+      block.classList.remove('mermaid-rendered');
+    }
+    renderMermaidBlocks(output);
+  }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
 let activeTurn;
 let running = false;
 let stickyPromptTarget;
@@ -332,11 +356,23 @@ window.addEventListener('resize', () => {
 });
 
 output.addEventListener('click', (event) => {
+  const codeButton = event.target.closest?.('.copy-code');
+  if (codeButton !== undefined && codeButton !== null) {
+    const text = codeButton.parentElement?.querySelector('pre code')?.textContent;
+    if (typeof text === 'string') vscode.postMessage({ type: 'copyText', format: 'plain', text });
+    return;
+  }
   const anchor = event.target.closest?.('a[href]');
   if (anchor === undefined || anchor === null) return;
-  const href = anchor.getAttribute('href');
-  if (!/^https?:\/\//i.test(href ?? '')) return;
   event.preventDefault();
+  if (anchor.classList.contains('dsh-file-link')) {
+    const message = fileLinkRequest(anchor.dataset, 'open');
+    if (message !== undefined) vscode.postMessage(message);
+    return;
+  }
+  if (!anchor.classList.contains('dsh-external-link')) return;
+  const href = anchor.dataset.externalHref;
+  if (!/^https?:\/\//i.test(href ?? '')) return;
   vscode.postMessage({ type: 'openLink', href });
 });
 
@@ -710,7 +746,8 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'assistantRender') {
-    renderAssistant(message.html);
+    if (typeof message.html !== 'string' || typeof message.text !== 'string') return;
+    renderAssistant(message.html, message.text);
     return;
   }
   if (message.type === 'assistantAbandoned' && Object.keys(message).length === 1) {
@@ -778,6 +815,7 @@ function applyHostMessage(message) {
 
 function resetTranscript() {
   scrollTrace.record('reset-before');
+  clearMermaidImages();
   output.replaceChildren();
   refreshScrollBounds.invalidate();
   pendingAssistantRenders.clear();
@@ -813,6 +851,21 @@ function appendMessage(role, text, html, time = Date.now()) {
     renderTarget.append(article);
   }
   if (role === 'assistant') {
+    renderMermaidBlocks(body);
+    assistantMarkdown.set(article, text);
+    const actions = document.createElement('div');
+    actions.className = 'message-copy-actions';
+    for (const [format, label] of [['plain', 'Copy Markdown'], ['html', 'Copy HTML']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        const markdown = assistantMarkdown.get(article);
+        if (markdown) vscode.postMessage({ type: 'copyText', format, text: markdown });
+      });
+      actions.append(button);
+    }
+    article.append(actions);
     activeAssistant = body;
     activeAssistantMessage = article;
     if (turn !== undefined) {
@@ -898,12 +951,74 @@ function applyCompactionEvent(event) {
   followOutput();
 }
 
-function renderAssistant(html) {
-  if (typeof html !== 'string') return;
+function clearMermaidImages() {
+  mermaidGeneration += 1;
+  for (const value of mermaidImages.values()) URL.revokeObjectURL(value.url);
+  mermaidImages.clear();
+  mermaidSvgCache.clear();
+}
+
+function renderMermaidBlocks(body) {
+  if (mermaid === undefined) return;
+  for (const [block, value] of mermaidImages) {
+    if (block.isConnected) continue;
+    URL.revokeObjectURL(value.url);
+    mermaidImages.delete(block);
+  }
+  for (const block of body.querySelectorAll('.mermaid-block')) void renderMermaidBlock(block);
+}
+
+async function renderMermaidBlock(block) {
+  const source = block.querySelector('pre code')?.textContent;
+  if (typeof source !== 'string' || source.length > 20_000 || source.trim() === '') return;
+  if (mermaidPending.has(block)) return;
+  const generation = mermaidGeneration;
+  mermaidPending.set(block, source);
+  try {
+    let entry = mermaidImages.get(block);
+    if (entry?.source !== source) {
+      if (entry !== undefined) URL.revokeObjectURL(entry.url);
+      mermaidImages.delete(block);
+      let svg = mermaidSvgCache.get(source);
+      if (svg === undefined) {
+        try {
+          svg = (await mermaid.render(`dsh-mermaid-${String(++mermaidSequence)}`, source)).svg;
+        } catch (_error) {
+          return;
+        }
+        mermaidSvgCache.set(source, svg);
+        if (mermaidSvgCache.size > 32) mermaidSvgCache.delete(mermaidSvgCache.keys().next().value);
+      }
+      if (generation !== mermaidGeneration || !block.isConnected
+        || block.querySelector('pre code')?.textContent !== source) return;
+      entry = { source, url: URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' })) };
+      mermaidImages.set(block, entry);
+    }
+    if (block.querySelector('.mermaid-diagram') !== null) return;
+    const image = document.createElement('img');
+    image.className = 'mermaid-diagram';
+    image.alt = 'Mermaid diagram';
+    image.src = entry.url;
+    image.addEventListener('load', () => {
+      if (image.isConnected) { block.classList.add('mermaid-rendered'); followOutput(); }
+    });
+    image.addEventListener('error', () => { block.classList.remove('mermaid-rendered'); });
+    block.append(image);
+  } catch (_error) {
+    // A failed diagram leaves its escaped source code visible.
+  } finally {
+    mermaidPending.delete(block);
+    if (block.isConnected && (generation !== mermaidGeneration
+      || block.querySelector('pre code')?.textContent !== source)) void renderMermaidBlock(block);
+  }
+}
+
+function renderAssistant(html, text) {
   if (activeAssistant === undefined) {
     appendMessage('assistant', '', '', undefined);
     activeAssistantMessage.dataset.liveAssistant = 'true';
   }
+  assistantMarkdown.set(activeAssistantMessage, text);
   pendingAssistantRenders.set(activeAssistant, html);
   flushAssistantRender(activeAssistant);
 }
@@ -978,6 +1093,7 @@ function flushAssistantRender(body) {
   scrollTrace.record('render-before');
   reconcileTranscriptNodes(body, template.content);
   if (savedSelection !== undefined) restoreAssistantSelection(body, selection, savedSelection);
+  renderMermaidBlocks(body);
   pendingAssistantRenders.delete(body);
   if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) {
     scrollTrace.record('render-write-before', top);
@@ -2786,6 +2902,7 @@ function endHistoryPrepend() {
   activeAssistantIdentity = previous.activeAssistantIdentity;
   activeTurn = previous.activeTurn;
   prependState = undefined;
+  renderMermaidBlocks(output);
   if (previous.following) {
     scrollTrace.afterMutation('prepend-end');
     followOutput();

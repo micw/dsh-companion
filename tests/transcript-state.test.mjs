@@ -7,6 +7,7 @@ const {
   activityStatusText,
   advanceTurnProcessSegment,
   createScrollBoundsRefresher,
+  fileLinkRequest,
   mergePrependedTurnState,
   placeEmptyTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
@@ -19,6 +20,24 @@ const {
   selectionTouchesNode,
   splitTurnProcessAtCompaction,
 } = globalThis.dshCompanionTranscriptState;
+
+test('file-link clicks and context actions preserve a line range without treating it as a path', () => {
+  const dataset = {
+    filePath: 'target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds',
+    fileLine: '117', fileEndLine: '122',
+  };
+  assert.deepEqual(fileLinkRequest(dataset), {
+    type: 'openFile', path: dataset.filePath, action: 'open', line: 117, endLine: 122,
+  });
+  assert.deepEqual(fileLinkRequest(dataset, 'openBeside'), {
+    type: 'openFile', path: dataset.filePath, action: 'openBeside', line: 117, endLine: 122,
+  });
+  assert.deepEqual(fileLinkRequest(dataset, 'copyPath'), {
+    type: 'openFile', path: dataset.filePath, action: 'copyPath', line: 117, endLine: 122,
+  });
+  assert.equal(fileLinkRequest({ ...dataset, fileEndLine: '116' }), undefined);
+  assert.equal(fileLinkRequest(dataset, 'executeCommand'), undefined);
+});
 
 function nodeList() {
   return new Proxy([], {

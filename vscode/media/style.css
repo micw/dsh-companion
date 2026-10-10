@@ -218,6 +218,37 @@ body {
 .message.assistant pre code { padding: 0; background: transparent; }
 .message.assistant a { color: var(--vscode-textLink-foreground); }
 .message.assistant a:hover { color: var(--vscode-textLink-activeForeground); }
+.message.assistant .code-block { position: relative; }
+.message.assistant .code-block pre { padding-right: 74px; }
+.mermaid-diagram { display: block; max-width: 100%; height: auto; user-select: none; }
+.mermaid-rendered pre { display: none; }
+.copy-code {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78em;
+}
+.message-copy-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
+.message-copy-actions button {
+  padding: 2px 4px;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8em;
+}
+.message-copy-actions button:hover { color: var(--vscode-foreground); }
+.message-time, .message .role, .turn-footer, .turn-process > summary,
+.process-row > summary, .copy-code, .message-copy-actions,
+#sticky-prompt { user-select: none; }
 .message.assistant table { width: 100%; margin: 10px 0; border-collapse: collapse; }
 .message.assistant th,
 .message.assistant td {

@@ -3,7 +3,10 @@ import * as vscode from 'vscode';
 import {
   DSH_ORIGIN, DshClient, DshHttpError, DshSessionBrowser, PACKAGED_DSH_ORIGIN, exchangeLaunchUrl,
 } from './dshClient';
-import { renderMarkdown } from './markdown';
+import { renderMarkdown, renderPortableMarkdown } from './markdown';
+import { isOpenFileMessage, resolveLocalFilePath, uriForLocalFile } from './fileLinks';
+import type { OpenFileMessage } from './fileLinks';
+import { isCopyTextMessage } from './clipboardMessages';
 import { RuntimeControl } from './runtimeControl';
 import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 import { connectRuntime } from './runtimeInstaller';
@@ -131,6 +134,7 @@ interface ConnectedChat {
 
 const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
 const panelsBySessionId = new Map<string, vscode.WebviewPanel>();
+const panelFileLinks = new Map<vscode.WebviewPanel, (message: OpenFileMessage) => void>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
@@ -250,6 +254,18 @@ export function activate(context: vscode.ExtensionContext): void {
       await control.stop();
       control.dispose();
     }),
+    vscode.commands.registerCommand('dshCompanion.openWebviewLink', (link: unknown) => {
+      handleWebviewLink(link, 'open');
+    }),
+    vscode.commands.registerCommand('dshCompanion.openWebviewLinkBeside', (link: unknown) => {
+      handleWebviewLink(link, 'openBeside');
+    }),
+    vscode.commands.registerCommand('dshCompanion.copyWebviewLink', (link: unknown) => {
+      handleWebviewLink(link, 'copyLink');
+    }),
+    vscode.commands.registerCommand('dshCompanion.copyWebviewAbsolutePath', (link: unknown) => {
+      handleWebviewLink(link, 'copyPath');
+    }),
     vscode.window.registerWebviewPanelSerializer(CHAT_EDITOR_VIEW_TYPE, {
       async deserializeWebviewPanel(panel, state: unknown): Promise<void> {
         configureChatEditor(
@@ -313,6 +329,36 @@ function activeCompanionPanel(): vscode.WebviewPanel | undefined {
   return panelsBySessionId.values().next().value;
 }
 
+function handleWebviewLink(value: unknown, action: 'open' | 'openBeside' | 'copyLink' | 'copyPath'): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Reflect.get(value, 'webviewSection') !== 'dshCompanionLink') return;
+  const kind = Reflect.get(value, 'dshCompanionLinkKind');
+  const target = Reflect.get(value, 'dshCompanionLinkTarget');
+  if (typeof target !== 'string' || target.length === 0 || target.length > 4096) return;
+  if (kind === 'external') {
+    if (action === 'openBeside' || action === 'copyPath' || !isOpenLinkMessage({ type: 'openLink', href: target })) return;
+    if (action === 'copyLink') void vscode.env.clipboard.writeText(target);
+    else void vscode.env.openExternal(vscode.Uri.parse(target));
+    return;
+  }
+  if (kind !== 'file') return;
+  const line = Reflect.get(value, 'dshCompanionLinkLine');
+  const endLine = Reflect.get(value, 'dshCompanionLinkEndLine');
+  const message = { type: 'openFile', path: target,
+    ...(line === undefined ? {} : { line }), ...(endLine === undefined ? {} : { endLine }),
+    action: action === 'copyLink' ? 'open' : action };
+  if (!isOpenFileMessage(message)) return;
+  if (action === 'copyLink') {
+    const suffix = message.line === undefined ? '' : message.endLine === undefined
+      ? `:${String(message.line)}` : `#L${String(message.line)}-L${String(message.endLine)}`;
+    void vscode.env.clipboard.writeText(`${message.path}${suffix}`);
+    return;
+  }
+  for (const [panel, open] of panelFileLinks) {
+    if (panel.active) { open(message); return; }
+  }
+}
+
 function configureChatEditor(
   context: vscode.ExtensionContext,
   runtimeControl: Promise<RuntimeControl | undefined>,
@@ -334,6 +380,7 @@ function configureChatEditor(
   const tabStatus = new TabStatusProjection(seenThrough);
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   let disposed = false;
+  let sessionCwd: string | undefined;
   const renderTab = () => {
     if (disposed) return;
     const icon = `tab-${tabStatus.status}.svg`;
@@ -357,6 +404,7 @@ function configureChatEditor(
     panel.webview,
     vscode.Uri.joinPath(mediaRoot, 'transcript-state.js'),
     vscode.Uri.joinPath(mediaRoot, 'scroll-diagnostics.js'),
+    vscode.Uri.joinPath(mediaRoot, 'mermaid-bundle.js'),
     vscode.Uri.joinPath(mediaRoot, 'main.js'),
     vscode.Uri.joinPath(mediaRoot, 'style.css'),
   );
@@ -400,10 +448,12 @@ function configureChatEditor(
         backendVersion,
       });
     },
-    (title) => {
+    (summary) => {
       if (disposed) return;
-      panel.title = title;
-      post(panel, { type: 'sessionTitle', title });
+      if (summary === undefined) return;
+      if (summary.cwd !== undefined) sessionCwd = summary.cwd;
+      panel.title = summary.title;
+      post(panel, { type: 'sessionTitle', title: summary.title });
     },
     (running) => { tabStatus.setRunning(running); renderTab(); if (!running) acknowledge(); },
     (time, reason) => { tabStatus.end(time, reason); renderTab(); acknowledge(); },
@@ -417,6 +467,7 @@ function configureChatEditor(
     );
     return connected.client;
   });
+  panelFileLinks.set(panel, message => { void openSessionFile(ready, () => sessionCwd, message); });
   void ready.catch((error: unknown) => {
     restoreTrace(traceSessionId, 'connection-failed', { panelTraceId, errorKind: error instanceof Error ? error.name : 'unknown' });
     post(panel, {
@@ -454,6 +505,11 @@ function configureChatEditor(
     if (isSetProviderModelEnabledMessage(message)) void setProviderModelEnabled(panel, ready, message);
     if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
+    if (isOpenFileMessage(message)) void openSessionFile(ready, () => sessionCwd, message);
+    if (isCopyTextMessage(message)) {
+      const text = message.format === 'html' ? renderPortableMarkdown(message.text) : message.text;
+      if (Buffer.byteLength(text, 'utf8') <= 4 * 1024 * 1024) void vscode.env.clipboard.writeText(text);
+    }
   });
   const viewState = panel.onDidChangeViewState(({ webviewPanel }) => {
     acknowledge();
@@ -469,6 +525,7 @@ function configureChatEditor(
     viewState.dispose();
     messenger.dispose();
     panelMessengers.delete(panel);
+    panelFileLinks.delete(panel);
     const sessionId = client?.sessionId ?? restoredSessionId;
     if (sessionId !== undefined && panelsBySessionId.get(sessionId) === panel) panelsBySessionId.delete(sessionId);
     sessionTree.setActiveSession(activeCompanionSessionId());
@@ -490,7 +547,7 @@ async function connect(
   restoredSessionId?: string,
   onSessionListChange?: () => void,
   onSessionCreated?: (sessionId: string, backendVersion: string) => void,
-  onSummary?: (title: string) => void,
+  onSummary?: (summary: import('./dshClient').DshSessionListEntry | undefined) => void,
   onRunning?: (running: boolean) => void,
   onTurnEnd?: (time: number, reason: string) => void,
 ): Promise<ConnectedChat> {
@@ -528,7 +585,7 @@ async function connect(
   const sink = {
     sessionCreated: (sessionId: string) => { onSessionCreated?.(sessionId, backendVersion); },
     sessionSummary: (summary: import('./dshClient').DshSessionListEntry | undefined) => {
-      if (summary !== undefined) onSummary?.(summary.title);
+      onSummary?.(summary);
     },
     reset: () => {
       cancelRender();
@@ -649,6 +706,39 @@ async function connectSessionBrowser(
   cookie = await exchangeLaunchUrl(launchUrl, runtime.origin);
   await context.secrets.store(COOKIE_SECRET_KEY, cookie);
   return DshSessionBrowser.connect(cookie, runtime.clientModule, onDidChange, runtime.origin);
+}
+
+async function openSessionFile(
+  ready: Promise<DshClient>,
+  sessionCwd: () => string | undefined,
+  message: OpenFileMessage,
+): Promise<void> {
+  try {
+    await ready;
+    const file = resolveLocalFilePath(message.path, sessionCwd());
+    if (file === undefined) throw new Error('The Session working directory is unavailable for this relative file link.');
+    if (message.action === 'copyPath') {
+      await vscode.env.clipboard.writeText(file);
+      return;
+    }
+    const uri = uriForLocalFile(file, vscode.workspace.workspaceFolders?.map(folder => folder.uri) ?? [],
+      (root, relative) => vscode.Uri.joinPath(root, relative), absolute => vscode.Uri.file(absolute));
+    const document = await vscode.workspace.openTextDocument(uri);
+    const start = message.line === undefined ? undefined
+      : document.validatePosition(new vscode.Position(message.line - 1, 0));
+    const endLine = message.endLine === undefined ? undefined
+      : Math.min(message.endLine - 1, document.lineCount - 1);
+    const end = endLine === undefined ? start
+      : new vscode.Position(endLine, document.lineAt(endLine).text.length);
+    const selection = start === undefined || end === undefined ? undefined : new vscode.Range(start, end);
+    const editor = await vscode.window.showTextDocument(document, {
+      preview: true, selection,
+      ...(message.action === 'openBeside' ? { viewColumn: vscode.ViewColumn.Beside } : {}),
+    });
+    if (selection !== undefined) editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  } catch (error) {
+    await vscode.window.showErrorMessage(`DSH Companion could not open the file: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
@@ -1092,12 +1182,14 @@ function editorHtml(
   webview: vscode.Webview,
   transcriptState: vscode.Uri,
   scrollDiagnostics: vscode.Uri,
+  mermaidBundle: vscode.Uri,
   script: vscode.Uri,
   style: vscode.Uri,
 ): string {
   const nonce = randomBytes(16).toString('base64');
   const transcriptStateUri = webview.asWebviewUri(transcriptState);
   const scrollDiagnosticsUri = webview.asWebviewUri(scrollDiagnostics);
+  const mermaidUri = webview.asWebviewUri(mermaidBundle);
   const scriptUri = webview.asWebviewUri(script);
   const styleUri = webview.asWebviewUri(style);
   return `<!doctype html>
@@ -1222,6 +1314,7 @@ function editorHtml(
   </div>
   <script nonce="${nonce}" src="${transcriptStateUri}"></script>
   <script nonce="${nonce}" src="${scrollDiagnosticsUri}"></script>
+  <script nonce="${nonce}" src="${mermaidUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
