@@ -73,6 +73,18 @@ test('validates service identity and maps structured HTTP failures', async () =>
   })
 })
 
+test('classifies transient HTTP failures separately from buffer limits and permanent errors', async () => {
+  for (const [status, code] of [[503, 'PROVIDER_UNAVAILABLE'], [502, 'PROVIDER_UNAVAILABLE'],
+    [504, 'PROVIDER_UNAVAILABLE'], [507, 'UPSTREAM_BUFFER_LIMIT'], [501, 'HTTP_501'],
+    [401, 'AUTH'], [403, 'AUTH'], [400, 'INVALID_REQUEST'], [413, 'REQUEST_TOO_LARGE']]) {
+    const client = new CodexWireClient({ baseURL: 'https://wrapper.example', apiKey: 'key' }, {
+      fetch: async () => new Response('upstream unavailable', { status }),
+    })
+    await assert.rejects(client.responses({ model: 'model', input: [], tools: [], parallel_tool_calls: false, store: false }),
+      error => error.code === code && error.failure.status === status)
+  }
+})
+
 test('opens and validates a complete SSE response', async () => {
   const encoder = new TextEncoder()
   const client = new CodexWireClient({ baseURL: 'https://wrapper.example', apiKey: 'key' }, {

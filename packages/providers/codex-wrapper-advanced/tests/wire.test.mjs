@@ -180,6 +180,16 @@ test('rejects truncated streams and events after settlement', async () => {
   )
 })
 
+test('classifies a broken body after partial output as transport without exposing its cause', async () => {
+  let source
+  const stream = new ReadableStream({ start(controller) { source = controller } })
+  const iterator = parseCodexWireSse(stream)[Symbol.asyncIterator]()
+  source.enqueue(new TextEncoder().encode('data: {"type":"text_delta","text":"partial"}\n\n'))
+  assert.deepEqual(await iterator.next(), { done: false, value: { type: 'text_delta', text: 'partial' } })
+  source.error(new TypeError('socket failed with secret-key'))
+  await assert.rejects(iterator.next(), error => error.code === 'TRANSPORT' && !error.message.includes('secret-key'))
+})
+
 function byteStream(parts) {
   const encoder = new TextEncoder()
   return new ReadableStream({

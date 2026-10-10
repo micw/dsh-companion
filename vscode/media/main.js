@@ -1479,6 +1479,10 @@ function applyProcessEvent(event) {
     appendReasoning(turn, event);
     return;
   }
+  if (event.type === 'retry') {
+    appendRetry(turn, event);
+    return;
+  }
   if (event.type === 'status') {
     appendModelStatus(turn, event);
     return;
@@ -1553,6 +1557,7 @@ function activeProcessSegment(turn) {
 function completeTurn(turn, completedAt, reason) {
   if (!Number.isFinite(completedAt)) return;
   turn.completed = true;
+  settleRetries(turn, reason === 'completed' ? 'completed' : reason === 'error' ? 'failed' : 'cancelled');
   const measuredRunMs = Number.isFinite(turn.runMs)
     ? turn.runMs
     : Number.isFinite(turn.startedAt) ? Math.max(0, completedAt - turn.startedAt) : undefined;
@@ -1579,6 +1584,7 @@ function completeTurn(turn, completedAt, reason) {
 function markTurnIncomplete(turn) {
   turn.completed = true;
   turn.incomplete = true;
+  settleRetries(turn, 'interrupted');
   turn.root.dataset.state = 'incomplete';
   updateTurnProcessLabel(turn, false);
 }
@@ -1596,6 +1602,44 @@ function appendReasoning(turn, event) {
   }
   updateTurnProcessLabel(turn, true);
   followOutput();
+}
+
+function appendRetry(turn, event) {
+  if (typeof event.id !== 'string' || event.id.trim() === ''
+    || !Number.isSafeInteger(event.step) || event.step < 0
+    || !Number.isSafeInteger(event.retry) || event.retry <= 0
+    || !['waiting', 'started'].includes(event.state)
+    || (event.state === 'waiting' && (typeof event.delayMs !== 'number' || !Number.isFinite(event.delayMs)
+      || event.delayMs < 0 || event.delayMs > 2147483647
+      || typeof event.failure !== 'string'))
+    || (event.maxRetries !== undefined && (!Number.isSafeInteger(event.maxRetries)
+      || event.maxRetries < event.retry))) return;
+  turn.retries ??= new Map();
+  let row = turn.retries.get(event.id);
+  if (row === undefined) {
+    activeProcessSegment(turn);
+    row = disclosureRow('retry', event.id, 'Model request retry', '', '');
+    turn.rows.append(row.root);
+    turn.retries.set(event.id, row);
+  }
+  row.root.dataset.state = event.state;
+  if (event.failure !== undefined) row.detail.textContent = event.failure;
+  row.retry = event.retry;
+  row.maxRetries = event.maxRetries ?? row.maxRetries;
+  const count = `Retry ${row.retry}${row.maxRetries === undefined ? '' : ` of ${row.maxRetries}`}`;
+  row.summary.textContent = event.state === 'waiting'
+    ? `${count} · waiting ${formatDuration(event.delayMs)} · ${event.failure}`
+    : `${count} · started`;
+  updateTurnProcessLabel(turn, !turn.completed);
+  followOutput();
+}
+
+function settleRetries(turn, reason) {
+  turn.retrySettlement = reason;
+  for (const row of turn.retries?.values() ?? []) {
+    row.root.dataset.state = reason;
+    row.summary.textContent = `Retry ${row.retry}${row.maxRetries === undefined ? '' : ` of ${row.maxRetries}`} · ${reason}`;
+  }
 }
 
 function appendModelStatus(turn, event) {
@@ -3028,7 +3072,19 @@ function endHistoryPrepend() {
   for (const [number, older] of prependedTurns) {
     const newer = previous.turns.get(number);
     if (newer === undefined) continue;
+    for (const [id, row] of older.retries ?? []) {
+      newer.retries ??= new Map();
+      const existing = newer.retries.get(id);
+      if (existing === undefined) newer.retries.set(id, row);
+      else {
+        existing.detail.textContent = row.detail.textContent;
+        existing.maxRetries ??= row.maxRetries;
+        existing.summary.textContent = `Retry ${existing.retry}${existing.maxRetries === undefined ? '' : ` of ${existing.maxRetries}`} · ${existing.root.dataset.state}`;
+        row.root.remove();
+      }
+    }
     const merged = mergePrependedTurnState(older, newer);
+    if (merged.completed) settleRetries(merged, merged.retrySettlement ?? (merged.incomplete ? 'interrupted' : 'completed'));
     for (const [index, segment] of merged.segments.entries()) {
       updateTurnProcessLabel({ ...segment, incomplete: merged.incomplete },
         !merged.completed && index === merged.segments.length - 1);

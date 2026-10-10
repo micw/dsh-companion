@@ -226,7 +226,8 @@ function httpErrorCode(status: number): string {
   if (status === 429) return 'RATE_LIMIT'
   if (status === 400 || status === 422) return 'INVALID_REQUEST'
   if (status === 413) return 'REQUEST_TOO_LARGE'
-  if (status >= 500) return 'PROVIDER_UNAVAILABLE'
+  if (status === 507) return 'UPSTREAM_BUFFER_LIMIT'
+  if (status === 500 || status === 502 || status === 503 || status === 504) return 'PROVIDER_UNAVAILABLE'
   return `HTTP_${String(status)}`
 }
 

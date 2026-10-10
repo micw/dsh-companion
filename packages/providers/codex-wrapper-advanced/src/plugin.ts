@@ -58,7 +58,12 @@ export const Config = z.object({
   enabled: z.boolean().default(false).volatile(),
   baseURL: z.string().volatile(),
   apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_CODEX_WRAPPER_ADVANCED_API_KEY_REF).volatile(),
-  retryPolicy: RetryPolicySchema.volatile(),
+  retryPolicy: RetryPolicySchema.default({
+    mode: 'normal',
+    maxRetries: 3,
+    retryableCodes: ['PROVIDER_UNAVAILABLE', 'TRANSPORT', 'STREAM_CLOSED', 'TIMEOUT', 'RATE_LIMIT', 'EMPTY_RESPONSE'],
+    backoff: { initialDelayMs: 2000, maxDelayMs: 10000, jitterRatio: 0.1 },
+  }).volatile(),
 })
 
 /** Cordis plugin identity. */

@@ -1,6 +1,7 @@
 /** Translation from validated wrapper events to the DSH stream protocol. */
 
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { codexFailureCode } from './failure.js'
 import type { StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { CodexReplayBlock, CodexReplayEnvelope } from './wire/request.js'
 import type { CodexWireEvent, CodexWireTurnLimits, CodexWireUsage } from './wire/types.js'
@@ -123,7 +124,7 @@ export async function* translateCodexWireStream(
             kind: 'error',
             failure: {
               message: event.message,
-              code: event.retryable ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_ERROR',
+              code: codexFailureCode(event.message, event.retryable),
             },
           },
         }
