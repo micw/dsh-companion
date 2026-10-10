@@ -1,9 +1,18 @@
 const {
   activityStatusText,
+  advanceTurnProcessSegment,
+  createScrollBoundsRefresher,
   mergePrependedTurnState,
-  placeTurnProcessAfterMessage,
+  placeEmptyTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
+  reconcileTranscriptNodes,
+  removeAbandonedAssistant,
   reattachTranscriptTail,
+  relocateSelectionRange,
+  scrollModeAfterScroll,
+  selectReasoningStatusSegment,
+  selectionTouchesNode,
+  splitTurnProcessAtCompaction,
 } = globalThis.dshCompanionTranscriptState;
 const vscode = acquireVsCodeApi();
 const output = document.getElementById('output');
@@ -84,6 +93,8 @@ const committedRequestIds = new Set();
 let hostQueue = [];
 let activeAssistant;
 let activeAssistantMessage;
+let activeAssistantIdentity;
+const pendingAssistantRenders = new Map();
 let activeTurn;
 let running = false;
 let stickyPromptTarget;
@@ -92,9 +103,24 @@ let scrollMode = 'follow';
 let scrollFrame;
 let scrollGeneration = 0;
 let userScrollIntent = false;
+let userScrollAwayIntent = false;
 let userScrollTimer;
 let pointerScrolling = false;
-let bottomLatchSuppressed = false;
+let lastUserDownAt = -Infinity;
+let lastOutputScrollTop = 0;
+const scrollTrace = globalThis.dshCompanionScrollDiagnostics.createScrollTrace(output,
+  () => ({ mode: scrollMode, intent: userScrollIntent, pointer: pointerScrolling }),
+  message => { try { vscode.postMessage(message); } catch (_error) { /* Diagnostics cannot affect rendering. */ } });
+const refreshScrollBounds = createScrollBoundsRefresher(output, requestAnimationFrame,
+  kind => scrollTrace.record(kind));
+const scrollHostKinds = Object.freeze({
+  assistantRender: ['host-assistant-before', 'host-assistant-after'],
+  process: ['host-process-before', 'host-process-after'],
+  message: ['host-message-before', 'host-message-after'],
+  resetTranscript: ['host-reset-before', 'host-reset-after'],
+  historyPrependStart: ['host-prepend-before', 'host-prepend-after'],
+  historyPrependEnd: ['host-prepend-before', 'host-prepend-after'],
+});
 let renderTarget = output;
 let prependState;
 let historyHasMore = false;
@@ -262,25 +288,24 @@ compactButton.addEventListener('click', () => {
 
 stickyPromptJump.addEventListener('click', () => {
   if (stickyPromptTarget === undefined) return;
-  setOutputSticky(true);
+  setOutputSticky();
   stickyPromptTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 scrollBottom.addEventListener('click', scrollToLatestOutput);
 
 output.addEventListener('scroll', () => {
+  scrollTrace.record('native-scroll');
   const nearBottom = isNearOutputBottom();
-  if (bottomLatchSuppressed && !nearBottom) bottomLatchSuppressed = false;
-  if (scrollMode === 'sticky' && nearBottom && !bottomLatchSuppressed) {
-    scrollMode = 'follow';
+  const userGesture = userScrollIntent || pointerScrolling;
+  if (userGesture && !userScrollAwayIntent && output.scrollTop > lastOutputScrollTop) lastUserDownAt = Date.now();
+  const recentDown = Date.now() - lastUserDownAt < 1_500;
+  const nextMode = scrollModeAfterScroll(scrollMode, nearBottom, userGesture, userScrollAwayIntent, recentDown);
+  lastOutputScrollTop = output.scrollTop;
+  if (userGesture || nextMode !== scrollMode) {
+    scrollMode = nextMode;
     userScrollIntent = false;
-    if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
-    userScrollTimer = undefined;
-    updateScrollButton();
-    if (!pointerScrolling) followOutput();
-  } else if (userScrollIntent || pointerScrolling) {
-    scrollMode = nearBottom ? 'follow' : 'sticky';
-    userScrollIntent = false;
+    userScrollAwayIntent = false;
     if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
     userScrollTimer = undefined;
     if (scrollMode === 'sticky') cancelScheduledOutputScroll();
@@ -297,6 +322,8 @@ output.addEventListener('wheel', markUserScrollIntent, { passive: true });
 output.addEventListener('touchmove', markUserScrollIntent, { passive: true });
 
 window.addEventListener('resize', () => {
+  scrollTrace.record('resize');
+  refreshScrollBounds();
   scheduleStickyPrompt();
   positionContextPanel();
   positionProviderUsagePanel();
@@ -328,11 +355,12 @@ document.addEventListener('pointerdown', (event) => {
 
 document.addEventListener('pointerup', finishPointerInteraction);
 document.addEventListener('pointercancel', finishPointerInteraction);
+document.addEventListener('selectionchange', flushAssistantRenders);
 
 document.addEventListener('keydown', (event) => {
   if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
     && !event.target.closest?.('textarea, input, select, button')) {
-    markUserScrollIntent();
+    markUserScrollIntent(event);
   }
   if (event.key !== 'Escape') return;
   if (!providerSettingsModal.hidden) {
@@ -354,6 +382,14 @@ window.addEventListener('message', (event) => {
   applyHostMessage(event.data);
 });
 
+function reportDiagnosticBatch(batchId, processed, failed) {
+  try {
+    vscode.postMessage({ type: 'diagnosticBatch', batchId, processed, failed });
+  } catch (_error) {
+    // Diagnostics must not change transcript delivery.
+  }
+}
+
 function applyHostMessage(message) {
   if (!isRecord(message)) return;
   if (message.type === 'openProviderSettings' && Object.keys(message).length === 1) {
@@ -361,10 +397,28 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'batch') {
-    if (!Array.isArray(message.messages) || message.messages.length > 64) return;
-    for (const item of message.messages) {
-      if (isRecord(item) && item.type !== 'batch') applyHostMessage(item);
+    if (!Array.isArray(message.messages) || message.messages.length > 64
+      || !Number.isSafeInteger(message.batchId) || message.batchId <= 0
+      || typeof message.trace !== 'boolean') return;
+    let processed = 0;
+    scrollTrace.setBatch(message.batchId);
+    try {
+      for (const item of message.messages) {
+        if (isRecord(item) && item.type !== 'batch') {
+          const kinds = Object.hasOwn(scrollHostKinds, item.type) ? scrollHostKinds[item.type] : undefined;
+          if (kinds !== undefined) scrollTrace.record(kinds[0]);
+          applyHostMessage(item);
+          if (kinds !== undefined) scrollTrace.afterMutation(kinds[1]);
+          processed += 1;
+        }
+      }
+    } catch (error) {
+      reportDiagnosticBatch(message.batchId, processed, true);
+      throw error;
+    } finally {
+      scrollTrace.setBatch(0);
     }
+    if (message.trace) reportDiagnosticBatch(message.batchId, processed, false);
     return;
   }
   if (message.type === 'resetTranscript') {
@@ -648,16 +702,25 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'assistantStart') {
+    if (!Number.isSafeInteger(message.turn) || message.turn <= 0
+      || !Number.isSafeInteger(message.step) || message.step <= 0) return;
     activeAssistant = undefined;
     activeAssistantMessage = undefined;
+    activeAssistantIdentity = { turn: message.turn, step: message.step };
     return;
   }
   if (message.type === 'assistantRender') {
     renderAssistant(message.html);
     return;
   }
+  if (message.type === 'assistantAbandoned' && Object.keys(message).length === 1) {
+    abandonAssistant();
+    return;
+  }
   if (message.type === 'assistantTime') {
     setMessageTime(activeAssistantMessage, message.time);
+    if (activeAssistantMessage !== undefined) delete activeAssistantMessage.dataset.liveAssistant;
+    activeAssistantIdentity = undefined;
     return;
   }
   if (message.type === 'process') {
@@ -714,18 +777,23 @@ function applyHostMessage(message) {
 }
 
 function resetTranscript() {
+  scrollTrace.record('reset-before');
   output.replaceChildren();
+  refreshScrollBounds.invalidate();
+  pendingAssistantRenders.clear();
   turns = new Map();
   tools = new Map();
   compactions = new Map();
   activeAssistant = undefined;
   activeAssistantMessage = undefined;
+  activeAssistantIdentity = undefined;
   activeTurn = undefined;
   stickyPromptTarget = undefined;
   renderTarget = output;
   prependState = undefined;
   stickyPrompt.hidden = true;
   scheduleStickyPrompt();
+  scrollTrace.afterMutation('reset-after');
 }
 
 function appendMessage(role, text, html, time = Date.now()) {
@@ -748,8 +816,12 @@ function appendMessage(role, text, html, time = Date.now()) {
     activeAssistant = body;
     activeAssistantMessage = article;
     if (turn !== undefined) {
+      if (activeAssistantIdentity?.turn === activeTurn) {
+        article.dataset.assistantStep = String(activeAssistantIdentity.step);
+      }
       turn.firstAssistantMessage ??= article;
       turn.latestAssistantMessage = article;
+      if (turn.rows.childElementCount > 0) turn.pendingProcessSegment = true;
     }
   }
   scheduleStickyPrompt();
@@ -802,6 +874,7 @@ function applyCompactionEvent(event) {
     label.className = 'compaction-label';
     root.append(indicator, label);
     renderTarget.append(root);
+    splitTurnProcessAtCompaction(activeTurn === undefined ? undefined : turns.get(activeTurn), root);
     item = { root, label };
     compactions.set(event.id, item);
   }
@@ -826,8 +899,92 @@ function applyCompactionEvent(event) {
 }
 
 function renderAssistant(html) {
-  if (activeAssistant === undefined) appendMessage('assistant', '', '', undefined);
-  activeAssistant.innerHTML = html;
+  if (typeof html !== 'string') return;
+  if (activeAssistant === undefined) {
+    appendMessage('assistant', '', '', undefined);
+    activeAssistantMessage.dataset.liveAssistant = 'true';
+  }
+  pendingAssistantRenders.set(activeAssistant, html);
+  flushAssistantRender(activeAssistant);
+}
+
+function abandonAssistant() {
+  const article = activeAssistantMessage;
+  const turn = activeTurn === undefined ? undefined : turns.get(activeTurn);
+  if (!removeAbandonedAssistant(turn, article, activeAssistant, pendingAssistantRenders)) return;
+  activeAssistant = undefined;
+  activeAssistantMessage = undefined;
+  activeAssistantIdentity = undefined;
+  scheduleStickyPrompt();
+  followOutput();
+}
+
+function flushAssistantRenders() {
+  for (const body of pendingAssistantRenders.keys()) flushAssistantRender(body);
+}
+
+function captureAssistantSelection(body, selection) {
+  if (selection === null || selection.isCollapsed || !body.contains(selection.anchorNode)
+    || !body.contains(selection.focusNode)) return undefined;
+  const offsetOf = (node, offset) => {
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  };
+  const anchor = offsetOf(selection.anchorNode, selection.anchorOffset);
+  const focus = offsetOf(selection.focusNode, selection.focusOffset);
+  const start = Math.min(anchor, focus);
+  const end = Math.max(anchor, focus);
+  const text = body.textContent ?? '';
+  return { anchor, focus, start, end, selected: text.slice(start, end),
+    before: text.slice(Math.max(0, start - 24), start), after: text.slice(end, end + 24) };
+}
+
+function restoreAssistantSelection(body, selection, snapshot) {
+  const range = relocateSelectionRange(snapshot, body.textContent ?? '');
+  if (range === undefined) return;
+  const pointAt = (offset) => {
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let node = walker.nextNode();
+    let last;
+    while (node !== null) {
+      last = node;
+      const length = node.nodeValue?.length ?? 0;
+      if (remaining <= length) return { node, offset: remaining };
+      remaining -= length;
+      node = walker.nextNode();
+    }
+    return last === undefined ? undefined : { node: last, offset: last.nodeValue?.length ?? 0 };
+  };
+  const backwards = snapshot.anchor > snapshot.focus;
+  const anchor = pointAt(backwards ? range.end : range.start);
+  const focus = pointAt(backwards ? range.start : range.end);
+  if (anchor !== undefined && focus !== undefined) {
+    selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+  }
+}
+
+function flushAssistantRender(body) {
+  const html = pendingAssistantRenders.get(body);
+  if (html === undefined || pointerScrolling) return;
+  const selection = window.getSelection();
+  const savedSelection = captureAssistantSelection(body, selection);
+  if (savedSelection === undefined && selectionTouchesNode(body, selection)) return;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const top = output.scrollTop;
+  scrollTrace.record('render-before');
+  reconcileTranscriptNodes(body, template.content);
+  if (savedSelection !== undefined) restoreAssistantSelection(body, selection, savedSelection);
+  pendingAssistantRenders.delete(body);
+  if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) {
+    scrollTrace.record('render-write-before', top);
+    output.scrollTop = top;
+    scrollTrace.record('render-write-after');
+  }
+  scrollTrace.afterMutation('render-after');
   followOutput();
 }
 
@@ -837,19 +994,25 @@ function applyProcessEvent(event) {
     activeTurn = event.turn;
     activeAssistant = undefined;
     activeAssistantMessage = undefined;
+    activeAssistantIdentity = undefined;
     ensureTurn(event.turn, event.time);
+    return;
+  }
+  if (event.type === 'tool-result') {
+    appendToolResult(event);
     return;
   }
   activeTurn = event.turn;
   const turn = ensureTurn(event.turn);
   if (event.type === 'turn-end') {
     completeTurn(turn, event.time, event.reason);
-    const key = `turn:${String(event.turn)}`;
-    if (event.replay !== true || !Object.hasOwn(restoredDisclosures, key)) {
-      turn.root.open = false;
+    for (const segment of turn.segments) {
+      const key = segment.root.dataset.disclosureId;
+      if (event.replay === true && Object.hasOwn(restoredDisclosures, key)) continue;
+      segment.root.open = false;
       state.disclosures[key] = false;
-      saveState();
     }
+    saveState();
     followOutput();
     return;
   }
@@ -870,10 +1033,6 @@ function applyProcessEvent(event) {
     appendToolCall(turn, event);
     return;
   }
-  if (event.type === 'tool-result') {
-    appendToolResult(event);
-    return;
-  }
   if (event.type === 'turn-summary') {
     appendTurnSummary(event.turn, event.summary);
     return;
@@ -881,14 +1040,12 @@ function applyProcessEvent(event) {
   if (event.type === 'context') appendContext(turn, event);
 }
 
-function ensureTurn(number, startedAt) {
-  const existing = turns.get(number);
-  if (existing !== undefined) return existing;
+function createProcessSegment(number, index) {
   const root = document.createElement('details');
   root.className = 'turn-process';
   root.dataset.turn = String(number);
-  const disclosureId = `turn:${String(number)}`;
-  root.open = disclosureState(disclosureId, true);
+  root.dataset.disclosureId = index === 0 ? `turn:${String(number)}` : `turn:${String(number)}:process:${String(index)}`;
+  root.open = disclosureState(root.dataset.disclosureId, true);
   const summary = document.createElement('summary');
   const label = document.createElement('span');
   label.textContent = 'Working…';
@@ -899,29 +1056,43 @@ function ensureTurn(number, startedAt) {
   rows.className = 'process-rows';
   root.append(summary, rows);
   root.addEventListener('toggle', () => {
-    state.disclosures[disclosureId] = root.open;
+    state.disclosures[root.dataset.disclosureId] = root.open;
     saveState();
     scheduleStickyPrompt();
   });
   renderTarget.append(root);
+  return {
+    root, label, rows, disclosureRoot: root, disclosureLabel: label,
+    toolCount: 0, contextCount: 0, reasoning: new Map(), statuses: new Map(),
+    toolCallIds: new Set(), contextIds: new Set(),
+  };
+}
+
+function ensureTurn(number, startedAt) {
+  const existing = turns.get(number);
+  if (existing !== undefined) return existing;
+  const segment = createProcessSegment(number, 0);
   const turn = {
-    root,
-    label,
-    rows,
-    disclosureRoot: root,
-    disclosureLabel: label,
-    toolCount: 0,
-    contextCount: 0,
-    reasoning: new Map(),
-    statuses: new Map(),
-    toolCallIds: new Set(),
-    contextIds: new Set(),
+    ...segment,
+    segments: [segment],
     startedAt,
     firstAssistantMessage: undefined,
     latestAssistantMessage: undefined,
     completed: false,
   };
   turns.set(number, turn);
+  return turn;
+}
+
+function activeProcessSegment(turn) {
+  if (turn.pendingProcessSegment) {
+    advanceTurnProcessSegment(turn, () => {
+      updateTurnProcessLabel(turn, false);
+      return createProcessSegment(turn.root.dataset.turn, turn.segments.length);
+    });
+  } else {
+    placeEmptyTurnProcessAfterMessage(turn);
+  }
   return turn;
 }
 
@@ -939,6 +1110,7 @@ function completeTurn(turn, completedAt, reason) {
   const root = document.createElement('div');
   root.className = 'turn-process turn-process-static';
   root.dataset.turn = turn.root.dataset.turn;
+  root.dataset.disclosureId = turn.root.dataset.disclosureId;
   const label = document.createElement('span');
   label.className = 'turn-process-static-label';
   label.textContent = turn.label.textContent;
@@ -946,6 +1118,8 @@ function completeTurn(turn, completedAt, reason) {
   turn.root.replaceWith(root);
   turn.root = root;
   turn.label = label;
+  turn.segments.at(-1).root = root;
+  turn.segments.at(-1).label = label;
 }
 
 function markTurnIncomplete(turn) {
@@ -956,6 +1130,7 @@ function markTurnIncomplete(turn) {
 }
 
 function appendReasoning(turn, event) {
+  activeProcessSegment(turn);
   let row = turn.reasoning.get(event.id);
   if (row === undefined || event.append !== true) {
     row = disclosureRow('think', event.id, 'Think', firstLine(event.text), event.text);
@@ -971,12 +1146,14 @@ function appendReasoning(turn, event) {
 
 function appendModelStatus(turn, event) {
   if (event.kind !== 'reasoning-token-progress' || typeof event.id !== 'string'
+    || !Number.isSafeInteger(event.step) || event.step <= 0
     || !['reported', 'estimated'].includes(event.basis)
     || (event.deltaTokens === undefined && event.totalTokens === undefined)) return;
   const delta = Number.isSafeInteger(event.deltaTokens) && event.deltaTokens >= 0 ? event.deltaTokens : undefined;
   const total = Number.isSafeInteger(event.totalTokens) && event.totalTokens >= 0 ? event.totalTokens : undefined;
   if (delta === undefined && total === undefined) return;
-  let row = turn.statuses.get(event.id);
+  const segment = selectReasoningStatusSegment(turn, event, () => activeProcessSegment(turn));
+  let row = segment.statuses.get(event.id);
   if (row === undefined) {
     const root = document.createElement('div');
     root.className = 'process-status-row';
@@ -993,23 +1170,24 @@ function appendModelStatus(turn, event) {
     const summary = document.createElement('span');
     summary.className = 'row-summary';
     root.append(icon, title, separator, summary);
-    turn.rows.append(root);
+    segment.rows.append(root);
     row = { root, summary, tokens: 0, estimated: true };
-    turn.statuses.set(event.id, row);
+    segment.statuses.set(event.id, row);
   }
   const nextTokens = total ?? row.tokens + (delta ?? 0);
   if (!Number.isSafeInteger(nextTokens) || nextTokens < 0) return;
   row.tokens = nextTokens;
   row.estimated = event.basis === 'estimated' && total === undefined;
   row.summary.textContent = `${row.estimated ? '~' : ''}${exactTokens(row.tokens)} reasoning tokens`;
-  updateTurnProcessLabel(turn, true);
+  updateTurnProcessLabel({ ...segment, incomplete: turn.incomplete },
+    !turn.completed && !turn.pendingProcessSegment && segment === turn.segments.at(-1));
   followOutput();
 }
 
 function appendToolCall(turn, event) {
   if (typeof event.callId !== 'string' || typeof event.name !== 'string') return;
-  if (turn.toolCallIds.has(event.callId)) return;
-  placeTurnProcessAfterMessage(turn);
+  if (turn.segments.some(segment => segment.toolCallIds.has(event.callId))) return;
+  activeProcessSegment(turn);
   const row = disclosureRow(
     'tool',
     `turn:${String(event.turn)}:tool:${event.callId}`,
@@ -1021,6 +1199,7 @@ function appendToolCall(turn, event) {
   turn.rows.append(row.root);
   turn.toolCallIds.add(event.callId);
   turn.toolCount += 1;
+  turn.segments.at(-1).toolCount = turn.toolCount;
   updateTurnProcessLabel(turn, true);
   tools.set(event.callId, row);
   followOutput();
@@ -1039,13 +1218,15 @@ function appendToolResult(event) {
 }
 
 function appendContext(turn, event) {
-  if (turn.contextIds.has(event.id)) return;
+  if (turn.segments.some(segment => segment.contextIds.has(event.id))) return;
+  activeProcessSegment(turn);
   const row = disclosureRow(
     'context', event.id, 'Context injection', event.label ?? '', event.detail ?? '',
   );
   turn.rows.append(row.root);
   turn.contextIds.add(event.id);
   turn.contextCount += 1;
+  turn.segments.at(-1).contextCount = turn.contextCount;
   updateTurnProcessLabel(turn, true);
   followOutput();
 }
@@ -2429,8 +2610,10 @@ function isNearOutputBottom() {
 
 function setOutputFollow() {
   scrollMode = 'follow';
-  bottomLatchSuppressed = false;
+  scrollTrace.record('mode-follow');
+  lastUserDownAt = -Infinity;
   userScrollIntent = false;
+  userScrollAwayIntent = false;
   if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
   userScrollTimer = undefined;
   updateScrollButton();
@@ -2438,18 +2621,15 @@ function setOutputFollow() {
 }
 
 function scrollToLatestOutput() {
-  if (isNearOutputBottom()) {
-    setOutputFollow();
-    return;
-  }
-  setOutputSticky(true);
-  output.scrollTo({ top: output.scrollHeight, behavior: 'smooth' });
+  setOutputFollow();
 }
 
-function setOutputSticky(suppressBottomLatch = false) {
+function setOutputSticky() {
   scrollMode = 'sticky';
-  bottomLatchSuppressed = suppressBottomLatch;
+  scrollTrace.record('mode-sticky');
+  lastUserDownAt = -Infinity;
   userScrollIntent = false;
+  userScrollAwayIntent = false;
   if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
   userScrollTimer = undefined;
   cancelScheduledOutputScroll();
@@ -2473,20 +2653,36 @@ function cancelScheduledOutputScroll() {
   scrollFrame = undefined;
 }
 
-function markUserScrollIntent() {
+function markUserScrollIntent(event) {
+  const away = event?.type === 'wheel' && event.deltaY < 0
+    || event?.type === 'keydown' && ['ArrowUp', 'PageUp', 'Home'].includes(event.key);
+  const towardBottom = event?.type === 'wheel' && event.deltaY > 0
+    || event?.type === 'keydown' && ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key);
+  if (event?.type === 'wheel' && away) scrollTrace.arm();
+  if (away && output.scrollHeight > output.clientHeight) setOutputSticky();
+  if (away) lastUserDownAt = -Infinity;
+  else if (towardBottom) lastUserDownAt = Date.now();
   userScrollIntent = true;
-  bottomLatchSuppressed = false;
+  userScrollAwayIntent = away;
   cancelScheduledOutputScroll();
   if (userScrollTimer !== undefined) clearTimeout(userScrollTimer);
   userScrollTimer = window.setTimeout(() => {
     userScrollTimer = undefined;
     userScrollIntent = false;
+    userScrollAwayIntent = false;
+    if (scrollMode === 'sticky' && isNearOutputBottom() && Date.now() - lastUserDownAt < 1_500) {
+      setOutputFollow();
+      return;
+    }
     if (scrollMode === 'follow') followOutput();
   }, 150);
 }
 
 function finishPointerInteraction() {
+  const wasPointerScrolling = pointerScrolling;
   pointerScrolling = false;
+  if (!wasPointerScrolling) return;
+  flushAssistantRenders();
   const selection = window.getSelection();
   const transcriptSelection = selection !== null && !selection.isCollapsed
     && (output.contains(selection.anchorNode) || output.contains(selection.focusNode));
@@ -2494,15 +2690,12 @@ function finishPointerInteraction() {
     setOutputSticky();
     return;
   }
-  if (isNearOutputBottom()) {
-    scrollMode = 'follow';
-    updateScrollButton();
-  }
   if (scrollMode === 'follow') followOutput();
 }
 
 function followOutput() {
   if (prependState !== undefined) return;
+  refreshScrollBounds();
   if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) {
     if (scrollMode !== 'follow') cancelScheduledOutputScroll();
     return;
@@ -2512,7 +2705,9 @@ function followOutput() {
   scrollFrame = requestAnimationFrame(() => {
     scrollFrame = undefined;
     if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) return;
+    scrollTrace.record('follow-write-before', output.scrollHeight);
     output.scrollTop = output.scrollHeight;
+    scrollTrace.record('follow-write-after');
     state.scrollTop = output.scrollTop;
     saveState();
     scheduleStickyPrompt();
@@ -2520,7 +2715,9 @@ function followOutput() {
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = undefined;
       if (scrollMode !== 'follow' || userScrollIntent || pointerScrolling) return;
+      scrollTrace.record('follow-write-before', output.scrollHeight);
       output.scrollTop = output.scrollHeight;
+      scrollTrace.record('follow-write-after');
       state.scrollTop = output.scrollTop;
       saveState();
       scheduleStickyPrompt();
@@ -2538,12 +2735,14 @@ function requestOlderHistory(initial = false) {
 
 function beginHistoryPrepend() {
   if (prependState !== undefined) return;
+  scrollTrace.record('prepend-start');
   prependState = {
     turns,
     tools,
     compactions,
     activeAssistant,
     activeAssistantMessage,
+    activeAssistantIdentity,
     activeTurn,
     nodes: [...output.childNodes],
     scrollTop: output.scrollTop,
@@ -2556,6 +2755,7 @@ function beginHistoryPrepend() {
   compactions = new Map();
   activeAssistant = undefined;
   activeAssistantMessage = undefined;
+  activeAssistantIdentity = undefined;
   activeTurn = undefined;
 }
 
@@ -2571,7 +2771,10 @@ function endHistoryPrepend() {
     const newer = previous.turns.get(number);
     if (newer === undefined) continue;
     const merged = mergePrependedTurnState(older, newer);
-    updateTurnProcessLabel(merged, !merged.completed);
+    for (const [index, segment] of merged.segments.entries()) {
+      updateTurnProcessLabel({ ...segment, incomplete: merged.incomplete },
+        !merged.completed && index === merged.segments.length - 1);
+    }
     prependedTurns.set(number, merged);
   }
   reattachTranscriptTail(output, [...fragment.childNodes], previous.nodes);
@@ -2580,16 +2783,21 @@ function endHistoryPrepend() {
   compactions = new Map([...prependedCompactions, ...previous.compactions]);
   activeAssistant = previous.activeAssistant;
   activeAssistantMessage = previous.activeAssistantMessage;
+  activeAssistantIdentity = previous.activeAssistantIdentity;
   activeTurn = previous.activeTurn;
   prependState = undefined;
   if (previous.following) {
+    scrollTrace.afterMutation('prepend-end');
     followOutput();
     return;
   }
+  scrollTrace.record('prepend-write-before', previous.scrollTop + output.scrollHeight - previous.scrollHeight);
   output.scrollTop = previous.scrollTop + output.scrollHeight - previous.scrollHeight;
+  scrollTrace.record('prepend-write-after');
   state.scrollTop = output.scrollTop;
   saveState();
   scheduleStickyPrompt();
+  scrollTrace.afterMutation('prepend-end');
 }
 
 function scheduleStickyPrompt() {
