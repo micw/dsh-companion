@@ -6,7 +6,7 @@ The project is an early proof of concept. It provides a restorable native chat e
 
 ## Development
 
-Requirements: Node.js 22 or newer and pnpm 11.7.
+Requirements: Node.js 22 or newer, pnpm 11.7, and the pinned DSH development checkout at `../deepseek-harness`. This monorepo contains the extension, shared Companion plugins, and optional OpenRouter, Claude Wrapper Advanced, and Codex Wrapper Advanced provider packages under `packages/providers/`. DSH and the independently operated wrapper services remain external.
 
 ```bash
 pnpm install
@@ -26,9 +26,7 @@ Checked-in manifests keep the neutral version `0.0.0`. Packaging derives the pro
 Build the VSIX with:
 
 ```bash
-DSH_COMPANION_DSH_SOURCE=../deepseek-harness \
-DSH_COMPANION_PROVIDER_BUNDLES='["../dsh-companion-provider-openrouter","../dsh-companion-provider-claude-wrapper-advanced","../dsh-companion-provider-codex-wrapper-advanced"]' \
-pnpm run vscode:package
+DSH_COMPANION_DSH_SOURCE=../deepseek-harness pnpm run vscode:package
 ```
 
-The command requires a clean tracked working tree, an exact checkout containing the pinned DSH commit, and built external provider package directories in product order. It reuses a verified content-addressed Linux runtime when its inputs are unchanged; otherwise it applies the reviewed patch series in a disposable clone and builds a new one. Every package health-checks its runtime and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).
+The command requires a clean tracked working tree and an exact checkout containing the pinned DSH commit. It builds all Companion and provider packages from the same repository revision in dependency order; one product release tag identifies their complete source state. It reuses a verified content-addressed Linux runtime when its inputs are unchanged; otherwise it applies the reviewed patch series in a disposable clone and builds a new one. Every package health-checks its runtime and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).

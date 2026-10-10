@@ -42,19 +42,8 @@ const dshSource = process.env.DSH_COMPANION_DSH_SOURCE;
 if (dshSource === undefined || dshSource.length === 0) {
   throw new Error('DSH_COMPANION_DSH_SOURCE must name an exact DSH Git checkout');
 }
-let providerRoots;
-try {
-  providerRoots = JSON.parse(process.env.DSH_COMPANION_PROVIDER_BUNDLES ?? '');
-} catch {
-  throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must be a JSON array of provider package directories');
-}
-if (!Array.isArray(providerRoots) || providerRoots.length !== 3
-  || providerRoots.some(path => typeof path !== 'string' || path.length === 0)) {
-  throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must name three provider package directories');
-}
-
 run('pnpm', ['run', 'build']);
-const runtimeId = await runtimeFingerprint(resolve(root, dshSource), providerRoots.map(path => resolve(root, path)));
+const runtimeId = await runtimeFingerprint(resolve(root, dshSource));
 const { verifyPayload } = await import('../vscode/out/runtimeInstaller.js');
 const verifiedRuntime = async (payload, expectedId) => {
   const manifest = await verifyPayload(payload);

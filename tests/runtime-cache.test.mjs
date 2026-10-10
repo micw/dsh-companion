@@ -40,6 +40,9 @@ test('Extension client changes do not change the managed runtime host identity',
   await writeFile(join(root, 'vscode', 'package.json'), '{"name":"extension"}\n');
   await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
   await writeFile(join(root, 'package.json'), '{"name":"workspace"}\n');
+  await writeFile(join(root, 'pnpm-workspace.yaml'), 'packages: [packages/*, packages/providers/*]\n');
+  await mkdir(join(root, 'scripts'));
+  await writeFile(join(root, 'scripts', 'product-packages.mjs'), 'export const providers = [];\n');
   await writeFile(join(root, 'vscode', 'src', 'dshClient.ts'), 'export const transcript = 1;\n');
   const first = await runtimeHostFingerprint(root);
   await writeFile(join(root, 'vscode', 'src', 'dshClient.ts'), 'export const transcript = 2;\n');

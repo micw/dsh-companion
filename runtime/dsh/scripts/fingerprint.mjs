@@ -6,11 +6,6 @@ import { DSH_RUNTIME_ROOT, loadUpstreamManifest, verifyPatchFiles } from './mani
 
 const COMPANION_ROOT = resolve(DSH_RUNTIME_ROOT, '../..');
 const EXCLUDED_NAMES = new Set(['.git', '.dev', 'node_modules', 'build', 'dist']);
-const EXPECTED_PROVIDERS = [
-  '@dsh-companion/provider-openrouter',
-  '@dsh-companion/provider-claude-wrapper-advanced',
-  '@dsh-companion/provider-codex-wrapper-advanced',
-];
 
 /** Excludes fetched dependencies, VCS metadata, and private development files from packaged provider trees. */
 export function stageInputAllowed(path, root) {
@@ -32,14 +27,13 @@ export async function runtimeHostFingerprint(root) {
   await addFile(hash, 'vscode/package.json', join(root, 'vscode', 'package.json'));
   await addFile(hash, 'pnpm-lock.yaml', join(root, 'pnpm-lock.yaml'));
   await addFile(hash, 'package.json', join(root, 'package.json'));
+  await addFile(hash, 'pnpm-workspace.yaml', join(root, 'pnpm-workspace.yaml'));
+  await addFile(hash, 'scripts/product-packages.mjs', join(root, 'scripts', 'product-packages.mjs'));
   return hash.digest('hex');
 }
 
 /** Derives one content-addressed runtime input identity before a costly DSH build. */
-export async function runtimeFingerprint(dshSource, providerRoots, options = {}) {
-  if (!Array.isArray(providerRoots) || providerRoots.length !== EXPECTED_PROVIDERS.length) {
-    throw new Error('Runtime fingerprint requires every provider bundle in product order');
-  }
+export async function runtimeFingerprint(dshSource, options = {}) {
   const manifest = await loadUpstreamManifest();
   await verifyPatchFiles(manifest);
   const source = resolve(dshSource);
@@ -52,7 +46,7 @@ export async function runtimeFingerprint(dshSource, providerRoots, options = {})
     if (observed !== expected) throw new Error('Runtime fingerprint DSH upstream identity mismatch');
   }
   const hash = createHash('sha256');
-  hash.update('dsh-companion-runtime-input-v1\0');
+  hash.update('dsh-companion-runtime-input-v2\0');
   hash.update(`target\0linux-x64\0node\0${options.nodeVersion ?? process.version}\0`);
   hash.update(`pnpm\0${options.pnpmVersion ?? execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim()}\0`);
   hash.update(`upstream\0${manifest.upstream.commit}\0${manifest.upstream.tree}\0`);
@@ -63,13 +57,6 @@ export async function runtimeFingerprint(dshSource, providerRoots, options = {})
   await addTree(hash, 'packages', join(COMPANION_ROOT, 'packages'), path =>
     stageInputAllowed(path, join(COMPANION_ROOT, 'packages')));
   hash.update(`host\0${await runtimeHostFingerprint(COMPANION_ROOT)}\0`);
-  for (const [index, root] of providerRoots.entries()) {
-    const providerRoot = resolve(root);
-    const provider = JSON.parse(await readFile(join(providerRoot, 'package.json'), 'utf8'));
-    if (provider.name !== EXPECTED_PROVIDERS[index]) throw new Error('Runtime fingerprint provider order mismatch');
-    await addTree(hash, `providers/${String(index)}-${provider.name}`, providerRoot,
-      path => stageInputAllowed(path, providerRoot));
-  }
   return hash.digest('hex');
 }
 

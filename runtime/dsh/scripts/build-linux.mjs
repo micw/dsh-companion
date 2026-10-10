@@ -8,15 +8,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { stageInputAllowed } from './fingerprint.mjs';
+import { stageCompanionPackages } from './stage-companion.mjs';
 import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
 
 const TARGET = 'linux-x64';
-const EXPECTED_PROVIDER_BUNDLES = [
-  '@dsh-companion/provider-openrouter',
-  '@dsh-companion/provider-claude-wrapper-advanced',
-  '@dsh-companion/provider-codex-wrapper-advanced',
-];
 const { values } = parseArgs({
   options: {
     source: { type: 'string' },
@@ -37,7 +32,6 @@ if (!/^[0-9a-f]{64}$/u.test(runtimeId)) {
 }
 const source = resolve(values.source);
 const output = resolve(values.output);
-const providerPackageRoots = parseProviderPackageRoots(process.env.DSH_COMPANION_PROVIDER_BUNDLES);
 const buildEnvironment = { ...process.env, CI: '1' };
 await requireAbsent(output, 'Runtime payload output');
 await mkdir(dirname(output), { recursive: true, mode: 0o700 });
@@ -52,7 +46,7 @@ try {
   ]);
   await run('pnpm', ['install', '--frozen-lockfile'], { cwd: prepared, env: buildEnvironment });
   await run('pnpm', ['run', 'build'], { cwd: prepared, env: buildEnvironment });
-  const profileBundles = await stageCompanionPackages(prepared, providerPackageRoots);
+  const profileBundles = await stageCompanionPackages(prepared, resolve(import.meta.dirname, '../../..'));
   await run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: prepared, env: buildEnvironment });
   const clientBundle = join(prepared, 'dist-exe', 'dsh-companion-client-runtime.js');
   await bundleClientRuntime(prepared, clientBundle);
@@ -215,76 +209,6 @@ async function bundleClientRuntime(prepared, outfile) {
   });
 }
 
-async function stageCompanionPackages(prepared, providerRoots) {
-  const companionRoot = resolve(import.meta.dirname, '../../..');
-  const sourcePackages = join(companionRoot, 'packages');
-  const destinationRoot = join(prepared, 'packages', 'dsh-companion');
-  await mkdir(destinationRoot, { recursive: true });
-  for (const entry of await readdir(sourcePackages, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    await stagePackage(join(sourcePackages, entry.name), join(destinationRoot, entry.name));
-  }
-  const profileBundles = ['@dsh-companion/bundle'];
-  for (const [index, providerRoot] of providerRoots.entries()) {
-    const sourceManifest = JSON.parse(await readFile(join(providerRoot, 'package.json'), 'utf8'));
-    if (sourceManifest.name !== EXPECTED_PROVIDER_BUNDLES[index]) {
-      throw new Error(`Invalid Companion provider bundle at ${providerRoot}`);
-    }
-    await stagePackage(providerRoot, join(destinationRoot, sourceManifest.name.split('/')[1]));
-    profileBundles.push(sourceManifest.name);
-  }
-  for (const entry of await readdir(destinationRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = join(destinationRoot, entry.name, 'package.json');
-    const packageManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    let changed = false;
-    for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const name of Object.keys(packageManifest[section] ?? {})) {
-        if (!name.startsWith('@dsh-companion/')) continue;
-        packageManifest[section][name] = 'workspace:*';
-        changed = true;
-      }
-    }
-    if (changed) await writeFile(manifestPath, `${JSON.stringify(packageManifest, null, 2)}\n`);
-  }
-  const cliManifestPath = join(prepared, 'apps', 'cli', 'package.json');
-  const cliManifest = JSON.parse(await readFile(cliManifestPath, 'utf8'));
-  for (const packageName of profileBundles) cliManifest.dependencies[packageName] = 'workspace:*';
-  await writeFile(cliManifestPath, `${JSON.stringify(cliManifest, null, 2)}\n`);
-  return profileBundles;
-}
-
-async function stagePackage(from, to) {
-  const sourceNodeModules = join(from, 'node_modules');
-  await cp(from, to, {
-    recursive: true,
-    filter: path => path !== sourceNodeModules && !path.startsWith(`${sourceNodeModules}/`)
-      && stageInputAllowed(path, from),
-  });
-  await Promise.all([
-    rm(join(to, 'src'), { recursive: true, force: true }),
-    rm(join(to, 'tests'), { recursive: true, force: true }),
-    rm(join(to, 'tsconfig.json'), { force: true }),
-    rm(join(to, 'tsdown.config.ts'), { force: true }),
-  ]);
-  const manifestPath = join(to, 'package.json');
-  const packageManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  rewriteLinkDependencies(packageManifest);
-  delete packageManifest.devDependencies;
-  delete packageManifest.scripts;
-  await writeFile(manifestPath, `${JSON.stringify(packageManifest, null, 2)}\n`);
-}
-
-function rewriteLinkDependencies(packageManifest) {
-  for (const section of ['dependencies', 'peerDependencies']) {
-    for (const [name, version] of Object.entries(packageManifest[section] ?? {})) {
-      if (typeof version === 'string' && version.startsWith('link:')) {
-        packageManifest[section][name] = 'workspace:*';
-      }
-    }
-  }
-}
-
 async function healthCheck(executable, profileBundles) {
   const home = await mkdtemp(join(tmpdir(), 'dsh-companion-health-'));
   const dshHome = join(home, 'dsh-home');
@@ -346,24 +270,6 @@ async function writeManagedProfile(dshHome, profileBundles) {
     },
   }, null, 2)}\n`);
   await writeFile(join(profile, 'cordis.patch.yml'), '[]\n');
-}
-
-function parseProviderPackageRoots(value) {
-  if (value === undefined || value === '') {
-    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must name the packaged provider bundles');
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch (error) {
-    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must be a JSON array', { cause: error });
-  }
-  if (!Array.isArray(parsed) || parsed.length !== EXPECTED_PROVIDER_BUNDLES.length
-    || parsed.some(path => typeof path !== 'string' || path.length === 0)
-    || new Set(parsed).size !== parsed.length) {
-    throw new Error('DSH_COMPANION_PROVIDER_BUNDLES must contain every provider package directory in product order');
-  }
-  return parsed.map(path => resolve(path));
 }
 
 async function freePort() {
