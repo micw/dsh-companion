@@ -9,8 +9,8 @@ import remote from '../lib/typert.remote-client.js'
 
 test('generated Remote descriptor validates arguments, title, and cancellation', () => {
   assert.equal(remote.package, '@dsh-companion/session-title')
-  const [descriptor] = remote.descriptors
-  assert.equal(remote.descriptors.length, 1)
+  assert.equal(remote.descriptors.length, 2)
+  const descriptor = remote.descriptors.find(item => item.method === 'refreshTitle')
   assert.equal(`${descriptor.namespace}/${descriptor.method}`, 'companionSessionTitle/refreshTitle')
   assert.deepEqual(descriptor.cancellation, { parameter: 'signal' })
   assert.equal(descriptor.parameters[0].codec.create().safeParse('session-1').success, true)
@@ -18,6 +18,9 @@ test('generated Remote descriptor validates arguments, title, and cancellation',
   assert.equal(descriptor.result.create().safeParse('Fresh title').success, true)
   assert.equal(descriptor.result.create().safeParse(undefined).success, true)
   assert.equal(descriptor.result.create().safeParse(3).success, false)
+  const prepare = remote.descriptors.find(item => item.method === 'prepareForkTitle')
+  assert.deepEqual(prepare.cancellation, { parameter: 'signal' })
+  assert.equal(prepare.result.create().safeParse(undefined).success, true)
 })
 
 const config = { fallbackMaxWords: 5, fallbackMaxBytes: 40, maxTitleBytes: 40 }
@@ -61,5 +64,29 @@ test('rejects invalid identifiers and aborted calls without mutating title', asy
   controller.abort(new Error('cancelled'))
   await assert.rejects(ctx.companionSessionTitle.refreshTitle('session-1', controller.signal), /cancelled/u)
   assert.equal(ctx.sessionTitle.get(session).title, 'Pinned custom title')
+  await ctx.fiber.dispose()
+})
+
+test('prepares an inherited user title without changing the source title', async () => {
+  const ctx = await fixture()
+  const source = ctx.sessions.create(SessionId('source'))
+  source.append('turn/start', { turn: 1 })
+  source.append('user/message', {
+    id: 'message-1', role: 'user',
+    content: [{ type: 'text', text: 'The original prompt title' }],
+    source: { kind: 'user' },
+  }, { surfaceOp: 'append' })
+  ctx.sessionTitle.rename(source, 'Pinned custom title')
+  const end = source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const child = ctx.sessions.fork(source, end.seq, SessionId('child'))
+  const signal = new AbortController().signal
+  assert.equal(ctx.sessionTitle.get(child).source.kind, 'user')
+  await ctx.companionSessionTitle.prepareForkTitle('child', signal)
+  assert.notEqual(ctx.sessionTitle.get(child).source.kind, 'user')
+  assert.equal(ctx.sessionTitle.get(source).title, 'Pinned custom title')
+  const seq = child.seq
+  await ctx.companionSessionTitle.prepareForkTitle('child', signal)
+  assert.equal(child.seq, seq)
+  await assert.rejects(ctx.companionSessionTitle.prepareForkTitle('source', signal), /ordinary fork/u)
   await ctx.fiber.dispose()
 })

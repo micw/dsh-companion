@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
 import { eventWindowTrace, permissionProjectionTrace, restoreTrace } from './restoreDiagnostics';
+import { branchTitleRevision, hasCompletedTurnAt, includesForkPreviewEvent, isForkChildId } from './forkDraft';
 import type { UserImageUpload } from './queueMessages';
 
 /** Fixed source-development DSH Web origin. */
@@ -28,7 +29,7 @@ export type DshProcessEvent =
     readonly state: 'answerable' | 'settling' | 'closed' }
   | {
     readonly type: 'turn-end'; readonly turn: number; readonly time: number;
-    readonly reason: string; readonly replay: boolean;
+    readonly reason: string; readonly replay: boolean; readonly seq: number;
   }
   | {
     readonly type: 'reasoning'; readonly id: string; readonly turn: number;
@@ -313,6 +314,7 @@ export type DshCompactionEvent =
 export interface DshOutputSink {
   sessionCreated(sessionId: string): void;
   sessionSummary(summary: DshSessionListEntry | undefined): void;
+  branchTitle?(seq: number, title: string): void;
   reset(): void;
   history(role: 'user' | 'assistant' | 'error', text: string, time?: number, turn?: number, step?: number,
     images?: readonly DshImageAttachment[]): void;
@@ -397,6 +399,7 @@ interface CanonicalClientGraph {
   readonly sessions: {
     readonly list: ObservableValue;
     create(options?: { cwd?: string; sessionId?: string }): Promise<string>;
+    fork(options: { sessionId: string; atSeq: number }): Promise<string>;
     retain(sessionId: string, options: { source: string }): CanonicalSessionReference;
     binding(sessionId: string): CanonicalBinding | undefined;
     subagentAddress(sessionId: string): unknown;
@@ -1168,6 +1171,7 @@ export class DshClient {
     modelCatalogValue: DshModelCatalog,
     canonical: CanonicalState,
     permissionSelectionValue?: DshPermissionSelection,
+    private readonly previewAtSeq?: number,
   ) {
     this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
@@ -1190,10 +1194,11 @@ export class DshClient {
     restoredSessionId: string | undefined,
     clientModule: string,
     origin: string = DSH_ORIGIN,
+    previewAtSeq?: number,
   ): Promise<DshClient> {
     sink.status('Connecting to DSH…');
     await rpc(cookie, 'session/list', { _request: {} }, origin);
-    return DshClient.connectCanonical(cookie, cwd, sink, restoredSessionId, clientModule, origin);
+    return DshClient.connectCanonical(cookie, cwd, sink, restoredSessionId, clientModule, origin, previewAtSeq);
   }
 
   private static async connectCanonical(
@@ -1203,6 +1208,7 @@ export class DshClient {
     restoredSessionId: string | undefined,
     clientModule: string,
     origin: string,
+    previewAtSeq?: number,
   ): Promise<DshClient> {
     const module = await importExternalModule(pathToFileURL(clientModule).href);
     const Client = isRecord(module)
@@ -1236,7 +1242,7 @@ export class DshClient {
         disposers: [],
         disposeProviderRemotes: mountedProviderRemotes,
         requestAliases: new Map(),
-      }, permissionSelection);
+      }, permissionSelection, previewAtSeq);
       sink.modelCatalog(modelCatalog);
       sink.modelSelection(modelCatalog.default);
       sink.compactAvailable(false);
@@ -1250,7 +1256,7 @@ export class DshClient {
       client.canonical?.disposers.push(graph.sessions.list.subscribe(publishSummary));
       client.canonical?.disposers.push(graph.remote.$on('approval/request', function (request, next) {
         const sessionId = graph.sessions.scopeOf(this);
-        if (sessionId === undefined || sessionId !== client.sessionIdValue) return next();
+        if (previewAtSeq !== undefined || sessionId === undefined || sessionId !== client.sessionIdValue) return next();
         return client.receiveApprovalRequest(request, next);
       }));
       if (restoredSessionId !== undefined) {
@@ -1277,9 +1283,27 @@ export class DshClient {
     }
   }
 
+  /** Confirms a requested cut is a visible, durable completed Turn. */
+  canForkAt(atSeq: number): boolean {
+    const snapshot = this.canonical?.binding?.eventSource.getSnapshot();
+    return isRecord(snapshot) && Array.isArray(snapshot.entries)
+      && hasCompletedTurnAt(snapshot.entries, atSeq);
+  }
+
+  /** Creates an ordinary DSH child from a completed Turn without changing this Session. */
+  async forkAt(atSeq: number): Promise<string> {
+    if (!Number.isSafeInteger(atSeq) || atSeq < 0) {
+      throw new Error('A completed source Turn is required to fork');
+    }
+    const childId = await this.requireCanonical().graph.sessions.fork({ sessionId: this.requireSessionId(), atSeq });
+    if (!isForkChildId(childId)) throw new Error('DSH returned an invalid fork Session id');
+    return childId;
+  }
+
   /** Sends one text-and-image prompt using DSH's requested queue or steering mode. */
   async prompt(text: string, requestId: string, mode: 'queue' | 'steer' = 'queue',
     images: readonly UserImageUpload[] = []): Promise<void> {
+    if (this.previewAtSeq !== undefined) throw new Error('A fork preview cannot submit to its source Session');
     this.lastReportedError = undefined;
     await this.ensureSession();
     const canonical = this.requireCanonical();
@@ -1669,6 +1693,13 @@ export class DshClient {
     if (command.kind === 'error') throw new Error(command.text ?? `Could not select permission preset ${preset}`);
   }
 
+  /** Releases an inherited manual title pin before the fork's first new request. */
+  async prepareForkTitle(): Promise<void> {
+    unwrapCanonicalResult(await callCanonicalRemote(
+      this.requireCanonical().graph, 'companionSessionTitle', 'prepareForkTitle', this.requireSessionId(),
+    ), 'companionSessionTitle.prepareForkTitle');
+  }
+
   /** Explicitly regenerates the canonical DSH title for this live Session. */
   async refreshTitle(): Promise<string | undefined> {
     const result = await callCanonicalRemote(
@@ -1993,6 +2024,10 @@ export class DshClient {
     restoreTrace(this.sessionIdValue, 'open', {});
     const inboxProjection = session.projections.faceOf('inbox');
     const projectInbox = (): void => {
+      if (this.previewAtSeq !== undefined) {
+        this.sink.queue([]);
+        return;
+      }
       this.sink.queue(parseInboxQueue(
         inboxProjection.getSnapshot(), this.sessionRunning, canonical.requestAliases,
       ));
@@ -2012,7 +2047,7 @@ export class DshClient {
         });
       }
       this.sessionRunning = snapshot.running;
-      this.sink.running(snapshot.running);
+      this.sink.running(this.previewAtSeq === undefined && snapshot.running);
       this.sink.historyState(snapshot.hasMore);
       projectInbox();
     };
@@ -2187,9 +2222,11 @@ export class DshClient {
   ): void {
     if (!isRecord(entry) || !isRecord(entry.event)) return;
     if (entry.type === 'event') {
+      if (this.previewAtSeq !== undefined && !includesForkPreviewEvent(entry, this.previewAtSeq)) return;
       this.receiveHistoryRecord(entry, fromSnapshot, older, turnHint);
       return;
     }
+    if (this.previewAtSeq !== undefined) return;
     const event = entry.event;
     if (entry.type !== 'transient' || event.type !== 'assistant/live-chunk' || !isRecord(event.data)
       || typeof event.data.attemptId !== 'string' || typeof event.data.turn !== 'number'
@@ -2349,6 +2386,12 @@ export class DshClient {
       }
     }
 
+    const branchTitle = branchTitleRevision(event);
+    if (branchTitle !== undefined) {
+      this.sink.branchTitle?.(branchTitle.seq, branchTitle.title);
+      return;
+    }
+
     if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
       this.currentStep = 0;
       const startedAt = typeof event.time === 'number' ? event.time : Date.now();
@@ -2395,6 +2438,9 @@ export class DshClient {
     }
 
     if (event.type === 'turn/end' && typeof event.data.turn === 'number') {
+      if (!Number.isSafeInteger(event.seq) || Number(event.seq) < 0) {
+        throw new Error('DSH returned a Turn end without an event sequence');
+      }
       if (isRecord(event.data.reason) && event.data.reason.kind === 'error'
         && isRecord(event.data.reason.error) && typeof event.data.reason.error.message === 'string') {
         this.reportError(event.data.reason.error.message);
@@ -2416,6 +2462,7 @@ export class DshClient {
         time: completedAt,
         reason,
         replay: fromSnapshot,
+        seq: Number(event.seq),
       });
       this.turnStats = undefined;
       if (this.openTurn === event.data.turn) this.openTurn = undefined;

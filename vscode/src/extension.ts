@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
   DSH_ORIGIN, DshClient, DshHttpError, DshSessionBrowser, PACKAGED_DSH_ORIGIN, exchangeLaunchUrl,
@@ -11,6 +11,8 @@ import { isLoadImageMessage, isQueueActionMessage, isStopMessage, isSubmitMessag
 import type { LoadImageMessage, QueueActionMessage, SubmitMessage } from './queueMessages';
 import { isAnswerApprovalMessage } from './approvalMessages';
 import type { AnswerApprovalMessage } from './approvalMessages';
+import { isChatEditorState, isForkAtMessage, isForkChildId, isProvisionalForkTitle } from './forkDraft';
+import type { ForkDraft } from './forkDraft';
 import { RuntimeControl } from './runtimeControl';
 import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 import { connectRuntime } from './runtimeInstaller';
@@ -116,14 +118,10 @@ interface ReadyMessage {
   readonly type: 'ready';
 }
 
-interface ChatEditorState {
-  readonly version: 1 | 2;
-  readonly sessionId?: string;
-}
-
 interface ConnectedChat {
   readonly client: DshClient;
   readonly backendVersion: string;
+  readonly cancelRender: () => void;
 }
 
 const panelMessengers = new WeakMap<vscode.WebviewPanel, WebviewMessenger>();
@@ -262,8 +260,29 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.registerWebviewPanelSerializer(CHAT_EDITOR_VIEW_TYPE, {
       async deserializeWebviewPanel(panel, state: unknown): Promise<void> {
+        const editorState = isChatEditorState(state) ? state : undefined;
+        const draft = editorState?.forkDraft;
+        const candidate = draft === undefined ? undefined
+          : context.workspaceState.get<unknown>(`forkDraftChild:${draft.draftId}`);
+        const activatedId = isForkChildId(candidate) ? candidate : undefined;
+        const boundId = activatedId ?? editorState?.sessionId;
+        const storedTitle = boundId === undefined ? undefined
+          : context.workspaceState.get<unknown>(`provisionalForkTitle:${boundId}`);
+        const provisional = isProvisionalForkTitle(storedTitle) ? storedTitle
+          : activatedId !== undefined && draft !== undefined
+            ? { title: `(forked) ${draft.sourceTitle}`, atSeq: draft.atSeq } : undefined;
+        if (activatedId !== undefined) {
+          await context.workspaceState.update(`forkTitlePending:${activatedId}`, true);
+          if (provisional !== undefined) {
+            await context.workspaceState.update(`provisionalForkTitle:${activatedId}`, provisional);
+          }
+        }
         configureChatEditor(
-          context, runtimeControl, sessionTree, runtimeProgress, panel, isChatEditorState(state) ? state.sessionId : undefined,
+          context, runtimeControl, sessionTree, runtimeProgress, panel, boundId,
+          activatedId === undefined ? draft : undefined, undefined,
+          provisional?.title,
+          activatedId === undefined ? undefined : draft?.draftId,
+          provisional?.atSeq,
         );
       },
     }),
@@ -295,6 +314,7 @@ function openChatEditor(
   sessionTree: SessionSidebarProvider,
   runtimeProgress: RuntimeProgress,
   sessionId?: string,
+  forkDraft?: ForkDraft,
 ): vscode.WebviewPanel {
   const existing = sessionId === undefined ? undefined : panelsBySessionId.get(sessionId);
   if (existing !== undefined) {
@@ -312,7 +332,7 @@ function openChatEditor(
       localResourceRoots: [mediaRoot],
     },
   );
-  configureChatEditor(context, runtimeControl, sessionTree, runtimeProgress, panel, sessionId);
+  configureChatEditor(context, runtimeControl, sessionTree, runtimeProgress, panel, sessionId, forkDraft);
   return panel;
 }
 
@@ -360,6 +380,11 @@ function configureChatEditor(
   runtimeProgress: RuntimeProgress,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
+  initialForkDraft?: ForkDraft,
+  initialSubmission?: SubmitMessage,
+  forkTitlePlaceholder?: string,
+  activationDraftId?: string,
+  forkBoundarySeq?: number,
 ): void {
   if (restoredSessionId !== undefined) panelsBySessionId.set(restoredSessionId, panel);
   const panelTraceId = randomBytes(4).toString('hex');
@@ -375,12 +400,17 @@ function configureChatEditor(
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   let disposed = false;
   let sessionCwd: string | undefined;
+  let currentTitle: string | undefined;
+  let pendingPlaceholder = forkTitlePlaceholder;
+  if (initialForkDraft !== undefined) panel.title = `(forked) ${initialForkDraft.sourceTitle}`;
+  else if (pendingPlaceholder !== undefined) panel.title = pendingPlaceholder;
   const renderTab = () => {
     if (disposed) return;
     const icon = `tab-${tabStatus.status}.svg`;
     panel.iconPath = vscode.Uri.joinPath(mediaRoot, icon);
   };
   const acknowledge = () => {
+    if (initialForkDraft !== undefined) return;
     if (!panel.active || !panel.visible || disposed) return;
     const watermark = tabStatus.acknowledge();
     const sessionId = client?.sessionId ?? restoredSessionId;
@@ -412,7 +442,9 @@ function configureChatEditor(
     restoreTrace(traceSessionId, 'batch-posted', { panelTraceId, ...batch });
   });
   panelMessengers.set(panel, messenger);
+  if (initialForkDraft !== undefined) post(panel, { type: 'forkDraft', draft: initialForkDraft });
   let client: DshClient | undefined;
+  let cancelCurrentRender = () => {};
   let runtimePending = true;
   const unsubscribeProgress = runtimeProgress.subscribe(phase => {
     if (!disposed && runtimePending) post(panel, { type: 'status', text: runtimePhaseText[phase] });
@@ -426,9 +458,10 @@ function configureChatEditor(
     context,
     runtimeControl,
     panel,
-    restoredSessionId,
+    initialForkDraft?.sourceSessionId ?? restoredSessionId,
     () => { sessionTree.requestRefresh(); },
     (sessionId, backendVersion) => {
+      if (initialForkDraft !== undefined) return;
       traceSessionId = sessionId;
       restoreTrace(sessionId, 'session-bound', { panelTraceId, backendVersion });
       panelsBySessionId.set(sessionId, panel);
@@ -446,21 +479,59 @@ function configureChatEditor(
       if (disposed) return;
       if (summary === undefined) return;
       if (summary.cwd !== undefined) sessionCwd = summary.cwd;
-      panel.title = summary.title;
-      post(panel, { type: 'sessionTitle', title: summary.title });
+      currentTitle = summary.title;
+      const title = initialForkDraft !== undefined ? `(forked) ${initialForkDraft.sourceTitle}`
+        : pendingPlaceholder ?? summary.title;
+      panel.title = title;
+      post(panel, { type: 'sessionTitle', title });
     },
-    (running) => { tabStatus.setRunning(running); renderTab(); if (!running) acknowledge(); },
-    (time, reason) => { tabStatus.end(time, reason); renderTab(); acknowledge(); },
+    (running) => {
+      if (initialForkDraft !== undefined) return;
+      tabStatus.setRunning(running);
+      renderTab();
+      if (!running) acknowledge();
+    },
+    (time, reason) => {
+      if (initialForkDraft !== undefined) return;
+      tabStatus.end(time, reason);
+      renderTab();
+      acknowledge();
+    },
+    (seq, title) => {
+      if (forkBoundarySeq === undefined || seq <= forkBoundarySeq || disposed) return;
+      pendingPlaceholder = undefined;
+      panel.title = title;
+      post(panel, { type: 'sessionTitle', title });
+      if (restoredSessionId !== undefined) {
+        void context.workspaceState.update(`provisionalForkTitle:${restoredSessionId}`, undefined);
+      }
+    },
+    initialForkDraft?.atSeq,
   ).then((connected) => {
     client = connected.client;
+    cancelCurrentRender = connected.cancelRender;
     acknowledge();
     post(panel, { type: 'connected' });
     void connected.client.providerSettings().then(
-      snapshot => { post(panel, { type: 'providerSettings', snapshot }); },
+      snapshot => { if (!disposed) post(panel, { type: 'providerSettings', snapshot }); },
       error => { console.warn('DSH provider settings are unavailable', error); },
     );
+    if (initialSubmission !== undefined) void submitCurrent(initialSubmission).then(accepted => {
+      if (!accepted) post(panel, { type: 'restoreSubmission', text: initialSubmission.text,
+        images: initialSubmission.images ?? [] });
+    });
     return connected.client;
   });
+  const submitCurrent = async (message: SubmitMessage): Promise<boolean> => {
+    const key = restoredSessionId === undefined ? undefined : `forkTitlePending:${restoredSessionId}`;
+    const pending = key !== undefined && context.workspaceState.get<boolean>(key) === true;
+    const prepared = pending ? ready.then(async bound => { await bound.prepareForkTitle(); return bound; }) : ready;
+    const accepted = await submit(panel, prepared, message);
+    if (accepted && pending && key !== undefined) {
+      await context.workspaceState.update(key, undefined);
+    }
+    return accepted;
+  };
   panelFileLinks.set(panel, message => { void openSessionFile(ready, () => sessionCwd, message); });
   void ready.catch((error: unknown) => {
     restoreTrace(traceSessionId, 'connection-failed', { panelTraceId, errorKind: error instanceof Error ? error.name : 'unknown' });
@@ -483,7 +554,27 @@ function configureChatEditor(
         panelTraceId, reason: message.reason, startTop: message.startTop, samples: message.samples,
       });
     }
-    if (isSubmitMessage(message)) void submit(panel, ready, message);
+    if (isForkAtMessage(message) && initialForkDraft === undefined) {
+      void ready.then(source => {
+        if (!source.canForkAt(message.atSeq) || currentTitle === undefined || source.sessionId === undefined) {
+          throw new Error('This completed Turn is no longer available for Fork');
+        }
+        const draft: ForkDraft = {
+          draftId: randomUUID(), sourceSessionId: source.sessionId, atSeq: message.atSeq, sourceTitle: currentTitle,
+        };
+        openChatEditor(context, runtimeControl, sessionTree, runtimeProgress, undefined, draft);
+      }).catch(error => vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)));
+    }
+    if (isSubmitMessage(message)) {
+      if (initialForkDraft === undefined) void submitCurrent(message);
+      else void activateForkDraft(message);
+    }
+    if (activationDraftId !== undefined && isSessionBoundMessage(message)
+      && message.sessionId === restoredSessionId) {
+      void context.workspaceState.update(`forkDraftChild:${activationDraftId}`, undefined);
+    }
+    if (initialForkDraft !== undefined && !isLoadOlderMessage(message) && !isLoadImageMessage(message)
+      && !isOpenLinkMessage(message) && !isOpenFileMessage(message) && !isCopyTextMessage(message)) return;
     if (isStopMessage(message)) void stop(panel, ready);
     if (isQueueActionMessage(message)) void queueAction(panel, ready, message);
     if (isLoadImageMessage(message)) void loadImage(panel, ready, message);
@@ -508,13 +599,60 @@ function configureChatEditor(
       if (Buffer.byteLength(text, 'utf8') <= 4 * 1024 * 1024) void vscode.env.clipboard.writeText(text);
     }
   });
+  let activating = false;
+  let activationChildId: string | undefined;
+  const activateForkDraft = async (message: SubmitMessage): Promise<void> => {
+    if (initialForkDraft === undefined) return;
+    if (activating) {
+      post(panel, { type: 'submissionFailed', requestId: message.requestId });
+      return;
+    }
+    activating = true;
+    post(panel, { type: 'sending', value: true });
+    try {
+      const source = await ready;
+      const key = `forkDraftChild:${initialForkDraft.draftId}`;
+      const storedChild = context.workspaceState.get<unknown>(key);
+      let childId = activationChildId ?? (isForkChildId(storedChild) ? storedChild : undefined);
+      if (childId === undefined) {
+        childId = await source.forkAt(initialForkDraft.atSeq);
+        activationChildId = childId;
+      }
+      await context.workspaceState.update(key, childId);
+      await context.workspaceState.update(`provisionalForkTitle:${childId}`, {
+        title: `(forked) ${initialForkDraft.sourceTitle}`, atSeq: initialForkDraft.atSeq,
+      });
+      await context.workspaceState.update(`forkTitlePending:${childId}`, true);
+      if (disposed) return;
+      disposed = true;
+      unsubscribeProgress();
+      receive.dispose();
+      viewState.dispose();
+      messenger.dispose();
+      panelMessengers.delete(panel);
+      panelFileLinks.delete(panel);
+      cancelCurrentRender();
+      source.dispose();
+      const firstMessage: SubmitMessage = { ...message, mode: 'queue' };
+      configureChatEditor(context, runtimeControl, sessionTree, runtimeProgress, panel, childId, undefined,
+        firstMessage, `(forked) ${initialForkDraft.sourceTitle}`, initialForkDraft.draftId, initialForkDraft.atSeq);
+    } catch (error) {
+      post(panel, { type: 'submissionFailed', requestId: message.requestId });
+      post(panel, { type: 'error', text: error instanceof Error ? error.message : String(error) });
+      post(panel, { type: 'sending', value: false });
+    } finally {
+      activating = false;
+    }
+  };
   const viewState = panel.onDidChangeViewState(({ webviewPanel }) => {
     acknowledge();
     sessionTree.setActiveSession(
-      webviewPanel.active ? client?.sessionId ?? restoredSessionId : activeCompanionSessionId(),
+      webviewPanel.active && initialForkDraft === undefined
+        ? client?.sessionId ?? restoredSessionId : activeCompanionSessionId(),
     );
   });
   panel.onDidDispose(() => {
+    if (disposed) return;
     restoreTrace(traceSessionId, 'panel-dispose', { panelTraceId });
     disposed = true;
     unsubscribeProgress();
@@ -523,6 +661,7 @@ function configureChatEditor(
     messenger.dispose();
     panelMessengers.delete(panel);
     panelFileLinks.delete(panel);
+    cancelCurrentRender();
     const sessionId = client?.sessionId ?? restoredSessionId;
     if (sessionId !== undefined && panelsBySessionId.get(sessionId) === panel) panelsBySessionId.delete(sessionId);
     sessionTree.setActiveSession(activeCompanionSessionId());
@@ -547,6 +686,8 @@ async function connect(
   onSummary?: (summary: import('./dshClient').DshSessionListEntry | undefined) => void,
   onRunning?: (running: boolean) => void,
   onTurnEnd?: (time: number, reason: string) => void,
+  onBranchTitle?: (seq: number, title: string) => void,
+  previewAtSeq?: number,
 ): Promise<ConnectedChat> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
@@ -584,6 +725,7 @@ async function connect(
     sessionSummary: (summary: import('./dshClient').DshSessionListEntry | undefined) => {
       onSummary?.(summary);
     },
+    branchTitle: (seq: number, title: string) => { onBranchTitle?.(seq, title); },
     reset: () => {
       cancelRender();
       streamingAssistant = '';
@@ -659,8 +801,9 @@ async function connect(
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   try {
     if (cookie !== undefined) {
-      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin);
-      return { client, backendVersion };
+      const client = await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin,
+        previewAtSeq);
+      return { client, backendVersion, cancelRender };
     }
   } catch (error) {
     if (!(error instanceof DshHttpError) || error.status !== 401) throw error;
@@ -673,8 +816,10 @@ async function connect(
   cookie = await exchangeLaunchUrl(launchUrl, runtime.origin);
   await context.secrets.store(COOKIE_SECRET_KEY, cookie);
   return {
-    client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin),
+    client: await DshClient.connect(cookie, cwd, sink, restoredSessionId, runtime.clientModule, runtime.origin,
+      previewAtSeq),
     backendVersion,
+    cancelRender,
   };
 }
 
@@ -772,18 +917,20 @@ async function submit(
   panel: vscode.WebviewPanel,
   ready: Promise<DshClient>,
   message: SubmitMessage,
-): Promise<void> {
+): Promise<boolean> {
   post(panel, { type: 'sending', value: true });
   try {
     const client = await ready;
     await client.prompt(message.text, message.requestId, message.mode, message.images ?? []);
     post(panel, { type: 'submissionAccepted', requestId: message.requestId });
+    return true;
   } catch (error) {
     post(panel, { type: 'submissionFailed', requestId: message.requestId });
     post(panel, {
       type: 'error',
       text: error instanceof Error ? error.message : String(error),
     });
+    return false;
   } finally {
     post(panel, { type: 'sending', value: false });
   }
@@ -1204,11 +1351,10 @@ function isOpenLinkMessage(value: unknown): value is OpenLinkMessage {
   }
 }
 
-function isChatEditorState(value: unknown): value is ChatEditorState {
-  return typeof value === 'object' && value !== null
-    && (Reflect.get(value, 'version') === 1 || Reflect.get(value, 'version') === 2)
-    && (Reflect.get(value, 'sessionId') === undefined
-      || typeof Reflect.get(value, 'sessionId') === 'string');
+function isSessionBoundMessage(value: unknown): value is { readonly type: 'sessionBound'; readonly sessionId: string } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 2 && Reflect.get(value, 'type') === 'sessionBound'
+    && typeof Reflect.get(value, 'sessionId') === 'string' && Reflect.get(value, 'sessionId').length > 0;
 }
 
 function editorHtml(
@@ -1247,6 +1393,7 @@ function editorHtml(
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>
   </button>
   <section id="queue" aria-label="Pending messages" hidden></section>
+  <div id="fork-draft-banner" hidden>Fork draft · Source history ends at the selected turn. Your first message creates a new Session.</div>
   <div id="status" role="status">Connecting…</div>
   <form id="composer">
     <div id="image-tray" aria-label="Attached images" hidden></div>

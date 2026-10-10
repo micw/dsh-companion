@@ -59,7 +59,8 @@ test('tab titles and activity are derived from canonical Session and Turn events
   const sidebar = await readFile(new URL('../vscode/media/sessions.js', import.meta.url), 'utf8');
   assert.match(client, /graph\.sessions\.list\.subscribe\(publishSummary\)/);
   assert.match(client, /sink\.sessionSummary\(parseSessionListSnapshot/);
-  assert.match(extension, /panel\.title = summary\.title/);
+  assert.match(extension, /panel\.title = title/);
+  assert.match(extension, /pendingPlaceholder \?\? summary\.title/);
   assert.match(extension, /tabStatus\.end\(time, reason\)/);
   assert.match(extension, /context\.globalState\.update\(seenKey\(sessionId\), watermark\)/);
   assert.match(sidebar, /title\.textContent = item\.title/);
@@ -865,7 +866,7 @@ test('composer and queue dock keep steering, removal, and take-back in the DSH S
   assert.match(script, /if \(message\.type === 'queueItemSteered'\)/);
   assert.match(script, /pendingQueueActions\.set\(itemId, action\)/);
   assert.match(script, /prompt\.readOnly = sending \|\| \[\.\.\.pendingQueueActions\.values\(\)\]\.includes\('takeBack'\)/);
-  assert.match(script, /stop\.hidden = !running && !compacting && !hasWaitingQueue\(\)/);
+  assert.match(script, /stop\.hidden = state\.forkDraft !== undefined \|\| !running && !compacting && !hasWaitingQueue\(\)/);
   assert.match(script, /send\.disabled = [^;]*stopping/);
   assert.match(script, /appendMessage\('user', message\.text, undefined, message\.time, message\.step, message\.images\)/);
   assert.match(extension, /isQueueActionMessage\(message\).*queueAction\(panel, ready, message\)/);
