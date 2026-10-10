@@ -4,10 +4,11 @@ import {
   CODEX_WRAPPER_ADVANCED_PROVIDER,
   CodexCatalogGeneration,
   parseCodexWireCatalog,
+  projectCompanionCatalog,
 } from '../lib/index.js'
 
-function generation(overrides = {}) {
-  return new CodexCatalogGeneration(parseCodexWireCatalog({
+function catalogPayload(overrides = {}) {
+  return parseCodexWireCatalog({
     models: [{
       id: 'gpt-5.6-sol',
       model: 'gpt-5.6-sol-wire',
@@ -24,7 +25,11 @@ function generation(overrides = {}) {
       },
       ...overrides,
     }],
-  }))
+  })
+}
+
+function generation(overrides = {}) {
+  return new CodexCatalogGeneration(catalogPayload(overrides))
 }
 
 test('projects base and explicit long-budget choices onto one wire model', () => {
@@ -114,4 +119,37 @@ test('projects the new Sol long-budget choice', () => {
   ])
   assert.equal(catalog.resolveModel('gpt-6-sol:long').context.contextWindow, 872000)
   assert.equal(catalog.wireModel('gpt-6-sol:long'), 'gpt-6-sol-wire')
+})
+
+test('projects GPT-6.1 Sol with the measured long budget and no unsupported none effort', () => {
+  const payload = catalogPayload({
+    id: 'gpt-6.1-sol',
+    model: 'gpt-6.1-sol',
+    display_name: 'GPT-6.1-Sol',
+    reasoning: { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], default: 'low', summary_supported: true },
+  })
+  const catalog = new CodexCatalogGeneration(payload)
+  assert.deepEqual(catalog.listModels().map(model => model.id), ['gpt-6.1-sol', 'gpt-6.1-sol:long'])
+  assert.equal(catalog.resolveModel('gpt-6.1-sol:long').context.contextWindow, 872000)
+  assert.equal(catalog.wireModel('gpt-6.1-sol:long'), 'gpt-6.1-sol')
+  assert.deepEqual(catalog.resolveModel('gpt-6.1-sol').reasoning, {
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'].map(id => ({ id, name: `${id[0].toUpperCase()}${id.slice(1)}` })),
+    defaultEffort: 'low',
+  })
+  assert.deepEqual(projectCompanionCatalog(payload).models.map(model => ({
+    id: model.id,
+    context: model.context,
+    reasoning: model.reasoning,
+  })), [
+    {
+      id: 'gpt-6.1-sol',
+      context: { default: 272000, maximum: 872000 },
+      reasoning: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'low', summarySupported: true },
+    },
+    {
+      id: 'gpt-6.1-sol:long',
+      context: { default: 872000, maximum: 872000 },
+      reasoning: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'low', summarySupported: true },
+    },
+  ])
 })

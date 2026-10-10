@@ -11,7 +11,7 @@ import { parseCodexWireCatalog } from './wire/validation.js'
 export const CODEX_WRAPPER_ADVANCED_PROVIDER = CompanionProviderId('codex-wrapper-advanced')
 
 /** Models whose independently measured maximum is exposed as a second DSH budget choice. */
-const LONG_CONTEXT_MODELS: ReadonlySet<string> = new Set(['gpt-6-sol', 'gpt-5.6-sol'])
+const LONG_CONTEXT_MODELS: ReadonlySet<string> = new Set(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'])
 
 /** One exact DSH model projection and the model identifier sent on the wire. */
 interface ProjectedModel {
@@ -97,12 +97,13 @@ export class CodexCatalogGeneration {
       )
     }
     const inputModalities = projectModalities(source)
-    const efforts = source.reasoning.levels.map(level => ({
+    const levels = selectableReasoningLevels(source)
+    const efforts = levels.map(level => ({
       id: ReasoningEffortId(level),
       name: effortName(level),
     }))
     const defaultEffort = source.reasoning.default !== undefined
-      && source.reasoning.levels.includes(source.reasoning.default)
+      && levels.includes(source.reasoning.default)
       ? ReasoningEffortId(source.reasoning.default)
       : undefined
     const info: LlmResolvedModelInfo = Object.freeze({
@@ -174,6 +175,7 @@ function companionModel(
   hidden: boolean,
   long = false,
 ): CompanionProviderModel {
+  const levels = selectableReasoningLevels(source)
   return {
     id,
     name: long ? `${source.displayName} (Long context)` : source.displayName,
@@ -185,11 +187,21 @@ function companionModel(
       ...source.maxContextLength === undefined ? {} : { maximum: source.maxContextLength },
     },
     reasoning: {
-      efforts: [...source.reasoning.levels],
-      ...source.reasoning.default === undefined ? {} : { defaultEffort: source.reasoning.default },
+      efforts: levels,
+      ...source.reasoning.default === undefined
+        || !levels.includes(source.reasoning.default)
+        ? {}
+        : { defaultEffort: source.reasoning.default },
       summarySupported: source.reasoning.summarySupported,
     },
   }
+}
+
+function selectableReasoningLevels(model: CodexWireModel): string[] {
+  // Older wrapper releases advertise `none` for GPT-6.1 Sol, but its backend rejects it.
+  return model.id === 'gpt-6.1-sol'
+    ? model.reasoning.levels.filter(level => level !== 'none')
+    : [...model.reasoning.levels]
 }
 
 function projectModalities(model: CodexWireModel): ModelModality[] {

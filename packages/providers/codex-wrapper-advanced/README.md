@@ -26,6 +26,7 @@ The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/resp
 ### Token effect
 
 Wire serialization preserves DSH request content. Synthetic User messages containing embedded Assistant reasoning or tool calls gain short labels that retain their meaning without presenting the tool call as executable provider input.
+The measured Sol models, including GPT-6.1 Sol, offer a separate `:long` model choice with the wrapper catalog's 872,000-token maximum instead of the 272,000-token default. The suffix changes DSH's context budget, not the model sent to the wrapper. GPT-6.1 Sol does not offer the unsupported `none` reasoning effort.
 
 ### KV Cache effect
 
