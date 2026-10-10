@@ -48,6 +48,9 @@ const sessionInfoTrigger = document.getElementById('session-info-trigger');
 const sessionInfoPanel = document.getElementById('session-info-panel');
 const sessionInfoId = document.getElementById('session-info-id');
 const sessionInfoCopy = document.getElementById('session-info-copy');
+const sessionInfoTitle = document.getElementById('session-info-title');
+const sessionInfoRefreshTitle = document.getElementById('session-info-refresh-title');
+const sessionInfoTitleStatus = document.getElementById('session-info-title-status');
 const sessionInfoCompanionVersion = document.getElementById('session-info-companion-version');
 const sessionInfoBackendVersion = document.getElementById('session-info-backend-version');
 const sessionCostRow = document.getElementById('session-cost-row');
@@ -240,6 +243,15 @@ sessionInfoCopy.addEventListener('click', (event) => {
   sessionInfoCopy.disabled = true;
   vscode.postMessage({ type: 'copySessionId' });
 });
+sessionInfoRefreshTitle.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (sessionInfoRefreshTitle.disabled || !sessionInformation) return;
+  sessionInfoRefreshTitle.disabled = true;
+  sessionInfoTitleStatus.hidden = false;
+  sessionInfoTitleStatus.dataset.error = 'false';
+  sessionInfoTitleStatus.textContent = 'Generating title…';
+  vscode.postMessage({ type: 'refreshSessionTitle' });
+});
 compactButton.addEventListener('click', () => {
   if (running || compacting || !compactAvailable) return;
   compactResult.hidden = true;
@@ -381,6 +393,25 @@ function applyHostMessage(message) {
       backendVersion: message.backendVersion,
     };
     renderSessionInformation();
+    return;
+  }
+  if (message.type === 'sessionTitle') {
+    if (typeof message.title !== 'string' || message.title.length === 0) return;
+    sessionInfoTitle.textContent = message.title;
+    sessionInfoTitle.title = message.title;
+    return;
+  }
+  if (message.type === 'sessionTitleRefreshResult') {
+    sessionInfoRefreshTitle.disabled = false;
+    sessionInfoTitleStatus.hidden = false;
+    if (typeof message.error === 'string') {
+      sessionInfoTitleStatus.dataset.error = 'true';
+      sessionInfoTitleStatus.textContent = message.error;
+    } else {
+      sessionInfoTitleStatus.dataset.error = 'false';
+      sessionInfoTitleStatus.textContent = typeof message.title === 'string'
+        ? 'Title updated' : 'No title input is available';
+    }
     return;
   }
   if (message.type === 'sessionIdCopied') {

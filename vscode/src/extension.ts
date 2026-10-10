@@ -7,6 +7,7 @@ import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
 import { SessionSidebarProvider } from './sessionTree';
+import { TabStatusProjection } from './tabStatus';
 import { WebviewMessenger } from './webviewMessenger';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
@@ -24,6 +25,10 @@ interface StopMessage {
 
 interface CopySessionIdMessage {
   readonly type: 'copySessionId';
+}
+
+interface RefreshSessionTitleMessage {
+  readonly type: 'refreshSessionTitle';
 }
 
 interface LoadOlderMessage {
@@ -224,7 +229,7 @@ function openChatEditor(
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
   const panel = vscode.window.createWebviewPanel(
     CHAT_EDITOR_VIEW_TYPE,
-    'DSH Chat',
+    'New DSH Chat',
     vscode.ViewColumn.Active,
     {
       enableScripts: true,
@@ -251,7 +256,26 @@ function configureChatEditor(
   restoredSessionId?: string,
 ): void {
   if (restoredSessionId !== undefined) panelsBySessionId.set(restoredSessionId, panel);
+  const seenKey = (sessionId: string) => `sessionSeenThrough:${sessionId}`;
+  const seenThrough = restoredSessionId === undefined ? 0 : context.globalState.get<number>(seenKey(restoredSessionId), 0);
+  const tabStatus = new TabStatusProjection(seenThrough);
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, 'media');
+  let disposed = false;
+  const renderTab = () => {
+    if (disposed) return;
+    const icon = `tab-${tabStatus.status}.svg`;
+    panel.iconPath = vscode.Uri.joinPath(mediaRoot, icon);
+  };
+  const acknowledge = () => {
+    if (!panel.active || !panel.visible || disposed) return;
+    const watermark = tabStatus.acknowledge();
+    const sessionId = client?.sessionId ?? restoredSessionId;
+    if (watermark !== undefined && sessionId !== undefined) {
+      void context.globalState.update(seenKey(sessionId), watermark);
+    }
+    renderTab();
+  };
+  renderTab();
   panel.webview.options = {
     enableScripts: true,
     localResourceRoots: [mediaRoot],
@@ -276,6 +300,7 @@ function configureChatEditor(
     () => { sessionTree.requestRefresh(); },
     (sessionId, backendVersion) => {
       panelsBySessionId.set(sessionId, panel);
+      if (restoredSessionId === undefined) panel.title = 'DSH Chat';
       sessionTree.requestRefresh();
       if (panel.active) sessionTree.setActiveSession(sessionId);
       post(panel, { type: 'session', sessionId });
@@ -285,8 +310,16 @@ function configureChatEditor(
         backendVersion,
       });
     },
+    (title) => {
+      if (disposed) return;
+      panel.title = title;
+      post(panel, { type: 'sessionTitle', title });
+    },
+    (running) => { tabStatus.setRunning(running); renderTab(); if (!running) acknowledge(); },
+    (time, reason) => { tabStatus.end(time, reason); renderTab(); acknowledge(); },
   ).then((connected) => {
     client = connected.client;
+    acknowledge();
     post(panel, { type: 'connected' });
     void connected.client.providerSettings().then(
       snapshot => { post(panel, { type: 'providerSettings', snapshot }); },
@@ -305,6 +338,7 @@ function configureChatEditor(
     if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
     if (isStopMessage(message)) void stop(panel, ready);
     if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
+    if (isRefreshSessionTitleMessage(message)) void refreshSessionTitle(panel, ready);
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
     if (isSelectModelMessage(message)) void selectModel(panel, ready, message);
     if (isSelectPermissionMessage(message)) void selectPermission(panel, ready, message.preset);
@@ -319,11 +353,13 @@ function configureChatEditor(
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
   });
   const viewState = panel.onDidChangeViewState(({ webviewPanel }) => {
+    acknowledge();
     sessionTree.setActiveSession(
       webviewPanel.active ? client?.sessionId ?? restoredSessionId : activeCompanionSessionId(),
     );
   });
   panel.onDidDispose(() => {
+    disposed = true;
     receive.dispose();
     viewState.dispose();
     messenger.dispose();
@@ -349,6 +385,9 @@ async function connect(
   restoredSessionId?: string,
   onSessionListChange?: () => void,
   onSessionCreated?: (sessionId: string, backendVersion: string) => void,
+  onSummary?: (title: string) => void,
+  onRunning?: (running: boolean) => void,
+  onTurnEnd?: (time: number, reason: string) => void,
 ): Promise<ConnectedChat> {
   let cookie = await context.secrets.get(COOKIE_SECRET_KEY);
   let runtime = await runtimeControlPromise;
@@ -370,6 +409,9 @@ async function connect(
   let streamingAssistant = '';
   const sink = {
     sessionCreated: (sessionId: string) => { onSessionCreated?.(sessionId, backendVersion); },
+    sessionSummary: (summary: import('./dshClient').DshSessionListEntry | undefined) => {
+      if (summary !== undefined) onSummary?.(summary.title);
+    },
     reset: () => {
       streamingAssistant = '';
       post(panel, { type: 'resetTranscript' });
@@ -412,9 +454,13 @@ async function connect(
       post(panel, { type: 'assistantRender', html: renderMarkdown(streamingAssistant) });
     },
     assistantTime: (time: number) => post(panel, { type: 'assistantTime', time }),
-    process: (event: import('./dshClient').DshProcessEvent) => post(panel, { type: 'process', event }),
+    process: (event: import('./dshClient').DshProcessEvent) => {
+      if (event.type === 'turn-end') onTurnEnd?.(event.time, event.reason);
+      post(panel, { type: 'process', event });
+    },
     queue: (items: readonly import('./dshClient').DshQueuedPrompt[]) => post(panel, { type: 'queue', items }),
     running: (value: boolean) => {
+      onRunning?.(value);
       post(panel, { type: 'running', value });
       onSessionListChange?.();
     },
@@ -487,6 +533,18 @@ async function copySessionId(panel: vscode.WebviewPanel, ready: Promise<DshClien
     post(panel, {
       type: 'sessionIdCopyFailed',
       text: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function refreshSessionTitle(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
+  try {
+    const title = await (await ready).refreshTitle();
+    post(panel, { type: 'sessionTitleRefreshResult', title });
+  } catch (error) {
+    post(panel, {
+      type: 'sessionTitleRefreshResult',
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 }
@@ -780,6 +838,11 @@ function isCopySessionIdMessage(value: unknown): value is CopySessionIdMessage {
     && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'copySessionId';
 }
 
+function isRefreshSessionTitleMessage(value: unknown): value is RefreshSessionTitleMessage {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'refreshSessionTitle';
+}
+
 function isLoadOlderMessage(value: unknown): value is LoadOlderMessage {
   return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'loadOlder';
 }
@@ -979,6 +1042,14 @@ function editorHtml(
               <button id="session-info-copy" type="button" aria-label="Copy session ID" title="Copy session ID">Copy</button>
             </div>
           </div>
+          <div class="session-info-row session-info-title">
+            <span>Title</span>
+            <div class="session-info-value-with-action">
+              <strong id="session-info-title">Loading…</strong>
+              <button id="session-info-refresh-title" type="button" title="Generate a new title with AI">Refresh with AI</button>
+            </div>
+          </div>
+          <div id="session-info-title-status" role="status" hidden></div>
           <div class="session-info-row"><span>DSH Companion</span><code id="session-info-companion-version"></code></div>
           <div class="session-info-row"><span>DSH backend</span><code id="session-info-backend-version"></code></div>
           <div id="session-cost-row" class="session-info-row" hidden>

@@ -1,18 +1,18 @@
 # @dsh-companion/bundle
 
-Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, enables the durable derived Session full-text index on first search, and mounts provider catalog LKG storage, live provider account state, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
+Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, enables the durable derived Session full-text index on first search, and mounts provider catalog LKG storage, live provider account state, the DSH-owned session-title refresh Remote, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
 
 ## Model Experience
 
-The `dsh-companion` preset provides DSH's standard coding-agent composition except fork-based delegation. Fresh subagents, Goals, plans, compaction, workflows, and the standard Tool set remain available.
+The `dsh-companion` preset provides DSH's standard coding-agent composition except fork-based delegation and includes a Companion-only current-Session title proposal Tool. Fresh subagents, Goals, plans, compaction, workflows, and the standard Tool set remain available.
 
 ### Token effect
 
-The omitted `subagent_fork` Tool schema reduces the stable Tool prefix relative to DSH's standard preset.
+The omitted `subagent_fork` Tool schema reduces the stable Tool prefix relative to DSH's standard preset. `set_session_title` adds one small stable Tool schema; its current title snapshot is a durable user-role context near the request tail.
 
 ### KV Cache effect
 
-Stable while the Companion preset is unchanged. Fresh subagents inherit the same preset as their Parent.
+Stable while the Companion preset is unchanged. A title change appends a new runtime-context snapshot instead of rewriting the system-prompt prefix. Fresh subagents inherit the same preset as their Parent.
 
 ## Known Limitations and Deferred Work
 

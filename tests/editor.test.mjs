@@ -24,6 +24,31 @@ import {
   reconcileSettlementAccounting,
 } from '../vscode/out/dshClient.js';
 
+test('Session Information explicitly refreshes the DSH-owned title for its bound editor', async () => {
+  const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  assert.match(extension, /id="session-info-refresh-title"/);
+  assert.match(extension, /isRefreshSessionTitleMessage\(message\).*refreshSessionTitle\(panel, ready\)/);
+  assert.match(extension, /const title = await \(await ready\)\.refreshTitle\(\)/);
+  assert.match(client, /'companionSessionTitle', 'refreshTitle', this\.requireSessionId\(\)/);
+  assert.match(script, /vscode\.postMessage\(\{ type: 'refreshSessionTitle' \}\)/);
+  assert.match(script, /sessionInfoTitle\.textContent = message\.title/);
+  assert.match(script, /sessionInfoRefreshTitle\.disabled = false/);
+});
+
+test('tab titles and activity are derived from canonical Session and Turn events', async () => {
+  const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
+  const sidebar = await readFile(new URL('../vscode/media/sessions.js', import.meta.url), 'utf8');
+  assert.match(client, /graph\.sessions\.list\.subscribe\(publishSummary\)/);
+  assert.match(client, /sink\.sessionSummary\(parseSessionListSnapshot/);
+  assert.match(extension, /panel\.title = title/);
+  assert.match(extension, /tabStatus\.end\(time, reason\)/);
+  assert.match(extension, /context\.globalState\.update\(seenKey\(sessionId\), watermark\)/);
+  assert.match(sidebar, /title\.textContent = item\.title/);
+});
+
 test('the editor has output, process, persistent state, composer, send, and stop support', async () => {
   const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
   const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');

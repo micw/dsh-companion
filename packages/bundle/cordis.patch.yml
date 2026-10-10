@@ -32,6 +32,9 @@
           openrouter:
             defaultModelState: disabled
 
+    - id: dsh-companion-session-title
+      name: '@dsh-companion/session-title'
+
     - id: dsh-companion-provider-client
       name: '@dsh-companion/provider-client'
 

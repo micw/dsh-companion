@@ -1098,6 +1098,7 @@ body {
 #session-info[hidden],
 #session-info-panel[hidden],
 #session-info-status[hidden],
+#session-info-title-status[hidden],
 #session-cost-row[hidden] { display: none; }
 
 #session-info-trigger {
@@ -1161,6 +1162,35 @@ body {
   gap: 6px;
 }
 .session-info-value-with-action code { flex: 1 1 auto; }
+#session-info-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+#session-info-refresh-title {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+  background: transparent;
+  font: inherit;
+  font-size: 0.82em;
+}
+#session-info-refresh-title:hover { background: var(--vscode-toolbar-hoverBackground); }
+#session-info-refresh-title:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+#session-info-refresh-title:disabled { opacity: 0.5; cursor: default; }
+#session-info-title-status {
+  margin: 2px 0 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  text-align: right;
+}
+#session-info-title-status[data-error='true'] { color: var(--vscode-errorForeground); }
 #session-info-copy {
   flex: 0 0 auto;
   padding: 2px 5px;

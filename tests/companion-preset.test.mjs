@@ -13,7 +13,7 @@ function rowIds(value) {
   return [...value.matchAll(/^-?\s*- id: ([^\n]+)$/gmu)].map(match => match[1]);
 }
 
-test('the Companion preset tracks pinned DSH standard except fork delegation', async () => {
+test('the Companion preset tracks pinned DSH standard except fork delegation and its title tool', async () => {
   const manifest = await loadUpstreamManifest();
   const source = process.env.DSH_COMPANION_DSH_SOURCE
     ?? new URL('../../deepseek-harness', import.meta.url).pathname;
@@ -25,7 +25,8 @@ test('the Companion preset tracks pinned DSH standard except fork delegation', a
   const standardIds = rowIds(standard)
     .filter(id => id !== 'tool-subagent-fork')
     .map(id => id === 'preset-standard' ? 'preset-dsh-companion' : id);
-  assert.deepEqual(rowIds(companion), standardIds);
+  assert.deepEqual(rowIds(companion).filter(id => id !== 'tool-session-title'), standardIds);
+  assert.match(companion, /- id: tool-session-title\n\s+name: '@dsh-companion\/tool-session-title'/u);
   assert.match(companion, /id: dsh-companion/u);
   assert.doesNotMatch(companion, /tool-subagent-fork|subagent_fork|provider: fork/u);
 });

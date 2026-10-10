@@ -27,6 +27,8 @@
     "@dsh-companion/provider-account": "workspace:*",
     "@dsh-companion/provider-catalog": "workspace:*",
     "@dsh-companion/provider-client": "workspace:*",
+    "@dsh-companion/session-title": "workspace:*",
+    "@dsh-companion/tool-session-title": "workspace:*",
     "@dsh-companion/ui-provider-settings": "workspace:*"
   },
   "peerDependencies": {

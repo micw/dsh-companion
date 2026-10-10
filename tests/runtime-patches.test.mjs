@@ -32,6 +32,7 @@ test('the exact DSH runtime pin and ordered patch series are integrity checked',
     'explicit-manual-compaction-route',
     'agent-preset-fallbacks',
     'compress-enhanced-sea-assets',
+    'agent-session-title-proposal',
   ]);
 });
 
@@ -78,6 +79,17 @@ test('the preset fallback patch keeps retired ids out of the roster', async () =
   assert.match(text, /definitionFor\(id: string\)/u);
   assert.match(text, /some\(row => row\.id === 'retired'\)\)\.toBe\(false\)/u);
   assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-agent-preset-registry']);
+});
+
+test('the title patch accepts model proposals without changing the persisted source vocabulary', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { patch, text } = await patchText(manifest, 'agent-session-title-proposal');
+  assert.match(text, /proposeFromAgent\(/u);
+  assert.match(text, /agent title superseded automatic title generation/u);
+  assert.match(text, /provider: providerId/u);
+  assert.match(text, /JSONL|persist|round.trip/iu);
+  assert.doesNotMatch(text, /kind: 'agent'/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-session-title', '@deepseek-ai/dsh-tool-cordis']);
 });
 
 test('the executable patch compresses the existing enhanced SEA closure', async () => {

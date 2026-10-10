@@ -4,7 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 import { apply } from '../lib/types/client/index.js'
 
-test('mounts both generated Remote contributions and disposes them in reverse order', async () => {
+test('mounts all generated Remote contributions and disposes them in reverse order', async () => {
   const mounted = []
   const disposed = []
   const ctx = {
@@ -19,9 +19,11 @@ test('mounts both generated Remote contributions and disposes them in reverse or
   assert.deepEqual(mounted.map(item => item.package), [
     '@dsh-companion/provider-catalog',
     '@dsh-companion/provider-account',
+    '@dsh-companion/session-title',
   ])
   await dispose()
   assert.deepEqual(disposed, [
+    '@dsh-companion/session-title',
     '@dsh-companion/provider-account',
     '@dsh-companion/provider-catalog',
   ])
@@ -34,13 +36,13 @@ test('rolls back an earlier Remote mount when the next contribution fails', asyn
     remote: {
       async $mount() {
         calls += 1
-        if (calls === 2) throw new Error('duplicate namespace')
+        if (calls === 3) throw new Error('duplicate namespace')
         return async () => { disposed.push('first') }
       },
     },
   }
   await assert.rejects(apply(ctx), /duplicate namespace/u)
-  assert.deepEqual(disposed, ['first'])
+  assert.deepEqual(disposed, ['first', 'first'])
 })
 
 test('emits a self-registering lazy-CJS browser artifact with codecs inlined', async () => {
@@ -48,6 +50,7 @@ test('emits a self-registering lazy-CJS browser artifact with codecs inlined', a
   assert.match(bundle, /^window\.__ModuleLoader__\.load\(\{\s*id: "@dsh-companion\/provider-client"/u)
   assert.match(bundle, /companionProviderCatalog\/refresh/u)
   assert.match(bundle, /companionProviderAccounts\/refresh/u)
+  assert.match(bundle, /companionSessionTitle\/refreshTitle/u)
   assert.doesNotMatch(bundle, /^import\s/mu)
   assert.doesNotMatch(bundle, /require\("zod"\)/u)
 
