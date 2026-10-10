@@ -1,5 +1,7 @@
 /** Authenticated HTTP client for an independently operated wrapper service. */
 
+import { promisify } from 'node:util'
+import * as zlib from 'node:zlib'
 import { attributionHeaders, LlmError, ProviderRequestId } from '@deepseek-ai/dsh-llm'
 import type { ProviderRequestId as ProviderRequestIdType } from '@deepseek-ai/dsh-llm'
 import { parseCodexWireSse } from './sse.js'
@@ -18,6 +20,7 @@ import {
 
 const MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_ERROR_RESPONSE_BYTES = 64 * 1024
+const compressRequest = typeof zlib.zstdCompress === 'function' ? promisify(zlib.zstdCompress) : undefined
 
 /** Immutable endpoint and credential facts captured for one client generation. */
 export interface CodexWireConnection {
@@ -62,11 +65,20 @@ export class CodexWireClient {
 
   /** Start one model request and return its validated SSE events. */
   async responses(request: CodexWireRequest, signal?: AbortSignal): Promise<AsyncIterable<CodexWireEvent>> {
+    signal?.throwIfAborted()
+    const json = JSON.stringify(request)
+    let body: BodyInit = json
+    if (compressRequest !== undefined) {
+      try { body = Uint8Array.from(await compressRequest(Buffer.from(json))) }
+      catch (error) { throw new LlmError('Codex Wrapper Advanced request compression failed', 'TRANSPORT', { cause: error }) }
+    }
+    signal?.throwIfAborted()
     const response = await this.request('responses', {
       method: 'POST',
       ...signal === undefined ? {} : { signal },
-      headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
-      body: JSON.stringify(request),
+      headers: { 'content-type': 'application/json', 'accept': 'text/event-stream',
+        ...compressRequest === undefined ? {} : { 'content-encoding': 'zstd' } },
+      body,
     })
     if (!response.ok) throw await responseError(response)
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { zstdDecompressSync } from 'node:zlib'
 import test from 'node:test'
 import { CodexWireClient, normalizeServiceRoot } from '../lib/index.js'
 
@@ -77,7 +78,8 @@ test('opens and validates a complete SSE response', async () => {
   const client = new CodexWireClient({ baseURL: 'https://wrapper.example', apiKey: 'key' }, {
     fetch: async (_url, init) => {
       assert.equal(init.method, 'POST')
-      assert.equal(JSON.parse(init.body).model, 'gpt-5.6-sol')
+      assert.equal(init.headers['content-encoding'], 'zstd')
+      assert.equal(JSON.parse(zstdDecompressSync(init.body).toString('utf8')).model, 'gpt-5.6-sol')
       return new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"type":"text_delta","text":"ok"}\n\n'))
