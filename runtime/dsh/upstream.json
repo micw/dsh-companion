@@ -88,6 +88,16 @@
       "affectedModules": [
         "@deepseek-ai/dsh-agent-instructions"
       ]
+    },
+    {
+      "id": "fix-empty-sea-assets",
+      "file": "patches/0008-fix-empty-sea-assets.patch",
+      "sha256": "32d2e6d88a84dc096657cd41cdade18dee7a3248174191e84a4dc7ecfbab8360",
+      "assessment": "patches/fix-empty-sea-assets.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "patches/@yao-pkg__pkg@6.21.0.patch"
+      ]
     }
   ]
 }

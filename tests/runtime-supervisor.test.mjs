@@ -37,6 +37,15 @@ test('supervisor validates a loopback DSH runtime configuration', () => {
     backendVersion: '0.1.5-rc.2',
     runtimeId: 'unversioned',
   }), /runtime identity/);
+  assert.equal(parseConfig({
+    version: 1,
+    stateFile: '/tmp/state.json',
+    command: process.execPath,
+    args: [],
+    cwd: '/tmp',
+    origin: 'http://127.0.0.1:3082',
+    runtimeId: `runtime-${'a'.repeat(64)}-linux-x64`,
+  }).runtimeId, `runtime-${'a'.repeat(64)}-linux-x64`);
 });
 
 test('RuntimeControl keeps an older supervisor without a version endpoint usable', async () => {
@@ -77,10 +86,11 @@ test('RuntimeControl keeps an older supervisor without a version endpoint usable
       supervisorPid: process.pid,
       controlOrigin: `http://127.0.0.1:${String(address.port)}`,
       controlToken: token,
-      runtime: { state: 'ready', origin, runtimeId: 'source' },
+      runtime: { state: 'ready', origin, runtimeId: `runtime-${'a'.repeat(64)}-linux-x64` },
     }));
     const control = await RuntimeControl.fromStateFile(stateFile);
     assert.ok(control);
+    assert.equal(control.runtimeId, `runtime-${'a'.repeat(64)}-linux-x64`);
     assert.equal(await control.backendVersion(), 'Unavailable');
     control.dispose();
   } finally {
@@ -173,6 +183,142 @@ test('supervisor publishes authenticated lifecycle state and stops its DSH proce
     await assert.rejects(stat(stateFile), (error) => error?.code === 'ENOENT');
   } finally {
     await supervisor.stop('test cleanup');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const failPublication of [false, true]) {
+  test(`shutdown drains an in-flight ready publication${failPublication ? ' that fails' : ''}`, { timeout: 5_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-companion-state-drain-'));
+    const stateFile = join(root, 'runtime.json');
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const published = [];
+    let temporary;
+    const supervisor = new RuntimeSupervisor({
+      version: 1, stateFile, command: process.execPath,
+      args: ['-e', "console.log('dsh web: http://127.0.0.1:39181/?token=test-token');setInterval(() => {}, 1000)"],
+      cwd: root, origin: 'http://127.0.0.1:39181', runtimeId: 'source',
+    }, { writeState: async (path, instanceId, state) => {
+      published.push(state.runtime.state);
+      if (state.runtime.state === 'ready') {
+        temporary = `${path}.${instanceId}.tmp`;
+        await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
+        entered.resolve(state.runtime.pid);
+        await release.promise;
+        if (failPublication) throw new Error('Fixture publication failure');
+      }
+      await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+    } });
+    try {
+      await supervisor.start();
+      const pid = await entered.promise;
+      let stopped = false;
+      const stopping = supervisor.stop('in-flight publication test');
+      assert.equal(supervisor.stop('second caller'), stopping);
+      void stopping.then(() => { stopped = true; });
+      while (processExists(pid)) await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(stopped, false, 'Stop must wait for the held publication even after child exit');
+      release.resolve();
+      await stopping;
+      await supervisor.wait();
+      await assert.rejects(stat(stateFile), error => error?.code === 'ENOENT');
+      await assert.rejects(stat(temporary), error => error?.code === 'ENOENT');
+      assert.deepEqual(published, ['stopped', 'ready'], 'Child exit must not enqueue another publication');
+      await assert.rejects(supervisor.start(), /stopped/);
+    } finally {
+      release.resolve();
+      await supervisor.stop('fixture cleanup');
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('stop during initial publication prevents a late Runtime spawn', { timeout: 5_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-companion-initial-state-'));
+  const stateFile = join(root, 'runtime.json');
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let writes = 0;
+  const supervisor = new RuntimeSupervisor({
+    version: 1, stateFile, command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000)'], cwd: root,
+    origin: 'http://127.0.0.1:39181',
+  }, { writeState: async (path, _instanceId, state) => {
+    writes += 1;
+    entered.resolve();
+    await release.promise;
+    await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+  } });
+  try {
+    const starting = supervisor.start();
+    await entered.promise;
+    const stopping = supervisor.stop('initial publication test');
+    release.resolve();
+    await Promise.all([starting, stopping]);
+    assert.equal(supervisor.snapshot().runtimePid, undefined);
+    assert.equal(writes, 1);
+    await assert.rejects(stat(stateFile), error => error?.code === 'ENOENT');
+  } finally {
+    release.resolve();
+    await supervisor.stop('fixture cleanup');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stop immediately after start drains initialization without opening a late endpoint', { timeout: 5_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-companion-early-stop-'));
+  const stateFile = join(root, 'runtime.json');
+  let writes = 0;
+  const supervisor = new RuntimeSupervisor({
+    version: 1, stateFile, command: process.execPath, args: [], cwd: root,
+    origin: 'http://127.0.0.1:39181',
+  }, { writeState: async () => { writes += 1; } });
+  try {
+    const starting = supervisor.start();
+    await assert.rejects(supervisor.start(), /already started/);
+    await Promise.all([starting, supervisor.stop('early initialization test')]);
+    await supervisor.wait();
+    assert.equal(writes, 0);
+    assert.equal(supervisor.snapshot().runtimePid, undefined);
+    await assert.rejects(stat(stateFile), error => error?.code === 'ENOENT');
+  } finally {
+    await supervisor.stop('fixture cleanup');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a ready publication failure stops the child and drains its temporary state', { timeout: 5_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-companion-publication-failure-'));
+  const stateFile = join(root, 'runtime.json');
+  const failed = Promise.withResolvers();
+  let temporary;
+  let controlOrigin;
+  const supervisor = new RuntimeSupervisor({
+    version: 1, stateFile, command: process.execPath,
+    args: ['-e', "console.log('dsh web: http://127.0.0.1:39181/?token=test-token');setInterval(() => {}, 1000)"],
+    cwd: root, origin: 'http://127.0.0.1:39181',
+  }, { writeState: async (path, instanceId, state) => {
+    controlOrigin = state.controlOrigin;
+    if (state.runtime.state === 'ready') {
+      temporary = `${path}.${instanceId}.tmp`;
+      await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
+      failed.resolve(state.runtime.pid);
+      throw new Error('Fixture publication failure');
+    }
+    await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+  } });
+  try {
+    await supervisor.start();
+    const pid = await failed.promise;
+    await supervisor.wait();
+    assert.equal(processExists(pid), false);
+    await assert.rejects(stat(stateFile), error => error?.code === 'ENOENT');
+    await assert.rejects(stat(temporary), error => error?.code === 'ENOENT');
+    await assert.rejects(fetch(`${controlOrigin}/v1/status`));
+  } finally {
+    await supervisor.stop('fixture cleanup');
     await rm(root, { recursive: true, force: true });
   }
 });

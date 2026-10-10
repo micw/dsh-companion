@@ -31,4 +31,4 @@ DSH_COMPANION_PROVIDER_BUNDLES='["../dsh-companion-provider-openrouter","../dsh-
 pnpm run vscode:package
 ```
 
-The command requires a clean tracked working tree, an exact checkout containing the pinned DSH commit, and built external provider package directories in product order. It verifies and applies the reviewed patch series in a disposable clone, embeds the adapter packages without their services or secrets, builds and health-checks the Linux runtime, and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).
+The command requires a clean tracked working tree, an exact checkout containing the pinned DSH commit, and built external provider package directories in product order. It reuses a verified content-addressed Linux runtime when its inputs are unchanged; otherwise it applies the reviewed patch series in a disposable clone and builds a new one. Every package health-checks its runtime and writes `dist/dsh-companion-<version>.vsix`. See [the runtime reference](runtime/README.md) and [DSH upgrade checklist](docs/dsh-upgrade-checklist.md).

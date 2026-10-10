@@ -50,6 +50,7 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
     },
   ]);
   assert.deepEqual(manifest.activationEvents, [
+    'onStartupFinished',
     'onCommand:dshCompanion.newChatEditor',
     'onCommand:dshCompanion.openDevelopmentWebUi',
     'onCommand:dshCompanion.openProviderSettings',

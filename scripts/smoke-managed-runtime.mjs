@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DshClient } from '../vscode/out/dshClient.js';
-import { activatePayload } from '../vscode/out/runtimeInstaller.js';
+import { activatePayload, runtimeIdentity } from '../vscode/out/runtimeInstaller.js';
 
 const { values } = parseArgs({
   options: { payload: { type: 'string' } },
@@ -23,7 +23,7 @@ let peerControl;
 let sessionClient;
 try {
   [control, peerControl] = await Promise.all([0, 1].map(() => activatePayload(
-    payload, storage, manifest.companionVersion,
+    payload, storage, manifest.formatVersion === 1 ? manifest.companionVersion : '0.0.0',
     join(storage, 'runtime-owner'), join(storage, 'dsh-home'), origin,
   )));
   const profile = JSON.parse(await readFile(join(
@@ -87,7 +87,7 @@ try {
     throw new Error(`Managed DSH Session-search smoke returned an invalid response: ${JSON.stringify(searchEnvelope)}`);
   }
   const active = JSON.parse(await readFile(join(storage, 'runtime', 'active.json'), 'utf8'));
-  if (active.directory !== join(storage, 'runtime', 'versions', `${manifest.companionVersion}-linux-x64`)) {
+  if (active.directory !== join(storage, 'runtime', 'versions', runtimeIdentity(manifest))) {
     throw new Error('Managed DSH activation record does not select the installed payload');
   }
   const projected = { sessions: 0, resets: 0, historyStates: 0, permissionSelections: 0 };
@@ -161,7 +161,7 @@ try {
   } finally {
     for (const client of restored) client.dispose();
   }
-  console.log(`Managed Runtime smoke passed for ${manifest.companionVersion}`);
+  console.log(`Managed Runtime smoke passed for ${runtimeIdentity(manifest)}`);
 } finally {
   sessionClient?.dispose();
   peerControl?.dispose();

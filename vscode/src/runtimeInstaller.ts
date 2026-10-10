@@ -8,6 +8,10 @@ import { dirname, isAbsolute, join } from 'node:path';
 import type * as vscode from 'vscode';
 import { PACKAGED_DSH_ORIGIN } from './dshClient';
 import { RuntimeControl } from './runtimeControl';
+import type { RuntimePhase } from './runtimeProgress';
+
+type ReportProgress = (phase: RuntimePhase) => void;
+const noProgress: ReportProgress = () => {};
 
 const TARGET = 'linux-x64';
 const MANAGER_LOCK_WAIT_MS = 60_000;
@@ -28,9 +32,7 @@ interface RuntimeArtifact {
   readonly executable: boolean;
 }
 
-interface RuntimeManifest {
-  readonly formatVersion: 1;
-  readonly companionVersion: string;
+interface RuntimeManifestBase {
   readonly target: typeof TARGET;
   readonly dsh: DshProvenance;
   readonly launch: {
@@ -40,6 +42,11 @@ interface RuntimeManifest {
   };
   readonly artifacts: readonly RuntimeArtifact[];
 }
+
+type RuntimeManifest = RuntimeManifestBase & (
+  | { readonly formatVersion: 1; readonly companionVersion: string }
+  | { readonly formatVersion: 2; readonly runtimeId: string }
+);
 
 interface DshProvenance {
   readonly upstreamRepository: 'https://github.com/deepseek-ai/deepseek-harness.git';
@@ -63,7 +70,8 @@ interface ActiveRuntime {
 }
 
 /** Installs and starts the packaged Linux runtime, while source development may supply its own supervisor. */
-export async function connectRuntime(context: vscode.ExtensionContext): Promise<RuntimeControl | undefined> {
+export async function connectRuntime(context: vscode.ExtensionContext, report: ReportProgress = noProgress): Promise<RuntimeControl | undefined> {
+  report('checking');
   const lifecycleRoot = companionLifecycleRoot();
   const shared = await RuntimeControl.fromStateFile(join(lifecycleRoot, 'runtime.json'));
   if (shouldReuseSourceRuntime(shared?.runtimeId, context.extensionMode)) return shared;
@@ -93,6 +101,7 @@ export async function connectRuntime(context: vscode.ExtensionContext): Promise<
     lifecycleRoot,
     companionDataHome(),
     PACKAGED_DSH_ORIGIN,
+    report,
   );
 }
 
@@ -110,32 +119,38 @@ export function activatePayload(
   lifecycleRoot = companionLifecycleRoot(),
   dataHome = companionDataHome(),
   origin = PACKAGED_DSH_ORIGIN,
+  report: ReportProgress = noProgress,
 ): Promise<RuntimeControl> {
   return withManagerLock(lifecycleRoot, async () => {
-    const installed = await installPayload(payload, globalStorage, extensionVersion);
-    return activateInstalledRuntime(installed, globalStorage, lifecycleRoot, dataHome, origin);
+    const installed = await installPayload(payload, globalStorage, extensionVersion, report);
+    return activateInstalledRuntime(installed, globalStorage, lifecycleRoot, dataHome, origin, report);
   });
 }
 
-/** Installs one verified payload as an immutable version directory. */
-export async function installPayload(payload: string, globalStorage: string, extensionVersion: unknown): Promise<string> {
-  const manifest = await verifyPayload(payload);
-  if (manifest.companionVersion !== extensionVersion) {
+/** Installs one verified payload under its immutable runtime identity. */
+export async function installPayload(payload: string, globalStorage: string, extensionVersion: unknown, report: ReportProgress = noProgress): Promise<string> {
+  const manifest = await readRuntimeManifest(payload);
+  if (typeof extensionVersion !== 'string' || !/^\d+\.\d+\.\d+$/u.test(extensionVersion)) {
+    throw new Error('Invalid DSH Companion extension version');
+  }
+  if (manifest.formatVersion === 1 && manifest.companionVersion !== extensionVersion) {
     throw new Error('Packaged runtime version does not match the DSH Companion extension');
   }
   const runtimeRoot = join(globalStorage, 'runtime');
   const versions = join(runtimeRoot, 'versions');
-  const directory = `${manifest.companionVersion}-${manifest.target}`;
+  const directory = runtimeIdentity(manifest);
   const destination = join(versions, directory);
   await mkdir(versions, { recursive: true, mode: 0o700 });
   await chmod(versions, 0o700);
   if (await exists(destination)) {
-    const installedManifest = await verifyPayload(destination);
+    const installedManifest = await readRuntimeManifest(destination);
     if (JSON.stringify(installedManifest) !== JSON.stringify(manifest)) {
       throw new Error(`Installed immutable runtime ${directory} differs from the packaged payload`);
     }
     return destination;
   }
+  report('installing');
+  await verifyPayload(payload);
   const stagingRoot = join(runtimeRoot, 'staging');
   const staging = join(stagingRoot, randomUUID());
   await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
@@ -163,6 +178,7 @@ async function activateInstalledRuntime(
   lifecycleRoot: string,
   dataHome: string,
   origin: string,
+  report: ReportProgress,
 ): Promise<RuntimeControl> {
   const runtimeRoot = join(globalStorage, 'runtime');
   const stateFile = join(lifecycleRoot, 'runtime.json');
@@ -172,12 +188,12 @@ async function activateInstalledRuntime(
   const versionsRoot = join(runtimeRoot, 'versions');
   const active = await readActiveRuntime(activeFile, versionsRoot);
   const retainedRollback = await readActiveRuntime(rollbackFile, versionsRoot);
-  const manifest = await verifyPayload(installed);
-  const desiredRuntimeId = `${manifest.companionVersion}-${manifest.target}`;
+  const manifest = await readRuntimeManifest(installed);
 
   const current = await connectExisting(stateFile);
-  if (active?.directory === installed && current?.runtimeId === desiredRuntimeId) return current;
+  if (current !== undefined && shouldReuseInstalledRuntime(active?.directory, current.runtimeId, installed, manifest)) return current;
   if (current !== undefined) {
+    report('stopping');
     await current.stop();
     current.dispose();
     await waitUntilAbsent(stateFile, 15_000);
@@ -190,7 +206,8 @@ async function activateInstalledRuntime(
   let candidate: RuntimeControl | undefined;
   let activePublished = false;
   try {
-    candidate = await startSupervisor(installed, globalStorage, dataHome, stateFile, lifecycleRoot, origin);
+    report('starting');
+    candidate = await startSupervisor(installed, globalStorage, dataHome, stateFile, lifecycleRoot, origin, report);
     if (active !== undefined && active.directory !== installed) {
       await writeJsonAtomic(rollbackFile, active);
     }
@@ -226,8 +243,9 @@ async function startSupervisor(
   stateFile: string,
   ownerRoot: string,
   origin: string,
+  report: ReportProgress = noProgress,
 ): Promise<RuntimeControl> {
-  const manifest = await verifyPayload(installed);
+  const manifest = await readRuntimeManifest(installed);
   await ensureManagedProfile(dataHome, manifest.launch.profileBundles);
   const configFile = join(ownerRoot, 'supervisor-config.json');
   const config = {
@@ -245,7 +263,7 @@ async function startSupervisor(
       DSH_TELEMETRY_DISABLED: '1',
     },
     clientModule: join(installed, 'client-runtime.js'),
-    runtimeId: `${manifest.companionVersion}-${manifest.target}`,
+    runtimeId: runtimeIdentity(manifest),
   };
   await writeJsonAtomic(configFile, config);
   const child = spawn(process.execPath, [join(installed, 'supervisor.mjs'), configFile], {
@@ -254,6 +272,7 @@ async function startSupervisor(
     stdio: 'ignore',
   });
   child.unref();
+  report('waiting');
   const deadline = Date.now() + SUPERVISOR_READY_MS;
   let lastError: unknown;
   while (Date.now() < deadline) {
@@ -290,11 +309,19 @@ export async function ensureManagedProfile(dataHome: string, profileBundles: rea
   }
 }
 
-/** Validates one closed runtime payload and every declared artifact digest. */
-export async function verifyPayload(root: string): Promise<RuntimeManifest> {
+/** Reads the installed or packaged runtime identity without scanning artifact bytes. */
+export async function readRuntimeManifest(root: string): Promise<RuntimeManifest> {
   const value: unknown = JSON.parse(await readFile(join(root, 'runtime-manifest.json'), 'utf8'));
-  if (!isRecord(value) || value.formatVersion !== 1 || typeof value.companionVersion !== 'string'
-    || !/^\d+\.\d+\.\d+$/u.test(value.companionVersion) || value.target !== TARGET
+  return parseRuntimeManifest(value);
+}
+
+function parseRuntimeManifest(value: unknown): RuntimeManifest {
+  if (!isRecord(value) || (value.formatVersion !== 1 && value.formatVersion !== 2)
+    || (value.formatVersion === 1 && (typeof value.companionVersion !== 'string'
+      || !/^\d+\.\d+\.\d+$/u.test(value.companionVersion) || value.runtimeId !== undefined))
+    || (value.formatVersion === 2 && (typeof value.runtimeId !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(value.runtimeId) || value.companionVersion !== undefined))
+    || value.target !== TARGET
     || !isRecord(value.dsh)
     || !isRecord(value.launch) || typeof value.launch.executable !== 'string'
     || !isSafeFileName(value.launch.executable) || !Array.isArray(value.launch.args)
@@ -323,29 +350,55 @@ export async function verifyPayload(root: string): Promise<RuntimeManifest> {
       throw new Error('Invalid DSH Companion runtime artifact declaration');
     }
     names.add(item.file);
-    const bytes = await readFile(join(root, ...item.file.split('/')));
-    const digest = createHash('sha256').update(bytes).digest('hex');
-    if (bytes.byteLength !== item.bytes || digest !== item.sha256) {
-      throw new Error(`DSH Companion runtime artifact integrity failed: ${item.file}`);
-    }
-    artifacts.push({ file: item.file, bytes: item.bytes, sha256: item.sha256, executable: item.executable });
+    artifacts.push({ file: item.file, bytes: Number(item.bytes), sha256: item.sha256, executable: item.executable });
   }
   for (const required of [value.launch.executable, 'supervisor.mjs', 'client-runtime.js']) {
     if (!names.has(required)) throw new Error(`DSH Companion runtime omits ${required}`);
   }
-  const expected = new Set(['runtime-manifest.json', ...names]);
-  const files = await listPayloadFiles(root);
-  if (files.some(file => !expected.has(file)) || files.length !== expected.size) {
-    throw new Error('DSH Companion runtime payload contains undeclared files');
-  }
   return {
-    formatVersion: 1,
-    companionVersion: value.companionVersion,
+    ...(value.formatVersion === 1
+      ? { formatVersion: 1 as const, companionVersion: value.companionVersion as string }
+      : { formatVersion: 2 as const, runtimeId: value.runtimeId as string }),
     target: TARGET,
     dsh,
     launch: { executable: value.launch.executable, args: [...value.launch.args], profileBundles },
     artifacts,
   };
+}
+
+/** Validates one new runtime payload and every declared artifact digest before installation. */
+export async function verifyPayload(root: string): Promise<RuntimeManifest> {
+  const manifest = await readRuntimeManifest(root);
+  for (const artifact of manifest.artifacts) {
+    const bytes = await readFile(join(root, ...artifact.file.split('/')));
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    if (bytes.byteLength !== artifact.bytes || digest !== artifact.sha256) {
+      throw new Error(`DSH Companion runtime artifact integrity failed: ${artifact.file}`);
+    }
+  }
+  const expected = new Set(['runtime-manifest.json', ...manifest.artifacts.map(artifact => artifact.file)]);
+  const files = await listPayloadFiles(root);
+  if (files.some(file => !expected.has(file)) || files.length !== expected.size) {
+    throw new Error('DSH Companion runtime payload contains undeclared files');
+  }
+  return manifest;
+}
+
+/** Names a runtime independently from the Extension version for content-addressed payloads. */
+export function runtimeIdentity(manifest: RuntimeManifest): string {
+  return manifest.formatVersion === 1
+    ? `${manifest.companionVersion}-${manifest.target}`
+    : `runtime-${manifest.runtimeId}-${manifest.target}`;
+}
+
+/** Keeps a healthy installed runtime when the Extension changes but its runtime identity does not. */
+export function shouldReuseInstalledRuntime(
+  activeDirectory: string | undefined,
+  currentRuntimeId: string | undefined,
+  installed: string,
+  manifest: RuntimeManifest,
+): boolean {
+  return activeDirectory === installed && currentRuntimeId === runtimeIdentity(manifest);
 }
 
 function sameStrings(value: readonly unknown[], expected: readonly string[]): boolean {
@@ -400,8 +453,9 @@ function parseDshProvenance(value: Record<string, unknown>): DshProvenance {
   };
 }
 
-async function withManagerLock<T>(lifecycleRoot: string, operation: () => Promise<T>): Promise<T> {
+export async function withManagerLock<T>(lifecycleRoot: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = join(lifecycleRoot, 'manager.lock');
+  const recoveryPath = join(lifecycleRoot, 'manager.recovery.lock');
   await mkdir(lifecycleRoot, { recursive: true, mode: 0o700 });
   await chmod(lifecycleRoot, 0o700);
   const deadline = Date.now() + MANAGER_LOCK_WAIT_MS;
@@ -409,9 +463,16 @@ async function withManagerLock<T>(lifecycleRoot: string, operation: () => Promis
   while (lock === undefined) {
     try {
       lock = await open(lockPath, 'wx', 0o600);
-      await lock.writeFile(`${String(process.pid)}\n`);
+      try {
+        await lock.writeFile(`${String(process.pid)}\n`);
+      } catch (error) {
+        await lock.close();
+        await rm(lockPath, { force: true });
+        throw error;
+      }
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
+      await recoverAbandonedLock(lockPath, recoveryPath);
       if (Date.now() >= deadline) throw new Error('Timed out waiting for DSH Companion runtime manager');
       await delay(100);
     }
@@ -422,6 +483,64 @@ async function withManagerLock<T>(lifecycleRoot: string, operation: () => Promis
     await lock.close();
     await rm(lockPath, { force: true });
   }
+}
+
+async function recoverAbandonedLock(lockPath: string, recoveryPath: string): Promise<void> {
+  let guard;
+  try {
+    guard = await open(recoveryPath, 'wx', 0o600);
+  } catch (error) {
+    if (isAlreadyExists(error)) {
+      await recoverAbandonedGuard(recoveryPath);
+      return;
+    }
+    throw error;
+  }
+  try {
+    await guard.writeFile(`${String(process.pid)}\n`);
+    const owner = await readFile(lockPath, 'utf8').catch((error: unknown) => {
+      if (isFileNotFound(error)) return undefined;
+      throw error;
+    });
+    if (owner === undefined) return;
+    const pid = /^([1-9]\d*)\n$/u.exec(owner)?.[1];
+    // An incomplete or unrecognized record might still be in the middle of creation.
+    if (pid === undefined) return;
+    try {
+      process.kill(Number(pid), 0);
+      return;
+    } catch (error) {
+      if (!isProcessNotFound(error)) return;
+    }
+    // Only one contender can hold the recovery guard; no new owner can claim
+    // manager.lock until its stale inode has been removed.
+    await rm(lockPath, { force: true });
+  } finally {
+    await guard.close();
+    await rm(recoveryPath, { force: true });
+  }
+}
+
+async function recoverAbandonedGuard(path: string): Promise<void> {
+  try {
+    const file = await stat(path);
+    // Give the holder time to write its PID; do not race a new guard creation.
+    if (Date.now() - file.mtimeMs < 5_000) return;
+    const owner = await readFile(path, 'utf8');
+    const pid = /^([1-9]\d*)\n$/u.exec(owner)?.[1];
+    if (pid === undefined) return;
+    try {
+      process.kill(Number(pid), 0);
+    } catch (error) {
+      if (isProcessNotFound(error)) await rm(path, { force: true });
+    }
+  } catch (error) {
+    if (!isFileNotFound(error)) throw error;
+  }
+}
+
+function isProcessNotFound(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH';
 }
 
 async function connectExisting(stateFile: string): Promise<RuntimeControl | undefined> {

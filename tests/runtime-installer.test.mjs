@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,9 +11,13 @@ import {
   companionLifecycleRoot,
   ensureManagedProfile,
   installPayload,
+  readRuntimeManifest,
+  runtimeIdentity,
   runtimeStoragePath,
+  shouldReuseInstalledRuntime,
   shouldReuseSourceRuntime,
   verifyPayload,
+  withManagerLock,
 } from '../vscode/out/runtimeInstaller.js';
 
 const roots = [];
@@ -21,7 +25,7 @@ test.afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixturePayload(version = '0.0.20260914103045') {
+async function fixturePayload(version = '0.0.20260914103045', runtimeId) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-companion-payload-'));
   roots.push(root);
   const files = {
@@ -43,8 +47,7 @@ async function fixturePayload(version = '0.0.20260914103045') {
     });
   }
   await writeFile(join(root, 'runtime-manifest.json'), `${JSON.stringify({
-    formatVersion: 1,
-    companionVersion: version,
+    ...(runtimeId === undefined ? { formatVersion: 1, companionVersion: version } : { formatVersion: 2, runtimeId }),
     target: 'linux-x64',
     dsh: {
       upstreamRepository: 'https://github.com/deepseek-ai/deepseek-harness.git',
@@ -70,6 +73,57 @@ async function fixturePayload(version = '0.0.20260914103045') {
   }, null, 2)}\n`);
   return root;
 }
+
+test('runtime manager recovers a lock left by a terminated extension host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-manager-lock-'));
+  roots.push(root);
+  await writeFile(join(root, 'manager.lock'), '999999999\n');
+  let entered = false;
+  await withManagerLock(root, async () => { entered = true; });
+  assert.equal(entered, true);
+  await assert.rejects(stat(join(root, 'manager.lock')), { code: 'ENOENT' });
+});
+
+test('runtime manager never steals a live owner and serializes waiting windows', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-manager-lock-'));
+  roots.push(root);
+  let release;
+  const held = withManagerLock(root, () => new Promise(resolve => { release = resolve; }));
+  while (release === undefined) await new Promise(resolve => setTimeout(resolve, 5));
+  let entered = false;
+  const waiting = withManagerLock(root, async () => { entered = true; });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(entered, false);
+  release();
+  await Promise.all([held, waiting]);
+  assert.equal(entered, true);
+});
+
+test('runtime manager recovers an abandoned recovery guard', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-manager-lock-'));
+  roots.push(root);
+  await writeFile(join(root, 'manager.lock'), '999999999\n');
+  const guard = join(root, 'manager.recovery.lock');
+  await writeFile(guard, '999999999\n');
+  const old = new Date(Date.now() - 10_000);
+  await utimes(guard, old, old);
+  await withManagerLock(root, async () => {});
+  await assert.rejects(stat(guard), { code: 'ENOENT' });
+});
+
+test('simultaneous recovery claims preserve exclusive runtime ownership', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-manager-lock-'));
+  roots.push(root);
+  await writeFile(join(root, 'manager.lock'), '999999999\n');
+  let active = 0;
+  const calls = Array.from({ length: 5 }, () => withManagerLock(root, async () => {
+    active += 1;
+    assert.equal(active, 1);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    active -= 1;
+  }));
+  await Promise.all(calls);
+});
 
 test('runtime payload validation checks every declared file and rejects extras', async () => {
   const payload = await fixturePayload();
@@ -108,19 +162,73 @@ test('runtime payload validation requires complete official DSH provenance', asy
   await assert.rejects(verifyPayload(payload), /runtime provenance/);
 });
 
-test('runtime installation is immutable and reuses an identical packaged version', async () => {
+test('runtime installation verifies new bytes and reuses a matching installed identity without rehashing', async () => {
+  const payload = await fixturePayload();
+  const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-storage-'));
+  roots.push(storage);
+  const version = '0.0.20260914103045';
+  const phases = [];
+  const installed = await installPayload(payload, storage, version, phase => phases.push(phase));
+  assert.deepEqual(phases, ['installing']);
+  assert.equal(installed, join(storage, 'runtime', 'versions', `${version}-linux-x64`));
+  assert.equal(await installPayload(payload, storage, version, phase => phases.push(phase)), installed);
+  assert.deepEqual(phases, ['installing'], 'reusing an installed identity does not announce installation');
+  assert.equal((await stat(join(installed, 'dsh'))).mode & 0o777, 0o700);
+
+  await writeFile(join(installed, 'DSH-LICENSE'), 'different\n');
+  await rm(join(payload, 'dsh'));
+  assert.equal((await readRuntimeManifest(installed)).artifacts.length, 6);
+  assert.equal(await installPayload(payload, storage, version), installed);
+  await assert.rejects(verifyPayload(installed), /integrity failed/);
+  await assert.rejects(installPayload(payload, storage, '0.0.1'), /does not match/);
+});
+
+test('a new installation rejects changed packaged bytes before publishing a runtime directory', async () => {
+  const payload = await fixturePayload();
+  const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-storage-'));
+  roots.push(storage);
+  await writeFile(join(payload, 'dsh'), 'changed\n');
+  const phases = [];
+  await assert.rejects(installPayload(payload, storage, '0.0.20260914103045', phase => phases.push(phase)),
+    /integrity failed/);
+  assert.deepEqual(phases, ['installing']);
+  await assert.rejects(stat(join(storage, 'runtime', 'versions', '0.0.20260914103045-linux-x64')),
+    { code: 'ENOENT' });
+});
+
+test('a reused runtime refuses a different installed manifest for the same identity', async () => {
   const payload = await fixturePayload();
   const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-storage-'));
   roots.push(storage);
   const version = '0.0.20260914103045';
   const installed = await installPayload(payload, storage, version);
-  assert.equal(installed, join(storage, 'runtime', 'versions', `${version}-linux-x64`));
-  assert.equal(await installPayload(payload, storage, version), installed);
-  assert.equal((await stat(join(installed, 'dsh'))).mode & 0o777, 0o700);
+  const path = join(installed, 'runtime-manifest.json');
+  const manifest = JSON.parse(await readFile(path, 'utf8'));
+  manifest.launch.args.push('--different');
+  await writeFile(path, `${JSON.stringify(manifest)}\n`);
+  await assert.rejects(installPayload(payload, storage, version), /differs from the packaged payload/);
+});
 
-  await writeFile(join(installed, 'DSH-LICENSE'), 'different\n');
-  await assert.rejects(installPayload(payload, storage, version), /integrity failed|differs/);
-  await assert.rejects(installPayload(payload, storage, '0.0.1'), /does not match/);
+test('content-addressed runtime survives a frontend-only Extension version change', async () => {
+  const runtimeId = 'a'.repeat(64);
+  const payload = await fixturePayload('0.0.20260914103045', runtimeId);
+  const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-storage-'));
+  roots.push(storage);
+  const manifest = await verifyPayload(payload);
+  const directory = join(storage, 'runtime', 'versions', `runtime-${runtimeId}-linux-x64`);
+  const phases = [];
+  assert.equal(runtimeIdentity(manifest), `runtime-${runtimeId}-linux-x64`);
+  assert.equal(await installPayload(payload, storage, '0.0.20260914103045', phase => phases.push(phase)), directory);
+  assert.equal(await installPayload(payload, storage, '0.0.20260915103045', phase => phases.push(phase)), directory);
+  assert.deepEqual(phases, ['installing']);
+  assert.equal(shouldReuseInstalledRuntime(directory, runtimeIdentity(manifest), directory, manifest), true);
+  assert.equal(shouldReuseInstalledRuntime(directory, 'older-runtime', directory, manifest), false);
+  assert.equal(shouldReuseInstalledRuntime(undefined, runtimeIdentity(manifest), directory, manifest), false);
+  await assert.rejects(installPayload(payload, storage, 'not-a-version'), /Invalid DSH Companion extension version/);
+  const invalid = JSON.parse(await readFile(join(payload, 'runtime-manifest.json'), 'utf8'));
+  invalid.runtimeId = 'bad';
+  await writeFile(join(payload, 'runtime-manifest.json'), `${JSON.stringify(invalid)}\n`);
+  await assert.rejects(verifyPayload(payload), /invalid DSH Companion runtime manifest/i);
 });
 
 test('runtime cleanup retains active and rollback versions without deleting DSH data', async () => {

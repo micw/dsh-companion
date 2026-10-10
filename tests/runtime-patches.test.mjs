@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
 import {
   DSH_RUNTIME_ROOT,
@@ -34,6 +35,7 @@ test('the exact DSH runtime pin and ordered patch series are integrity checked',
     'compress-enhanced-sea-assets',
     'agent-session-title-proposal',
     'label-configured-user-global-instructions',
+    'fix-empty-sea-assets',
   ]);
 });
 
@@ -109,4 +111,17 @@ test('the executable patch compresses the existing enhanced SEA closure', async 
   assert.match(text, /pkg --sea --compress Zstd/u);
   assert.doesNotMatch(text, /node2[5-9]/u);
   assert.deepEqual(patch.affectedModules, ['scripts/build-exe-for-python-sdk']);
+});
+
+test('compressed SEA assets admit empty files without dropping the decoded-size check', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { patch, text } = await patchText(manifest, 'fix-empty-sea-assets');
+  assert.deepEqual(patch.affectedModules, ['patches/@yao-pkg__pkg@6.21.0.patch']);
+  assert.match(text, /Math\.max\(1, maxOutputLength\)/u);
+  assert.match(text, /buf\.length !== maxOutputLength/u);
+  const compressed = zstdCompressSync(Buffer.alloc(0));
+  assert.throws(() => zstdDecompressSync(compressed, { maxOutputLength: 0 }), {
+    code: 'ERR_OUT_OF_RANGE',
+  });
+  assert.equal(zstdDecompressSync(compressed, { maxOutputLength: 1 }).length, 0);
 });

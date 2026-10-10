@@ -5,6 +5,7 @@ import {
 } from './dshClient';
 import { basename } from 'node:path';
 import { sessionWorkspaceKind } from './sessionWorkspace';
+import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 
 interface SidebarMessage {
   readonly type: 'ready' | 'newChat' | 'refresh' | 'openSession' | 'search';
@@ -23,6 +24,8 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
   private searchController: AbortController | undefined;
   private refreshQueued = false;
   private disposed = false;
+  private runtimePending = true;
+  private readonly unsubscribeProgress: () => void;
   private readonly workspaceChange = vscode.workspace.onDidChangeWorkspaceFolders(() => {
     this.post({ type: 'workspaceChanged' });
     void this.publish();
@@ -31,7 +34,23 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly connect: (onDidChange: () => void) => Promise<DshSessionBrowser>,
-  ) {}
+    private readonly runtimeProgress?: RuntimeProgress,
+  ) {
+    this.unsubscribeProgress = runtimeProgress?.subscribe(phase => {
+      if (this.runtimePending && this.browser === undefined && !this.disposed) {
+        this.post({ type: 'status', phase: 'connecting', text: runtimePhaseText[phase] });
+      }
+    }) ?? (() => {});
+  }
+
+  /** Switches from runtime startup to the DSH Session connection. */
+  runtimeReady(success = true): void {
+    this.runtimePending = false;
+    this.unsubscribeProgress();
+    if (success && this.browser === undefined && !this.disposed) {
+      this.post({ type: 'status', phase: 'connecting', text: 'Connecting to DSH…' });
+    }
+  }
 
   /** Configures the sidebar surface and starts its list-only canonical Client graph. */
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -110,6 +129,7 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
     this.disposed = true;
     this.searchController?.abort();
     this.receive?.dispose();
+    this.unsubscribeProgress();
     this.workspaceChange.dispose();
     const browser = this.browser;
     if (browser !== undefined) void browser.dispose();
@@ -119,7 +139,8 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
   private async publish(): Promise<void> {
     if (this.view === undefined || this.disposed) return;
     if (this.browser === undefined && this.browserPromise === undefined) {
-      this.post({ type: 'status', phase: 'connecting', text: 'Connecting to DSH…' });
+      this.post({ type: 'status', phase: 'connecting', text: this.runtimePending && this.runtimeProgress
+        ? runtimePhaseText[this.runtimeProgress.current] : 'Connecting to DSH…' });
     }
     try {
       const browser = this.browser ?? await this.withViewProgress(() => this.ensureBrowser());
@@ -264,7 +285,7 @@ function sidebarHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.
 </head>
 <body>
   <div id="search-wrap"><input id="search" type="search" aria-label="Search session questions and answers" placeholder="Search questions and answers…"><label id="all-workspaces-label"><input id="all-workspaces" type="checkbox"> Search all workspaces</label></div>
-  <div id="status" role="status">Connecting to DSH…</div>
+  <div id="status" role="status">Checking DSH runtime…</div>
   <main id="sessions" aria-label="DSH Sessions"></main>
   <script nonce="${nonce}" src="${webview.asWebviewUri(script)}"></script>
 </body>
