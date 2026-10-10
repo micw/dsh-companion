@@ -31,6 +31,7 @@
     "LICENSE"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:dshCompanion.newChatEditor",
     "onCommand:dshCompanion.openDevelopmentWebUi",
     "onCommand:dshCompanion.openProviderSettings",

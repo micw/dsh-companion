@@ -7,6 +7,9 @@ import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
 import { SessionSidebarProvider } from './sessionTree';
+import { sessionWorkspaceKind } from './sessionWorkspace';
+import { publishSessionHandoff, receiveSessionHandoffs } from './sessionHandoff';
+import { companionLifecycleRoot } from './runtimeInstaller';
 import { TabStatusProjection } from './tabStatus';
 import { WebviewMessenger } from './webviewMessenger';
 
@@ -137,6 +140,17 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
   }, sessionTree, vscode.window.registerWebviewViewProvider('dshCompanion.sessions', sessionTree));
+  let stopHandoffs: (() => void) | undefined;
+  let handoffsReady = false;
+  const roots = () => vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+  void receiveSessionHandoffs(companionLifecycleRoot(), roots,
+    sessionId => { openChatEditor(context, runtimeControl, sessionTree, sessionId); },
+    error => { console.warn('DSH Companion Session handoff failed', error); },
+  ).then(stop => {
+    if (handoffsReady) stop();
+    else stopHandoffs = stop;
+  }, error => { console.warn('DSH Companion Session handoff unavailable', error); });
+  context.subscriptions.push({ dispose: () => { handoffsReady = true; stopHandoffs?.(); } });
   context.subscriptions.push(
     vscode.commands.registerCommand('dshCompanion.openDevelopmentWebUi', async () => {
       try {
@@ -153,7 +167,48 @@ export function activate(context: vscode.ExtensionContext): void {
         await vscode.window.showErrorMessage('DSH Companion received an invalid Session id.');
         return;
       }
-      openChatEditor(context, runtimeControl, sessionTree, sessionId);
+      try {
+        const browser = await connectSessionBrowser(context, runtimeControl, () => {});
+        let entry: ReturnType<typeof browser.snapshot>['sessions'][number] | undefined;
+        try {
+          await browser.refresh();
+          entry = browser.snapshot().sessions.find(item => item.sessionId === sessionId);
+        } finally {
+          await browser.dispose();
+        }
+        if (entry === undefined) {
+          await vscode.window.showErrorMessage(`DSH Session ${sessionId} was not found.`);
+          return;
+        }
+        const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+        const kind = sessionWorkspaceKind(entry.cwd, roots);
+        if (kind === 'local') {
+          openChatEditor(context, runtimeControl, sessionTree, sessionId);
+          return;
+        }
+        if (kind === 'unknown') {
+          const choice = await vscode.window.showWarningMessage(
+            'The working directory of this Session is unknown. It cannot be matched to a VS Code workspace.',
+            { modal: true }, 'Open Here',
+          );
+          if (choice === 'Open Here') openChatEditor(context, runtimeControl, sessionTree, sessionId);
+          return;
+        }
+        const choice = await vscode.window.showInformationMessage(
+          `This Session works in a different workspace or path.\nSession path: ${entry.cwd}\nCurrent roots: ${roots.join(', ') || '(none)'}\nOpen the Session in its VS Code workspace window?`,
+          { modal: true }, 'Open',
+        );
+        if (choice !== 'Open' || entry.cwd === undefined) return;
+        const cancelHandoff = await publishSessionHandoff(companionLifecycleRoot(), sessionId, entry.cwd);
+        try {
+          await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(entry.cwd), { forceNewWindow: true });
+        } catch (error) {
+          await cancelHandoff();
+          throw error;
+        }
+      } catch (error) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
     }),
     vscode.commands.registerCommand('dshCompanion.refreshSessions', async () => {
       try {
