@@ -147,6 +147,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /className = 'provider-usage-time-marker'/);
   assert.match(script, /aria-valuenow', String\(width\)/);
   assert.match(script, /providerUsageRendering/);
+  assert.match(script, /item\.contextLabel \?\? 'Context update'/);
+  assert.match(script, /event\.summary \?\? 'Delivered'/);
   assert.match(script, /compactCostSummary\(sessionCost, 3\)/);
   assert.match(script, /amount\.currency === 'USD' \? 'en-US' : undefined/);
   assert.match(script, /money\.remainingNanos \}\)\} remaining/);
@@ -154,7 +156,11 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.doesNotMatch(script, /setInterval\(renderProviderUsage/);
   assert.match(script, /type: 'refreshProviderUsage'/);
   assert.match(script, /function applyCompactionEvent/);
-  assert.match(script, /prompt\.disabled = compacting/);
+  assert.match(script, /compactionSubmitGate\.request\(\);\s*setCompacting\(true\)/);
+  assert.match(script, /compactionSubmitGate\.observe\(message\.event\)/);
+  assert.match(script, /if \(compactionSubmitGate\.settle\(\)\) updateInputAvailability\(\)/);
+  assert.match(script, /prompt\.disabled = compactionSubmitGate\.locked/);
+  assert.match(script, /send\.disabled = [^;]*compactionSubmitGate\.locked/);
   assert.match(script, /running \|\| compacting/);
   assert.match(script, /function positionContextPanel/);
   assert.match(script, /window\.innerWidth - width - margin/);
@@ -289,7 +295,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /rows="1"/);
   assert.match(extension, /id="sticky-prompt-jump"[\s\S]*<svg[^>]+><path d="M3\.5 10/);
   assert.match(extension, /id="scroll-bottom"[\s\S]*<svg[^>]+><path d="m3\.5 6/);
-  assert.match(extension, /Ask DSH Companion… \(Enter sends, Shift\+Enter = newline\)/);
+  assert.match(extension, /Ask DSH Companion… \(Enter sends, Ctrl\+Enter = steer, Shift\+Enter = newline\)/);
   assert.match(extension, /isSelectModelMessage/);
   assert.match(extension, /isLoadProviderSettingsMessage/);
   assert.match(extension, /isSaveProviderSettingsMessage/);
@@ -791,13 +797,74 @@ test('Inbox projections retain authoritative queue order and request identities'
   assert.deepEqual(parseInboxQueue(value, true, new Map([
     ['remote-queued', 'local-queued'], ['remote-steering', 'local-steering'],
   ])), [{
-    id: 'steering', requestId: 'local-steering', text: 'steering text', placement: 'steering',
+    id: 'steering', requestId: 'local-steering', sourceKind: 'user', text: 'steering text', textOnly: true,
+    images: [], takeBackAvailable: true, placement: 'steering',
   }, {
-    id: 'queued', requestId: 'local-queued', text: 'queued text', placement: 'queued',
+    id: 'queued', requestId: 'local-queued', sourceKind: 'user', text: 'queued text', textOnly: true,
+    images: [], takeBackAvailable: true, placement: 'queued',
   }]);
   assert.deepEqual(parseInboxQueue(value, false, new Map())[0], {
-    id: 'steering', requestId: 'remote-steering', text: 'steering text', placement: 'context',
+    id: 'steering', requestId: 'remote-steering', sourceKind: 'user', text: 'steering text', textOnly: true,
+    images: [], takeBackAvailable: true, placement: 'context',
   });
+});
+
+test('composer and queue dock keep steering, removal, and take-back in the DSH Session flow', async () => {
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');
+  const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  assert.match(script, /nextSubmitMode = submitModeForGesture\(running, controlKey, prompt\.value, compacting\)/);
+  assert.match(script, /send\.addEventListener\('click', \(event\) => \{\s*event\.preventDefault\(\);\s*requestSubmission\(event\.ctrlKey\)/);
+  assert.match(script, /prompt\.addEventListener\('keydown',[\s\S]*requestSubmission\(event\.ctrlKey\)/);
+  assert.match(script, /try \{ composer\.requestSubmit\(\); \}\s*finally \{ nextSubmitMode = 'queue'; \}/);
+  assert.match(script, /document\.addEventListener\('keydown', event => setControlHeld\(event\.ctrlKey\)\)/);
+  assert.match(script, /document\.addEventListener\('keyup', event => setControlHeld\(event\.ctrlKey\)\)/);
+  assert.match(script, /window\.addEventListener\('blur', \(\) => setControlHeld\(false\)\)/);
+  assert.match(script, /send\.dataset\.mode = action\.mode/);
+  assert.match(script, /sendLabel\.textContent = action\.label/);
+  assert.match(script, /send\.setAttribute\('aria-label', action\.title\)/);
+  assert.match(script, /type: 'submit', requestId, text, mode,\s*images: pendingImages\.map/);
+  assert.match(script, /vscode\.postMessage\(\{ type: 'queueAction', itemId, action \}\)/);
+  assert.match(script, /typeof item\.id === 'string' && item\.sourceKind === 'user'/);
+  assert.match(script, /appendPendingAgentRows\(turn, activeTurn, hostQueue, pendingAgentRows, committedAgentIds/);
+  assert.match(script, /settleAgentMessageRow\(pendingAgentRows, committedAgentIds, messageId, turn\.rows/);
+  assert.match(script, /if \(item\.placement === 'queued'\) \{\s*const steer = document\.createElement\('button'\)/);
+  assert.match(script, /steer\.disabled = !canSteerQueued\(item, running\) \|\| stopping/);
+  assert.match(script, /requestQueueAction\(item\.id, 'steer'\)/);
+  assert.match(script, /if \(message\.type === 'queueItemSteered'\)/);
+  assert.match(script, /pendingQueueActions\.set\(itemId, action\)/);
+  assert.match(script, /prompt\.readOnly = sending \|\| \[\.\.\.pendingQueueActions\.values\(\)\]\.includes\('takeBack'\)/);
+  assert.match(script, /stop\.hidden = !running && !compacting && !hasWaitingQueue\(\)/);
+  assert.match(script, /send\.disabled = [^;]*stopping/);
+  assert.match(script, /appendMessage\('user', message\.text, undefined, message\.time, message\.step, message\.images\)/);
+  assert.match(extension, /isQueueActionMessage\(message\).*queueAction\(panel, ready, message\)/);
+  assert.match(extension, /await client\.steerQueued\(message\.itemId\)/);
+  assert.match(extension, /post\(panel, \{ type: 'queueItemSteered', itemId: message\.itemId \}\)/);
+  assert.match(extension, /stopAndClearQueue\(\)/);
+  assert.match(extension, /id="send"[^>]*data-mode="send"[\s\S]*id="send-label"/);
+  assert.match(style, /#send\[data-mode='steer'\] \.send-icon-steer/);
+  assert.match(style, /\.queue-text \{[\s\S]*white-space: pre-wrap/);
+});
+
+test('pasted user images remain in the composer on failure and use DSH for queue and transcript restore', async () => {
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');
+  const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
+  assert.match(extension, /img-src blob:/);
+  assert.match(extension, /id="image-tray"/);
+  assert.match(script, /prompt\.addEventListener\('paste'/);
+  assert.match(script, /URL\.createObjectURL\(file\)/);
+  assert.match(script, /remove\.setAttribute\('aria-label', `Remove \$\{image\.name\}`\)/);
+  assert.match(script, /if \(message\.type === 'submissionAccepted'\)/);
+  assert.match(script, /if \(message\.type === 'submissionFailed'\)/);
+  assert.match(script, /if \(message\.type === 'imageLoaded'\)/);
+  assert.match(script, /appendImageGallery\(article, images\)/);
+  assert.match(script, /appendImageGallery\(content, item\.images\)/);
+  assert.match(extension, /await \(await ready\)\.readImage\(message\.attachmentId\)/);
+  assert.match(extension, /images: item\.restoredImages \?\? \[\]/);
+  assert.doesNotMatch(script, /state\.draft|restored\.draft/);
+  assert.match(style, /#image-tray \{/);
+  assert.match(style, /\.queue-content \.message-images img/);
 });
 
 test('a fresh draft derives its pending permission from the DSH settings schema', () => {
@@ -930,7 +997,96 @@ test('durable compaction events project running, summary, and completed session 
   }), { type: 'end', id: 'compact-1', time: 300 });
 });
 
-test('tabs restore through the serializer and Stop uses DSH session cancellation', async () => {
+test('only a live compaction start releases the composer gate; restore keeps activity but no local gate', () => {
+  const projected = [];
+  const activity = [];
+  const client = new DshClient(undefined, {
+    compaction(event) { projected.push(event); },
+    compacting(value) { activity.push(value); },
+  }, {
+    default: { provider: 'provider', model: 'model' },
+    routableProviders: ['provider'], groups: [], failures: [],
+  }, { requestAliases: new Map() });
+  const record = (id, seq) => ({ type: 'event', event: {
+    type: 'compaction/start', seq, time: seq * 100,
+    data: { compactionId: id, turn: null },
+  } });
+
+  client.receiveHistoryRecord(record('restored', 1), false, true);
+  client.receiveHistoryRecord(record('older', 2), true, true);
+  client.receiveHistoryRecord(record('live', 3), false, false);
+
+  assert.deepEqual(projected, [
+    { type: 'start', id: 'restored', time: 100 },
+    { type: 'start', id: 'older', time: 200 },
+    { type: 'start', id: 'live', time: 300, live: true },
+  ]);
+  assert.deepEqual(activity, [true]);
+  assert.equal(client.compactionActive(), true);
+});
+
+test('a restore seed retires an interrupted compaction without changing DSH history', async () => {
+  const projected = [];
+  const activity = [];
+  const client = new DshClient(undefined, {
+    reset() {},
+    compaction(event) { projected.push(event); },
+    compacting(value) { activity.push(value); },
+    historyState() {},
+  }, {
+    default: { provider: 'provider', model: 'model' },
+    routableProviders: ['provider'], groups: [], failures: [],
+  }, { requestAliases: new Map() });
+  const start = { type: 'event', event: {
+    type: 'compaction/start', seq: 1, time: 100,
+    data: { compactionId: 'compact-1', sourceCommandId: 'command-1', turn: null },
+  } };
+  const seed = { type: 'event', event: { type: 'session/end-seed', seq: 2, time: 200, data: {} } };
+
+  client.replaceCanonicalWindow([start, seed], false);
+
+  assert.deepEqual(projected, [
+    { type: 'start', id: 'compact-1', time: 100 },
+    { type: 'interrupted', id: 'compact-1' },
+  ]);
+  assert.deepEqual(activity, [false]);
+  assert.equal(client.compactionActive(), false);
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  assert.match(script, /if \(value\.type === 'interrupted'\) return true/u);
+  assert.match(script, /item\.label\.textContent = 'Context compaction interrupted'/u);
+});
+
+test('live seed retires only the prior compaction and does not stop a later one', () => {
+  const projected = [];
+  const activity = [];
+  const client = new DshClient(undefined, {
+    compaction(event) { projected.push(event); },
+    compacting(value) { activity.push(value); },
+  }, {
+    default: { provider: 'provider', model: 'model' },
+    routableProviders: ['provider'], groups: [], failures: [],
+  }, { requestAliases: new Map() });
+  const append = (type, seq, data) => {
+    const entry = { type: 'event', event: { type, seq, time: seq * 100, data } };
+    client.receiveCanonicalWindow({ entries: [entry], change: { kind: 'append', entries: [entry] }, hasMore: false });
+  };
+
+  append('compaction/start', 1, { compactionId: 'compact-1', turn: null });
+  append('session/end-seed', 2, {});
+  append('compaction/start', 3, { compactionId: 'compact-2', turn: null });
+  client.receiveHistoryRecord({ type: 'event', event: {
+    type: 'session/end-seed', seq: 0, time: 50, data: {},
+  } }, true, true);
+  assert.equal(client.compactionActive(), true);
+  append('compaction/end', 4, { compactionId: 'compact-2', turn: null });
+  append('session/end-seed', 5, {});
+
+  assert.deepEqual(activity, [true, false, true, false]);
+  assert.deepEqual(projected.map(event => event.type), ['start', 'interrupted', 'start', 'end']);
+  assert.equal(client.compactionActive(), false);
+});
+
+test('tabs restore through the serializer and Stop uses DSH cancellation plus queue removal', async () => {
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
   const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
   assert.match(extension, /registerWebviewPanelSerializer\(CHAT_EDITOR_VIEW_TYPE/);
@@ -947,7 +1103,9 @@ test('tabs restore through the serializer and Stop uses DSH session cancellation
   assert.match(client, /projections\.faceOf\('contextPressure'\)/);
   assert.match(client, /function modelLabelMap/);
   assert.match(client, /this\.requireBinding\(\)\.session\.cancel/);
-  assert.match(client, /retaining pending DSH inbox work/);
+  assert.match(client, /stopAndClearQueue\(\)/);
+  assert.match(client, /binding\.session\.updateQueue\(item\.id, \{ kind: 'remove' \}\)/);
+  assert.match(extension, /\.stopAndClearQueue\(\)/);
 });
 
 test('managed launch authentication rejects another origin before connecting', async () => {

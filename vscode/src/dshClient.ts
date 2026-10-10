@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
 import { eventWindowTrace, restoreTrace } from './restoreDiagnostics';
+import type { UserImageUpload } from './queueMessages';
 
 /** Fixed source-development DSH Web origin. */
 export const DSH_ORIGIN = 'http://127.0.0.1:3081';
@@ -43,7 +44,7 @@ export type DshProcessEvent =
   }
   | {
     readonly type: 'context'; readonly id: string; readonly turn: number;
-    readonly label: string; readonly detail: string;
+    readonly label: string; readonly summary?: string; readonly detail: string; readonly messageId?: string;
   }
   | {
     readonly type: 'status'; readonly id: string; readonly turn: number;
@@ -101,10 +102,24 @@ export interface DshTurnSummary {
   readonly tokensPerSecond?: number;
 }
 
+export interface DshImageAttachment {
+  readonly attachmentId: string;
+  readonly mediaType: UserImageUpload['mediaType'];
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+  readonly name?: string;
+}
+
 export interface DshQueuedPrompt {
   readonly id: string;
   readonly requestId?: string;
+  readonly sourceKind: 'user' | 'agent-message' | 'subagent-settled' | 'other';
+  readonly contextLabel?: string;
   readonly text: string;
+  readonly textOnly: boolean;
+  readonly images: readonly DshImageAttachment[];
+  readonly takeBackAvailable: boolean;
   readonly placement: 'queued' | 'steering' | 'context';
 }
 
@@ -281,16 +296,19 @@ export interface DshPermissionSelection {
   readonly currentValue: string;
 }
 
+/** Compaction presentation; `live` marks a newly appended start, never replayed history. */
 export type DshCompactionEvent =
-  | { readonly type: 'start'; readonly id: string; readonly time: number }
+  | { readonly type: 'start'; readonly id: string; readonly time: number; readonly live?: true }
   | { readonly type: 'summary'; readonly id: string; readonly itemCount: number; readonly tokenCount: number }
-  | { readonly type: 'end'; readonly id: string; readonly time: number; readonly error?: string };
+  | { readonly type: 'end'; readonly id: string; readonly time: number; readonly error?: string }
+  | { readonly type: 'interrupted'; readonly id: string };
 
 export interface DshOutputSink {
   sessionCreated(sessionId: string): void;
   sessionSummary(summary: DshSessionListEntry | undefined): void;
   reset(): void;
-  history(role: 'user' | 'assistant' | 'error', text: string, time?: number): void;
+  history(role: 'user' | 'assistant' | 'error', text: string, time?: number, turn?: number, step?: number,
+    images?: readonly DshImageAttachment[]): void;
   historyPrependStart(): void;
   historyPrependEnd(): void;
   historyState(hasMore: boolean): void;
@@ -312,7 +330,8 @@ export interface DshOutputSink {
   running(value: boolean): void;
   status(text: string): void;
   submissionObserved(requestId: string): void;
-  userCommitted(requestId: string | undefined, text: string, time: number, turn: number): void;
+  userCommitted(requestId: string | undefined, text: string, time: number, turn: number, step: number,
+    images?: readonly DshImageAttachment[]): void;
 }
 
 interface RpcSuccess<T> {
@@ -345,11 +364,13 @@ interface CanonicalSession extends ObservableValue {
     onRetire?: (retirement: { readonly reason: 'observed' | 'failed' }) => void;
   }): { requestId: string; abandon(): void };
   prompt(
-    content: readonly { readonly type: 'text'; readonly text: string }[],
+    content: readonly ({ readonly type: 'text'; readonly text: string } | ({ readonly type: 'image' } & UserImageUpload))[],
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
     requestId?: string,
   ): Promise<unknown>;
+  readAttachment(attachmentId: string): Promise<unknown>;
+  updateQueue(itemId: string, action: { readonly kind: 'remove' | 'steer' }): Promise<unknown>;
   cancel(): Promise<unknown>;
   loadOlder(): Promise<void>;
 }
@@ -1230,14 +1251,15 @@ export class DshClient {
     }
   }
 
-  /** Sends one text prompt to this editor's Session. */
-  async prompt(text: string, requestId: string): Promise<void> {
+  /** Sends one text-and-image prompt using DSH's requested queue or steering mode. */
+  async prompt(text: string, requestId: string, mode: 'queue' | 'steer' = 'queue',
+    images: readonly UserImageUpload[] = []): Promise<void> {
     this.lastReportedError = undefined;
     await this.ensureSession();
     const canonical = this.requireCanonical();
     const binding = this.requireBinding();
     const submission = binding.session.beginSubmission({
-      mode: 'queue',
+      mode,
       text,
       attachments: [],
       onRetire: (retirement) => {
@@ -1245,13 +1267,14 @@ export class DshClient {
       },
     });
     canonical.requestAliases.set(submission.requestId, requestId);
-    const result = await binding.session.prompt(
-      [{ type: 'text', text }], 'queue', undefined, submission.requestId,
-    );
     try {
-      unwrapCanonicalResult(result, 'session.prompt');
+      unwrapCanonicalResult(await binding.session.prompt(
+        [...images.map(image => ({ type: 'image' as const, ...image })),
+          ...(text === '' ? [] : [{ type: 'text' as const, text }])], mode, undefined, submission.requestId,
+      ), 'session.prompt');
     } catch (error) {
       canonical.requestAliases.delete(submission.requestId);
+      submission.abandon();
       throw error;
     }
   }
@@ -1259,6 +1282,90 @@ export class DshClient {
   /** Cancels the active turn while retaining pending DSH inbox work. */
   async cancel(): Promise<void> {
     unwrapCanonicalResult(await this.requireBinding().session.cancel(), 'session.cancel');
+  }
+
+  /** Removes one pending occurrence; take-back reads every image before returning its last queued message. */
+  async removeQueued(itemId: string, takeBack: boolean): Promise<DshQueuedPrompt & { restoredImages?: UserImageUpload[] }> {
+    const pending = this.pendingQueue();
+    const item = pending.find(candidate => candidate.id === itemId);
+    if (item === undefined) throw new Error('Queued message is no longer pending');
+    if (item.sourceKind !== 'user') throw new Error('Only user messages can be removed from the composer queue');
+    if (takeBack && (item.placement !== 'queued' || !item.takeBackAvailable
+      || pending.filter(candidate => candidate.placement === 'queued' && candidate.sourceKind === 'user').at(-1)?.id !== itemId)) {
+      throw new Error('Only the last text-and-image queued message can be returned to the composer');
+    }
+    const restoredImages = takeBack
+      ? await Promise.all(item.images.map(image => this.readImage(image.attachmentId))) : undefined;
+    unwrapCanonicalResult(await this.requireBinding().session.updateQueue(itemId, { kind: 'remove' }), 'session.updateQueue');
+    this.retireRemovedAlias(item);
+    return { ...item, ...(restoredImages === undefined ? {} : { restoredImages }) };
+  }
+
+  /** Reads one Session-authorized durable image for Webview display or queue take-back. */
+  async readImage(attachmentId: string): Promise<UserImageUpload> {
+    const value = unwrapCanonicalResult(await this.requireBinding().session.readAttachment(attachmentId),
+      'session.readAttachment');
+    if (!isRecord(value) || !(value.data instanceof Uint8Array)) {
+      throw new Error('DSH returned an invalid image attachment');
+    }
+    const attachment = parseImageAttachment(value.attachment);
+    if (attachment.attachmentId !== attachmentId) throw new Error('DSH returned a different image attachment');
+    if (value.data.byteLength !== attachment.bytes || value.data.byteLength > 20 * 1024 * 1024) {
+      throw new Error('DSH returned an invalid image byte length');
+    }
+    return {
+      mediaType: attachment.mediaType,
+      data: Buffer.from(value.data).toString('base64'),
+      ...(attachment.name === undefined ? {} : { name: attachment.name }),
+    };
+  }
+
+  /** Moves one pending next-Turn occurrence into the running Turn without changing its identity. */
+  async steerQueued(itemId: string): Promise<void> {
+    const item = this.pendingQueue().find(candidate => candidate.id === itemId);
+    if (item?.placement !== 'queued' || item.sourceKind !== 'user' || !this.sessionRunning) {
+      throw new Error('Queued message can only steer while a Turn is running');
+    }
+    unwrapCanonicalResult(await this.requireBinding().session.updateQueue(itemId, { kind: 'steer' }), 'session.updateQueue');
+  }
+
+  /** Cancels active work, then best-effort removes the pending occurrences observed at Stop time. */
+  async stopAndClearQueue(): Promise<{ removed: DshQueuedPrompt[]; failed: number; cancelFailed: boolean }> {
+    const binding = this.requireBinding();
+    const pending = this.pendingQueue();
+    let cancelFailed = false;
+    if (this.sessionRunning || this.activeCompactions.size > 0 || this.activeCompactionCommands.size > 0) {
+      try {
+        unwrapCanonicalResult(await binding.session.cancel(), 'session.cancel');
+      } catch (_error) {
+        cancelFailed = true;
+      }
+    }
+    const removed: DshQueuedPrompt[] = [];
+    let failed = 0;
+    for (const item of pending) {
+      try {
+        unwrapCanonicalResult(await binding.session.updateQueue(item.id, { kind: 'remove' }), 'session.updateQueue');
+        this.retireRemovedAlias(item);
+        removed.push(item);
+      } catch (_error) {
+        failed += 1;
+      }
+    }
+    return { removed, failed, cancelFailed };
+  }
+
+  private pendingQueue(): DshQueuedPrompt[] {
+    return parseInboxQueue(this.requireBinding().session.projections.faceOf('inbox').getSnapshot(),
+      this.sessionRunning, this.requireCanonical().requestAliases);
+  }
+
+  private retireRemovedAlias(item: DshQueuedPrompt): void {
+    if (item.requestId === undefined) return;
+    const aliases = this.requireCanonical().requestAliases;
+    for (const [canonicalId, localId] of aliases) {
+      if (localId === item.requestId) aliases.delete(canonicalId);
+    }
   }
 
   /** Selects one DSH provider, model, and optional reasoning effort for this Session. */
@@ -1935,12 +2042,17 @@ export class DshClient {
     const canonical = this.canonical;
     if (canonical === undefined || canonical.requestAliases.size === 0) return;
     let turn = 0;
+    let step = 0;
     for (const entry of entries) {
       if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) continue;
       const event = entry.event;
       if (!isRecord(event.data)) continue;
       const data = event.data;
-      if (event.type === 'turn/start' && typeof data.turn === 'number') turn = data.turn;
+      if (event.type === 'turn/start' && typeof data.turn === 'number') {
+        turn = data.turn;
+        step = 0;
+      }
+      if (event.type === 'step/start' && typeof data.step === 'number') step = data.step;
       if (event.type !== 'user/message' || !isRecord(data.source)
         || typeof data.source.rpcId !== 'string') continue;
       const alias = canonical.requestAliases.get(data.source.rpcId);
@@ -1951,6 +2063,8 @@ export class DshClient {
         contentText(data.content),
         typeof event.time === 'number' ? event.time : Date.now(),
         turn,
+        step,
+        contentImages(data.content),
       );
     }
   }
@@ -2069,6 +2183,7 @@ export class DshClient {
     }
 
     if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
+      this.currentStep = 0;
       const startedAt = typeof event.time === 'number' ? event.time : Date.now();
       this.turnStats = new TurnStats(startedAt);
       this.sink.process({
@@ -2125,6 +2240,16 @@ export class DshClient {
       return;
     }
 
+    if (event.type === 'session/end-seed') {
+      if (!older && this.compactionActive()) {
+        for (const id of this.activeCompactions) this.sink.compaction({ type: 'interrupted', id });
+        this.activeCompactions.clear();
+        this.activeCompactionCommands.clear();
+        if (!fromSnapshot) this.sink.compacting(false);
+      }
+      return;
+    }
+
     const compaction = parseCompactionEvent(event);
     if (compaction !== undefined) {
       if (!older && compaction.type === 'start') {
@@ -2134,7 +2259,8 @@ export class DshClient {
         }
       }
       if (!older && compaction.type === 'end') this.activeCompactions.delete(compaction.id);
-      this.sink.compaction(compaction);
+      this.sink.compaction(!older && !fromSnapshot && compaction.type === 'start'
+        ? { ...compaction, live: true } : compaction);
       if (!older && !fromSnapshot && compaction.type !== 'summary') {
         this.sink.compacting(this.compactionActive());
       }
@@ -2150,17 +2276,21 @@ export class DshClient {
     if (event.type === 'user/message') {
       if (isRecord(event.data.source) && event.data.source.kind !== 'user') {
         if (event.data.source.kind === 'plugin' && event.data.source.plugin === 'compact') return;
+        const presentation = contextPresentation(event.data.source);
         this.sink.process({
           type: 'context',
           id: `turn:${String(this.currentTurn)}:context:${String(event.seq)}`,
           turn: this.currentTurn,
-          label: typeof event.data.source.plugin === 'string'
-            ? event.data.source.plugin
-            : 'Context injection',
+          label: presentation.label,
+          ...(presentation.summary === undefined ? {} : { summary: presentation.summary }),
           detail: contentText(event.data.content),
+          ...(typeof event.data.id === 'string' ? { messageId: event.data.id } : {}),
         });
       } else if (fromSnapshot) {
-        emitContent(this.sink, 'user', event.data.content, event.time);
+        const text = contentText(event.data.content);
+        const images = contentImages(event.data.content);
+        if (text.length > 0 || images.length > 0) this.sink.history('user', text,
+          typeof event.time === 'number' ? event.time : undefined, this.currentTurn, this.currentStep, images);
       } else {
         const canonicalRequestId = isRecord(event.data.source) && typeof event.data.source.rpcId === 'string'
           ? event.data.source.rpcId
@@ -2174,6 +2304,8 @@ export class DshClient {
           contentText(event.data.content),
           typeof event.time === 'number' ? event.time : Date.now(),
           this.currentTurn,
+          this.currentStep,
+          contentImages(event.data.content),
         );
       }
       return;
@@ -2403,7 +2535,8 @@ function isCanonicalBinding(value: unknown): value is CanonicalBinding {
     && typeof value.session.sessionId === 'string' && isObservable(value.session)
     && isRecord(value.session.projections) && typeof value.session.projections.faceOf === 'function'
     && typeof value.session.beginSubmission === 'function' && typeof value.session.prompt === 'function'
-    && typeof value.session.cancel === 'function' && typeof value.session.loadOlder === 'function';
+    && typeof value.session.updateQueue === 'function' && typeof value.session.cancel === 'function'
+    && typeof value.session.loadOlder === 'function';
 }
 
 async function callCanonicalRemote(
@@ -2484,6 +2617,30 @@ export function parseSessionListSnapshot(value: unknown): DshSessionListSnapshot
   return { phase: value.phase, sessions };
 }
 
+/** Presents a DSH context source without interpreting its model-visible text. */
+export function contextPresentation(source: Record<string, unknown>): { label: string; summary?: string } {
+  const labels: Record<string, string> = {
+    'agent-message': 'Subagent message',
+    'subagent-settled': 'Subagent finished',
+    'tool-jobs': 'Background job',
+    'runtime-context': 'Runtime context',
+    goal: 'Goal update',
+    'compact-checkpoint': 'Compaction checkpoint',
+    'tool-goal': 'Tool goal',
+    'agent-instructions': 'Agent instructions',
+    'user-approval': 'Approval context',
+  };
+  const label = typeof source.kind === 'string' && Object.hasOwn(labels, source.kind)
+    ? labels[source.kind] : 'Context update';
+  const summary = source.kind !== 'agent-message' && source.kind !== 'subagent-settled'
+    && source.form === 'notice' && typeof source.summary === 'string'
+    ? source.summary.replace(/\s+/gu, ' ').trim().slice(0, 120) : '';
+  return {
+    label,
+    ...(summary === '' ? {} : { summary }),
+  };
+}
+
 /** Validates and projects the DSH-owned Inbox queue for the composer dock. */
 export function parseInboxQueue(
   value: unknown,
@@ -2500,13 +2657,25 @@ export function parseInboxQueue(
     ['next-turn', value['next-turn']],
   ] as const) {
     for (const message of messages) {
-      if (!isRecord(message) || typeof message.id !== 'string' || !isRecord(message.source)) {
+      if (!isRecord(message) || typeof message.id !== 'string' || !isRecord(message.source)
+        || typeof message.source.kind !== 'string') {
         throw new Error('DSH Client returned an invalid Inbox message');
       }
       const rpcId = typeof message.source.rpcId === 'string' ? message.source.rpcId : undefined;
+      const images = contentImages(message.content);
+      const restorable = Array.isArray(message.content) && message.content.length > 0
+        && message.content.every((part: unknown) => isRecord(part)
+          && (part.type === 'text' && typeof part.text === 'string' || part.type === 'image'));
       rows.push({
         id: message.id,
+        sourceKind: message.source.kind === 'user' || message.source.kind === 'agent-message'
+          || message.source.kind === 'subagent-settled' ? message.source.kind : 'other',
+        ...(message.source.kind === 'user' ? {} : { contextLabel: contextPresentation(message.source).label }),
         text: contentText(message.content),
+        textOnly: Array.isArray(message.content) && message.content.length > 0
+          && message.content.every((part: unknown) => isRecord(part) && part.type === 'text' && typeof part.text === 'string'),
+        images,
+        takeBackAvailable: restorable && (contentText(message.content).trim().length > 0 || images.length > 0),
         placement: target === 'next-turn' ? 'queued' : running ? 'steering' : 'context',
         ...(rpcId === undefined ? {} : { requestId: aliases.get(rpcId) ?? rpcId }),
       });
@@ -3103,6 +3272,29 @@ function contentText(content: unknown): string {
     ))
     .map((part) => part.text)
     .join('\n');
+}
+
+function parseImageAttachment(value: unknown): DshImageAttachment {
+  if (!isRecord(value) || typeof value.attachmentId !== 'string' || value.attachmentId.length === 0
+    || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(value.mediaType))
+    || !Number.isSafeInteger(value.bytes) || Number(value.bytes) <= 0
+    || !Number.isSafeInteger(value.width) || Number(value.width) <= 0
+    || !Number.isSafeInteger(value.height) || Number(value.height) <= 0
+    || (value.name !== undefined && typeof value.name !== 'string')) {
+    throw new Error('DSH returned an invalid image reference');
+  }
+  return {
+    attachmentId: value.attachmentId,
+    mediaType: value.mediaType as UserImageUpload['mediaType'],
+    bytes: Number(value.bytes), width: Number(value.width), height: Number(value.height),
+    ...(value.name === undefined ? {} : { name: value.name as string }),
+  };
+}
+
+function contentImages(content: unknown): DshImageAttachment[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter((part: unknown) => isRecord(part) && part.type === 'image')
+    .map((part: unknown) => parseImageAttachment(isRecord(part) ? part.attachment : undefined));
 }
 
 function toolSummary(name: string, detail: string): string {
