@@ -15,6 +15,42 @@ test('serializes chat messages, tools, images, and effort', async () => {
   assert.equal(body.tools[0].function.name, 'weather')
 })
 
+test('passes image-bearing tool results to the wrapper without changing text-only results', async () => {
+  const image = { mediaType: 'image/png' }
+  const seen = []
+  const signal = new AbortController().signal
+  const body = await serializeClaudeWireRequest({
+    provider: 'claude-wrapper-advanced', model: 'sonnet-5', signal,
+    messages: [
+      { role: 'tool', toolCallId: 'plain', content: [{ type: 'text', text: 'plain result' }] },
+      { role: 'tool', toolCallId: 'image', content: [
+        { type: 'text', text: 'Screenshot' },
+        { type: 'image', attachment: image },
+        { type: 'text', text: 'End of result' },
+      ] },
+    ],
+  }, { wireModel: 'sonnet-5', imageUrl: async (ref, receivedSignal) => {
+    seen.push([ref, receivedSignal])
+    return 'data:image/png;base64,AA=='
+  } })
+  assert.deepEqual(body.messages, [
+    { role: 'tool', tool_call_id: 'plain', content: 'plain result' },
+    { role: 'tool', tool_call_id: 'image', content: [
+      { type: 'text', text: 'Screenshot' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      { type: 'text', text: 'End of result' },
+    ] },
+  ])
+  assert.deepEqual(seen, [[image, signal]])
+})
+
+test('does not treat assistant-only blocks in tool results as ordinary text', async () => {
+  await assert.rejects(serializeClaudeWireRequest({
+    provider: 'claude-wrapper-advanced', model: 'sonnet-5',
+    messages: [{ role: 'tool', toolCallId: 'call', content: [{ type: 'reasoning', text: 'private' }] }],
+  }, { wireModel: 'sonnet-5', imageUrl: async () => '' }), error => error.code === 'UNSUPPORTED_CONTENT')
+})
+
 test('rejects unsupported controls outside compaction', async () => {
   const base = { provider: 'claude-wrapper-advanced', model: 'opus-4-8', messages: [] }
   const options = { wireModel: 'opus-4-8', imageUrl: async () => '' }

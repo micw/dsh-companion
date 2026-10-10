@@ -53,21 +53,31 @@ async function appendMessage(out: unknown[], message: RequestMessage, imageUrl: 
     return
   }
   if (message.role === 'tool') {
-    out.push({ role: 'tool', tool_call_id: String(message.toolCallId), content: textOnly(message.content, 'tool result') })
+    if (message.content.some(block => block.type !== 'text' && block.type !== 'image')) {
+      throw new LlmError('Claude Wrapper Advanced tool result contains unsupported content', 'UNSUPPORTED_CONTENT')
+    }
+    const content = message.content.every(block => block.type === 'text')
+      ? textOnly(message.content, 'tool result')
+      : await inputContent(message.content, imageUrl, signal)
+    out.push({ role: 'tool', tool_call_id: String(message.toolCallId), content })
     return
   }
   if (message.role === 'developer') {
     out.push({ role: 'developer', content: textOnly(message.content, 'developer') })
     return
   }
+  out.push({ role: 'user', content: await inputContent(message.content, imageUrl, signal) })
+}
+
+async function inputContent(contentBlocks: readonly ContentBlock[], imageUrl: ClaudeWireRequestOptions['imageUrl'], signal?: AbortSignal): Promise<unknown[]> {
   const content: unknown[] = []
-  for (const block of message.content) {
+  for (const block of contentBlocks) {
     if (block.type === 'text') content.push({ type: 'text', text: block.text })
     else if (block.type === 'image') content.push({ type: 'image_url', image_url: { url: await imageUrl((block as ImageBlock).attachment, signal) } })
     else if (block.type === 'reasoning' || block.type === 'tool-call') content.push({ type: 'text', text: embeddedText(block) })
-    else throw new LlmError(`Unsupported user block ${JSON.stringify(block.type)}`, 'UNSUPPORTED_CONTENT')
+    else throw new LlmError(`Unsupported input block ${JSON.stringify(block.type)}`, 'UNSUPPORTED_CONTENT')
   }
-  out.push({ role: 'user', content })
+  return content
 }
 
 function textOnly(content: readonly ContentBlock[], label: string): string {
