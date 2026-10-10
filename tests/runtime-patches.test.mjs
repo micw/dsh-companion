@@ -33,6 +33,7 @@ test('the exact DSH runtime pin and ordered patch series are integrity checked',
     'agent-preset-fallbacks',
     'compress-enhanced-sea-assets',
     'agent-session-title-proposal',
+    'label-configured-user-global-instructions',
   ]);
 });
 
@@ -90,6 +91,15 @@ test('the title patch accepts model proposals without changing the persisted sou
   assert.match(text, /JSONL|persist|round.trip/iu);
   assert.doesNotMatch(text, /kind: 'agent'/u);
   assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-session-title', '@deepseek-ai/dsh-tool-cordis']);
+});
+
+test('the global instructions patch labels the configured source and scope', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { patch, text } = await patchText(manifest, 'label-configured-user-global-instructions');
+  assert.match(text, /fromHome = relative\(homedir\(\), dshHome\)/u);
+  assert.match(text, /These user-global instructions apply across workspaces/u);
+  assert.match(text, /~\/\.agents\/AGENTS\.md/u);
+  assert.deepEqual(patch.affectedModules, ['@deepseek-ai/dsh-agent-instructions']);
 });
 
 test('the executable patch compresses the existing enhanced SEA closure', async () => {

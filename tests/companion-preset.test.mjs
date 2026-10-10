@@ -28,6 +28,7 @@ test('the Companion preset tracks pinned DSH standard except fork delegation and
   assert.deepEqual(rowIds(companion).filter(id => id !== 'tool-session-title'), standardIds);
   assert.match(companion, /- id: tool-session-title\n\s+name: '@dsh-companion\/tool-session-title'/u);
   assert.match(companion, /id: dsh-companion/u);
+  assert.match(companion, /- id: agent-instructions\n\s+name: '@deepseek-ai\/dsh-agent-instructions'\n\s+config:\n\s+dshHome: !!js process\.getBuiltinModule\('node:path'\)\.join\(process\.getBuiltinModule\('node:os'\)\.homedir\(\), '\.agents'\)\n\s+maxBytes: 65536/u);
   assert.doesNotMatch(companion, /tool-subagent-fork|subagent_fork|provider: fork/u);
 });
 
