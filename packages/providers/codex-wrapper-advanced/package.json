@@ -35,19 +35,19 @@
     "@deepseek-ai/dsh-settings": "0.1.7-rc.2"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "link:../deepseek-harness/vendor/schemastery",
-    "@dsh-companion/model-policy": "link:../dsh-companion/packages/model-policy",
-    "@dsh-companion/provider-account": "link:../dsh-companion/packages/provider-account",
-    "@dsh-companion/provider-catalog": "link:../dsh-companion/packages/provider-catalog",
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
+    "@dsh-companion/model-policy": "workspace:*",
+    "@dsh-companion/provider-account": "workspace:*",
+    "@dsh-companion/provider-catalog": "workspace:*",
     "eventsource-parser": "^3.1.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "link:../deepseek-harness/vendor/cordis",
-    "@deepseek-ai/cordis-plugin-loader": "link:../deepseek-harness/vendor/loader",
-    "@deepseek-ai/dsh-attachment": "link:../deepseek-harness/packages/attachment/attachment",
-    "@deepseek-ai/dsh-credentials": "link:../deepseek-harness/packages/credentials/credentials",
-    "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",
-    "@deepseek-ai/dsh-settings": "link:../deepseek-harness/packages/settings/settings",
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis-plugin-loader": "link:../../../../deepseek-harness/vendor/loader",
+    "@deepseek-ai/dsh-attachment": "link:../../../../deepseek-harness/packages/attachment/attachment",
+    "@deepseek-ai/dsh-credentials": "link:../../../../deepseek-harness/packages/credentials/credentials",
+    "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
+    "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.2"
   },

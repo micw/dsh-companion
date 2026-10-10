@@ -10,12 +10,14 @@ The wrapper process, wrapper authentication, wrapper deployment, and wrapper upd
 
 Requirements: Node.js 22 or newer and pnpm 11.7.
 
+Run installation and focused checks from the DSH Companion monorepo root:
+
 ```bash
 pnpm install
-pnpm test
+pnpm --filter @dsh-companion/provider-codex-wrapper-advanced test
 ```
 
-Local development links the pinned DSH source checkout in the sibling `deepseek-harness` directory. Distribution and optional installation policy remain undecided; development and internal builds install this package locally.
+This package is part of the root pnpm workspace; internal Companion dependencies use `workspace:*`. Local development links the pinned DSH source checkout in `../deepseek-harness` relative to the monorepo root (`../../../../deepseek-harness` relative to this package). Distribution and optional installation policy remain undecided; development and internal builds install this package locally.
 
 The provider is disabled by default. Enabling it requires an explicit service URL; credentials remain in DSH's credential store.
 

@@ -37,22 +37,22 @@
     "@deepseek-ai/dsh-settings": "0.1.7-rc.2"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "link:../deepseek-harness/vendor/schemastery",
+    "@deepseek-ai/schemastery": "link:../../../../deepseek-harness/vendor/schemastery",
     "@earendil-works/pi-ai": "^0.85.1",
-    "@dsh-companion/model-policy": "link:../dsh-companion/packages/model-policy",
-    "@dsh-companion/provider-account": "link:../dsh-companion/packages/provider-account",
-    "@dsh-companion/provider-catalog": "link:../dsh-companion/packages/provider-catalog"
+    "@dsh-companion/model-policy": "workspace:*",
+    "@dsh-companion/provider-account": "workspace:*",
+    "@dsh-companion/provider-catalog": "workspace:*"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "link:../deepseek-harness/vendor/cordis",
-    "@deepseek-ai/cordis-plugin-loader": "link:../deepseek-harness/vendor/loader",
-    "@deepseek-ai/cosmokit": "link:../deepseek-harness/vendor/cosmokit",
-    "@deepseek-ai/dsh-attachment": "link:../deepseek-harness/packages/attachment/attachment",
-    "@deepseek-ai/dsh-config-editor": "link:../deepseek-harness/packages/boot/config-editor",
-    "@deepseek-ai/dsh-credentials": "link:../deepseek-harness/packages/credentials/credentials",
-    "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",
-    "@deepseek-ai/dsh-llm-pi-ai": "link:../deepseek-harness/packages/llm/llm-pi-ai",
-    "@deepseek-ai/dsh-settings": "link:../deepseek-harness/packages/settings/settings",
+    "@deepseek-ai/cordis": "link:../../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis-plugin-loader": "link:../../../../deepseek-harness/vendor/loader",
+    "@deepseek-ai/cosmokit": "link:../../../../deepseek-harness/vendor/cosmokit",
+    "@deepseek-ai/dsh-attachment": "link:../../../../deepseek-harness/packages/attachment/attachment",
+    "@deepseek-ai/dsh-config-editor": "link:../../../../deepseek-harness/packages/boot/config-editor",
+    "@deepseek-ai/dsh-credentials": "link:../../../../deepseek-harness/packages/credentials/credentials",
+    "@deepseek-ai/dsh-llm": "link:../../../../deepseek-harness/packages/llm/llm",
+    "@deepseek-ai/dsh-llm-pi-ai": "link:../../../../deepseek-harness/packages/llm/llm-pi-ai",
+    "@deepseek-ai/dsh-settings": "link:../../../../deepseek-harness/packages/settings/settings",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.2"
   },
