@@ -73,7 +73,7 @@ export async function serializeCodexWireRequest(
 function rejectUnsupportedControls(request: GenerateOptions): void {
   const unsupported = [
     request.temperature === undefined ? undefined : 'temperature',
-    request.maxTokens === undefined || request.purpose === 'compaction' ? undefined : 'maxTokens',
+    request.maxTokens === undefined || request.purpose === 'compaction' || request.purpose === 'session-title' ? undefined : 'maxTokens',
     request.stop === undefined ? undefined : 'stop',
   ].filter((name): name is string => name !== undefined)
   if (unsupported.length > 0) {

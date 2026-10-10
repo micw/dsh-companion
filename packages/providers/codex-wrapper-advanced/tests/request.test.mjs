@@ -170,6 +170,17 @@ test('admits DSH compaction when the backend cannot enforce its output cap', asy
   assert.equal(request.input[0].content[0].text, 'Summarize this session.')
 })
 
+test('admits an auxiliary DSH title request while omitting its unsupported output cap', async () => {
+  const request = await serializeCodexWireRequest({
+    ...base,
+    purpose: 'session-title',
+    maxTokens: 64,
+    messages: [message('user', [{ type: 'text', text: 'Give this session a short title.' }], { kind: 'dsh-session-title-llm' })],
+  }, { wireModel: 'gpt-5.6-sol', imageUrl })
+  assert.equal('max_output_tokens' in request, false)
+  assert.equal(request.input[0].content[0].text, 'Give this session a short title.')
+})
+
 let nextMessage = 0
 function message(role, content, source) {
   nextMessage += 1
