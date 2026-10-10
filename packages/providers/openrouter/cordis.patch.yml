@@ -1,0 +1,5 @@
+# Dedicated dynamic OpenRouter provider for DSH Companion.
+- insert:
+    - id: dsh-companion-provider-openrouter
+      name: '@dsh-companion/provider-openrouter'
+      config: {}
