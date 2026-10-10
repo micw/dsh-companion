@@ -3,7 +3,7 @@ import test from 'node:test'
 import { apply, requireTitleAgent } from '../lib/index.js'
 
 function fixture() {
-  const session = { id: 'current' }
+  const session = { id: 'current', header: { isSeeded: false }, isOwnSeq: seq => seq >= 4 }
   const agent = { id: 'root', status: 'running', session }
   let current = agent
   let live = agent
@@ -53,6 +53,18 @@ test('live title context follows canonical revisions and restored sessions', () 
     'Current session title (set by the user; do not change it): My chosen title')
   state.setRoots([])
   assert.equal(state.context.text({ agent: state.agent }), '')
+})
+
+test('fork context asks for a branch title until the child owns one', () => {
+  const state = fixture()
+  state.session.header.isSeeded = true
+  state.setTitle({ title: 'Original', eventSeq: 2, messageSeqs: [1], source: { kind: 'user' } })
+  assert.match(state.context.text({ agent: state.agent }), /This conversation is a fork/u)
+  assert.match(state.context.text({ agent: state.agent }), /call set_session_title once/u)
+  state.setTitle({ title: 'Branch', eventSeq: 6, messageSeqs: [5],
+    source: { kind: 'provider', provider: 'dsh-companion/agent-title-tool' } })
+  assert.equal(state.context.text({ agent: state.agent }),
+    'Current session title: Branch\nIf the latest user request starts a distinct primary task that this title no longer describes, call set_session_title once with a concise replacement. Keep the title for follow-ups and subtasks.')
 })
 
 test('tool description distinguishes a new primary task from follow-ups and protects user titles', () => {

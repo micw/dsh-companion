@@ -30,6 +30,23 @@ export class CompanionSessionTitle extends TypertRemoteService {
     const snapshot = await this.ctx.sessionTitle.refresh(session, signal)
     return snapshot?.title
   }
+
+  /** Release only a fork-inherited user pin so the branch agent may set its own title. */
+  @Remote('prepareForkTitle')
+  async prepareForkTitle(sessionId: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.trim() !== sessionId) {
+      throw new Error('A nonempty canonical session id is required')
+    }
+    const session = this.ctx.sessions.get(SessionId(sessionId))
+    if (session === undefined || !session.header.isSeeded || session.header.origin === 'subagent') {
+      throw new Error('A live ordinary fork is required')
+    }
+    const title = this.ctx.sessionTitle.get(session)
+    if (title?.source.kind === 'user' && !session.isOwnSeq(title.eventSeq)) {
+      await this.ctx.sessionTitle.refresh(session, signal)
+    }
+  }
 }
 
 export default CompanionSessionTitle

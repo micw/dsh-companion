@@ -36,6 +36,13 @@ export function apply(ctx: Context): void {
     text: ({ agent }) => {
       if (agent === undefined || ctx.agents.get(agent.id) !== agent || !ctx.agents.roots().includes(agent)) return ''
       const title = ctx.sessionTitle.get(agent.session)
+      const fork = agent.session.header.isSeeded && agent.session.header.origin !== 'subagent'
+      const childTitle = title?.source.kind === 'user' && agent.session.isOwnSeq(title.eventSeq)
+        || title?.source.kind === 'provider' && title.source.provider === TITLE_PROVIDER_ID
+          && title.messageSeqs.some(seq => agent.session.isOwnSeq(seq))
+      if (fork && !childTitle) {
+        return `This conversation is a fork of an earlier session. Its inherited title is not the title of this branch. After the first new user request, call set_session_title once with a concise title for this branch's task. Do not include "forked" in the title. Current inherited title: ${title?.title ?? 'Untitled'}`
+      }
       if (title === undefined) return ''
       if (title.source.kind === 'user') return `Current session title (set by the user; do not change it): ${title.title}`
       return `Current session title: ${title.title}\nIf the latest user request starts a distinct primary task that this title no longer describes, call set_session_title once with a concise replacement. Keep the title for follow-ups and subtasks.`

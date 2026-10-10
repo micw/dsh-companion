@@ -38,6 +38,14 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 
 **Completion:** OpenAI and DeepSeek appear as installed families, create independently validated instances without a second settings contract, and pass the same credential, route identity, rollback, restore, REAL-composition, and packaged-runtime checks as OpenRouter.
 
+### COMP-009 — Show Session fork lineage in the browser
+
+**Current behavior:** DSH records each ordinary fork's parent Session and inherited prefix, but Companion's Session browser presents child and source as separate flat entries.
+
+**Deferred work:** Expose DSH's parent Session identity in the validated browser projection and present a clear, restorable source–fork relationship without creating a second lineage registry.
+
+**Completion:** The browser distinguishes a fork from its source after live updates and restart, including when the source is no longer available.
+
 ## DSH dependencies
 
 ### DSH-001 — Separate Session model selection from the global default

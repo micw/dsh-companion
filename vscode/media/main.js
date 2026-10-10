@@ -84,6 +84,7 @@ const send = document.getElementById('send');
 const sendLabel = document.getElementById('send-label');
 const stop = document.getElementById('stop');
 const status = document.getElementById('status');
+const forkDraftBanner = document.getElementById('fork-draft-banner');
 const restored = vscode.getState() ?? {};
 const restoredSessionId = typeof restored.sessionId === 'string' ? restored.sessionId : undefined;
 const restoredDisclosures = isRecord(restored.disclosures) ? { ...restored.disclosures } : {};
@@ -93,11 +94,13 @@ if (isRecord(restored.processOpenByTurn)) {
   }
 }
 const state = {
-  version: 2,
+  version: 3,
   sessionId: restoredSessionId,
+  forkDraft: isRecord(restored.forkDraft) ? restored.forkDraft : undefined,
   scrollTop: 0,
   disclosures: { ...restoredDisclosures },
 };
+forkDraftBanner.hidden = state.forkDraft === undefined;
 let turns = new Map();
 let tools = new Map();
 let approvalRows = new Map();
@@ -680,13 +683,34 @@ function applyHostMessage(message) {
     updateInputAvailability();
     return;
   }
+  if (message.type === 'forkDraft' && isRecord(message.draft)
+    && typeof message.draft.sourceSessionId === 'string'
+    && Number.isSafeInteger(message.draft.atSeq)) {
+    state.forkDraft = message.draft;
+    state.sessionId = undefined;
+    forkDraftBanner.hidden = false;
+    providerSettingsTrigger.disabled = true;
+    renderModelTrigger();
+    renderPermissionSelect();
+    renderContextMeter();
+    updateInputAvailability();
+    saveState();
+    return;
+  }
   if (message.type === 'session') {
     state.sessionId = message.sessionId;
+    state.forkDraft = undefined;
+    forkDraftBanner.hidden = true;
+    providerSettingsTrigger.disabled = false;
+    renderModelTrigger();
+    renderPermissionSelect();
+    renderContextMeter();
     updateInputAvailability();
     if (message.sessionId === restoredSessionId) {
       requestAnimationFrame(setOutputFollow);
     }
     saveState();
+    vscode.postMessage({ type: 'sessionBound', sessionId: message.sessionId });
     return;
   }
   if (message.type === 'sessionInformation') {
@@ -1110,6 +1134,17 @@ function applyHostMessage(message) {
     renderQueue();
     return;
   }
+  if (message.type === 'restoreSubmission') {
+    if (typeof message.text !== 'string' || !Array.isArray(message.images)
+      || message.images.length > 20 || !message.images.every(validImageUpload)) return;
+    if (prompt.value.trim() !== '' || pendingImages.length > 0) return;
+    prompt.value = message.text;
+    pendingImages = message.images.map(pendingImageFromUpload);
+    renderImageTray();
+    autoGrowPrompt();
+    updateInputAvailability();
+    return;
+  }
   if (message.type === 'submissionObserved') {
     pendingSubmissions.delete(message.requestId);
     renderQueue();
@@ -1525,6 +1560,24 @@ function applyProcessEvent(event) {
   if (event.type === 'turn-end') {
     clearPendingAgentRows(pendingAgentRows, event.turn);
     completeTurn(turn, event.time, event.reason);
+    if (Number.isSafeInteger(event.seq) && event.seq >= 0 && state.forkDraft === undefined) {
+      const footer = turn.footer ?? document.createElement('div');
+      if (turn.footer === undefined) {
+        footer.className = 'turn-footer';
+        renderTarget.append(footer);
+        turn.footer = footer;
+      }
+      const fork = document.createElement('button');
+      fork.type = 'button';
+      fork.className = 'turn-fork';
+      fork.textContent = 'Fork';
+      fork.title = 'Fork after this turn';
+      fork.setAttribute('aria-label', `Fork after turn ${String(event.turn)}`);
+      fork.addEventListener('click', () => vscode.postMessage({ type: 'forkAt', atSeq: event.seq }));
+      const clock = footer.querySelector('.turn-footer-clock');
+      if (clock === null) footer.append(fork);
+      else footer.insertBefore(fork, clock);
+    }
     markUnresolvedApprovals(event.turn);
     for (const segment of turn.segments) {
       const key = segment.root.dataset.disclosureId;
@@ -1963,6 +2016,7 @@ function appendTurnSummary(turn, summary) {
   if (turnState !== undefined && Number.isFinite(summary.runMs)) turnState.runMs = summary.runMs;
   const footer = document.createElement('div');
   footer.className = 'turn-footer';
+  if (turnState !== undefined) turnState.footer = footer;
   if (isRecord(summary.usage)) footer.append(usageControl(turn, summary.usage));
   if (isCostSummary(summary.cost)) footer.append(costControl(turn, summary.cost));
   footer.append(timingControl(turn, summary));
@@ -2639,7 +2693,8 @@ function renderModelTrigger() {
     ? 'Model and effort can be changed after the current activity finishes.'
     : label;
   modelTrigger.setAttribute('aria-label', `Select model, current ${label}`);
-  modelTrigger.disabled = running || compacting || modelSelecting || modelCatalog === undefined;
+  modelTrigger.disabled = state.forkDraft !== undefined || running || compacting || modelSelecting
+    || modelCatalog === undefined;
   modelTrigger.dataset.configure = modelCatalog?.routableProviders.length === 0 ? 'true' : 'false';
 }
 
@@ -2659,7 +2714,7 @@ function renderPermissionSelect() {
   const current = permissionSelection.options.find(item => item.value === permissionSelection.currentValue);
   permissionSelect.title = current?.description
     ?? `Session permission: ${current?.name ?? permissionSelection.currentValue}`;
-  permissionSelect.disabled = running || compacting || permissionSelecting;
+  permissionSelect.disabled = state.forkDraft !== undefined || running || compacting || permissionSelecting;
 }
 
 function displayPermissionName(item) {
@@ -3190,8 +3245,8 @@ function renderContextMeter() {
   const usedTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
   const contextWindow = contextPressure?.contextWindow;
   const available = Number.isSafeInteger(usedTokens) && Number.isSafeInteger(contextWindow) && contextWindow > 0;
-  contextMeter.hidden = !available;
-  if (!available) {
+  contextMeter.hidden = state.forkDraft !== undefined || !available;
+  if (state.forkDraft !== undefined || !available) {
     closeContextPanel();
     return;
   }
@@ -3203,7 +3258,7 @@ function renderContextMeter() {
   contextTrigger.title = `${label} · ~${compactTokens(usedTokens)} / ${compactTokens(contextWindow)}`;
   contextReading.textContent = label;
   contextFigures.textContent = `~${compactTokens(usedTokens)} / ${compactTokens(contextWindow)}`;
-  compactButton.hidden = !compactAvailable;
+  compactButton.hidden = state.forkDraft !== undefined || !compactAvailable;
   compactButton.disabled = running || compacting || compactionSubmitGate.locked;
   compactButton.textContent = compacting || compactionSubmitGate.locked ? 'Compacting…' : 'Compact';
 }
@@ -3288,8 +3343,9 @@ function updateInputAvailability() {
   prompt.disabled = compactionSubmitGate.locked;
   prompt.readOnly = sending || [...pendingQueueActions.values()].includes('takeBack');
   send.disabled = !clientReady || sending || stopping || prompt.readOnly || compactionSubmitGate.locked || imageReading
-    || !selectedModelEnabled() || pendingImages.length > 0 && !selectedModelAcceptsImages();
-  stop.hidden = !running && !compacting && !hasWaitingQueue();
+    || state.forkDraft === undefined && (!selectedModelEnabled()
+      || pendingImages.length > 0 && !selectedModelAcceptsImages());
+  stop.hidden = state.forkDraft !== undefined || !running && !compacting && !hasWaitingQueue();
   stop.disabled = stopping;
   composer.dataset.running = running || compacting ? 'true' : 'false';
   renderSendAction();

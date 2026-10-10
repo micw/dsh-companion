@@ -509,6 +509,17 @@ code.approval-field-value { font-family: var(--vscode-editor-font-family); }
   color: var(--vscode-descriptionForeground);
 }
 
+.turn-fork {
+  border: 0;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82em;
+  padding: 4px 6px;
+}
+.turn-fork:hover, .turn-fork:focus-visible { color: var(--vscode-foreground); }
+
 .turn-footer-clock {
   margin-left: auto;
   font-size: 0.82em;
@@ -1520,6 +1531,15 @@ code.approval-field-value { font-family: var(--vscode-editor-font-family); }
   color: var(--vscode-descriptionForeground);
   background: transparent;
   font-size: 0.8em;
+}
+
+#fork-draft-banner {
+  width: calc(100% - 40px);
+  margin: 0 20px 4px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
 }
 
 #status[data-running='true']::before {
