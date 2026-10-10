@@ -38,6 +38,6 @@ The wrapper and Claude CLI own cache behavior. Final cache read/write counters a
 - Turn-scoped costs rely on the patched DSH replacement contract; the wrapper owns epoch coverage.
 - `by_model` can contain internal CLI work and is not exposed yet.
 - Thinking progress is estimated and transient, never a replacement for final reasoning usage.
-- The wire cannot enforce DSH output caps. `maxTokens` remains unsupported for normal calls; compaction alone follows the established best-effort adapter convention and omits its cap so DSH compaction can run.
+- The wire cannot enforce DSH output caps. `maxTokens` remains unsupported for normal calls; compaction and auxiliary session-title requests follow the best-effort adapter convention and omit their caps so DSH compaction and title generation can run.
 - No native replay exists.
 - Public packaging and provider-specific DSH Web settings remain deferred.

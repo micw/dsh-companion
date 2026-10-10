@@ -23,6 +23,15 @@ test('rejects unsupported controls outside compaction', async () => {
   await assert.rejects(serializeClaudeWireRequest({ ...base, stop: ['END'] }, options), error => error.code === 'UNSUPPORTED_OPTION' && /stop/u.test(error.message))
 })
 
+test('admits an auxiliary DSH title request without forwarding its unsupported output cap', async () => {
+  const body = await serializeClaudeWireRequest({
+    provider: 'claude-wrapper-advanced', model: 'opus-4-8', purpose: 'session-title', maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Give this session a short title.' }] }],
+  }, { wireModel: 'opus-4-8', imageUrl: async () => '' })
+  assert.equal('max_tokens' in body, false)
+  assert.equal(body.messages[0].content[0].text, 'Give this session a short title.')
+})
+
 test('admits DSH compaction when the backend cannot enforce its output cap', async () => {
   const body = await serializeClaudeWireRequest({
     provider: 'claude-wrapper-advanced',
