@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { stageInputAllowed } from './fingerprint.mjs';
 import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
 
 const TARGET = 'linux-x64';
@@ -20,19 +21,19 @@ const { values } = parseArgs({
   options: {
     source: { type: 'string' },
     output: { type: 'string' },
-    'companion-version': { type: 'string' },
+    'runtime-id': { type: 'string' },
   },
   strict: true,
 });
-if (values.source === undefined || values.output === undefined || values['companion-version'] === undefined) {
-  throw new Error('Usage: build-linux.mjs --source <dsh-checkout> --output <absent-directory> --companion-version <x.y.z>');
+if (values.source === undefined || values.output === undefined || values['runtime-id'] === undefined) {
+  throw new Error('Usage: build-linux.mjs --source <dsh-checkout> --output <absent-directory> --runtime-id <sha256>');
 }
 if (process.platform !== 'linux' || process.arch !== 'x64') {
   throw new Error(`Linux runtime build requires linux-x64, got ${process.platform}-${process.arch}`);
 }
-const companionVersion = values['companion-version'];
-if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(companionVersion)) {
-  throw new Error(`Invalid Companion version ${JSON.stringify(companionVersion)}`);
+const runtimeId = values['runtime-id'];
+if (!/^[0-9a-f]{64}$/u.test(runtimeId)) {
+  throw new Error(`Invalid Runtime id ${JSON.stringify(runtimeId)}`);
 }
 const source = resolve(values.source);
 const output = resolve(values.output);
@@ -87,8 +88,8 @@ try {
     ),
   ];
   const runtimeManifest = {
-    formatVersion: 1,
-    companionVersion,
+    formatVersion: 2,
+    runtimeId,
     target: TARGET,
     dsh: {
       upstreamRepository: manifest.upstream.repository,
@@ -114,7 +115,7 @@ try {
   };
   await writeFile(join(output, 'runtime-manifest.json'), `${JSON.stringify(runtimeManifest, null, 2)}\n`, { mode: 0o600 });
   await healthCheck(join(output, executableName), profileBundles);
-  console.log(`Built DSH Companion ${companionVersion} runtime payload at ${output}`);
+  console.log(`Built DSH Companion runtime ${runtimeId} at ${output}`);
 } catch (error) {
   await rm(output, { recursive: true, force: true });
   throw error;
@@ -257,7 +258,8 @@ async function stagePackage(from, to) {
   const sourceNodeModules = join(from, 'node_modules');
   await cp(from, to, {
     recursive: true,
-    filter: path => path !== sourceNodeModules && !path.startsWith(`${sourceNodeModules}/`),
+    filter: path => path !== sourceNodeModules && !path.startsWith(`${sourceNodeModules}/`)
+      && stageInputAllowed(path, from),
   });
   await Promise.all([
     rm(join(to, 'src'), { recursive: true, force: true }),

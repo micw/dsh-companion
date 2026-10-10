@@ -10,15 +10,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = join(root, 'vscode');
 
 /** Stages and creates one platform-specific VSIX from an already verified runtime payload. */
-export async function createVsix({ version, runtimePayload, output }) {
+export async function createVsix({ version, runtimePayload, runtimeId, output }) {
   if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`Invalid VSIX version ${JSON.stringify(version)}`);
+  if (!/^[0-9a-f]{64}$/u.test(runtimeId)) throw new Error(`Invalid runtime id ${JSON.stringify(runtimeId)}`);
   const workspaceManifest = readJson(join(root, 'package.json'));
   const extensionManifest = readJson(join(extensionRoot, 'package.json'));
   if (workspaceManifest.version !== '0.0.0' || extensionManifest.version !== '0.0.0') {
     throw new Error('source manifests must keep the neutral version 0.0.0');
   }
   const runtimeManifest = readJson(join(runtimePayload, 'runtime-manifest.json'));
-  if (runtimeManifest.companionVersion !== version || runtimeManifest.target !== 'linux-x64') {
+  if (runtimeManifest.formatVersion !== 2 || runtimeManifest.runtimeId !== runtimeId
+    || runtimeManifest.target !== 'linux-x64') {
     throw new Error('Runtime payload identity does not match the Linux VSIX');
   }
 
@@ -77,16 +79,18 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     options: {
       version: { type: 'string' },
       payload: { type: 'string' },
+      'runtime-id': { type: 'string' },
       output: { type: 'string' },
     },
     strict: true,
   });
-  if (values.version === undefined || values.payload === undefined) {
-    throw new Error('Usage: create-vsix.mjs --version <x.y.z> --payload <runtime-directory> [--output <vsix>]');
+  if (values.version === undefined || values.payload === undefined || values['runtime-id'] === undefined) {
+    throw new Error('Usage: create-vsix.mjs --version <x.y.z> --payload <runtime-directory> --runtime-id <sha256> [--output <vsix>]');
   }
   const destination = await createVsix({
     version: values.version,
     runtimePayload: resolve(values.payload),
+    runtimeId: values['runtime-id'],
     output: values.output === undefined ? undefined : resolve(values.output),
   });
   console.log(`Created ${destination}`);

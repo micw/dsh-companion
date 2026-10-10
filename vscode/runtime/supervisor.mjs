@@ -31,20 +31,32 @@ export class RuntimeSupervisor {
   #clients = new Map();
   #leaseSweep;
   #startupTimer;
+  #starting;
   #stopping;
+  #shutdownRequested = false;
+  #stateWrites = Promise.resolve();
+  #writeState;
   #resolveStopped;
   #stopped = new Promise((resolveStopped) => { this.#resolveStopped = resolveStopped; });
   #output = '';
 
-  constructor(config) {
+  constructor(config, { writeState = writeRuntimeState } = {}) {
     this.#config = parseConfig(config);
+    this.#writeState = writeState;
   }
 
   /** Starts the private control endpoint and the configured DSH child. */
   async start() {
-    if (this.#server !== undefined) throw new Error('Runtime supervisor is already started');
+    if (this.#shutdownRequested) throw new Error('Runtime supervisor is stopped');
+    if (this.#starting !== undefined) throw new Error('Runtime supervisor is already started');
+    this.#starting = this.#doStart();
+    await this.#starting;
+  }
+
+  async #doStart() {
     await mkdir(dirname(this.#config.stateFile), { recursive: true, mode: 0o700 });
     await chmod(dirname(this.#config.stateFile), 0o700);
+    if (this.#shutdownRequested) return;
     this.#server = createServer((request, response) => {
       void this.#handleRequest(request, response).catch((error) => {
         response.statusCode = 500;
@@ -65,7 +77,7 @@ export class RuntimeSupervisor {
     this.#leaseSweep = setInterval(() => { this.#expireClients(); }, LEASE_SWEEP_MS);
     this.#leaseSweep.unref();
     await this.#publishState();
-    await this.#startRuntime();
+    if (!this.#shutdownRequested) await this.#startRuntime();
   }
 
   /** Resolves after the supervisor and its DSH child have stopped. */
@@ -76,6 +88,7 @@ export class RuntimeSupervisor {
   /** Stops the DSH process tree, control endpoint, and owned rendezvous. */
   stop(reason = 'requested') {
     if (this.#stopping !== undefined) return this.#stopping;
+    this.#shutdownRequested = true;
     this.#stopping = this.#doStop(reason);
     return this.#stopping;
   }
@@ -95,6 +108,7 @@ export class RuntimeSupervisor {
 
   async #startRuntime() {
     const fileEnvironment = await readEnvironmentFile(this.#config.environmentFile);
+    if (this.#shutdownRequested) return;
     const child = spawn(this.#config.command, this.#config.args, {
       cwd: this.#config.cwd,
       detached: process.platform !== 'win32',
@@ -110,7 +124,7 @@ export class RuntimeSupervisor {
     const consume = (chunk) => {
       const text = String(chunk);
       this.#output = (this.#output + text).slice(-16_384);
-      if (this.#runtimeReady) return;
+      if (this.#runtimeReady || this.#shutdownRequested) return;
       const match = LAUNCH_URL_PATTERN.exec(stripAnsi(this.#output));
       if (match?.[1] === undefined) return;
       const launchUrl = new URL(match[1]);
@@ -122,7 +136,7 @@ export class RuntimeSupervisor {
       this.#runtimeReady = true;
       if (this.#startupTimer !== undefined) clearTimeout(this.#startupTimer);
       this.#startupTimer = undefined;
-      void this.#publishState();
+      void this.#publishState().catch(() => { void this.stop('Failed to publish runtime state'); });
       console.log('DSH Companion runtime ready');
     };
     const relay = (stream) => (chunk) => {
@@ -145,8 +159,7 @@ export class RuntimeSupervisor {
       if (this.#runtime === child) this.#runtime = undefined;
       this.#runtimeReady = false;
       this.#bootstrapUrl = undefined;
-      void this.#publishState();
-      if (this.#stopping === undefined) {
+      if (!this.#shutdownRequested) {
         void this.stop(`DSH exited (${signal ?? String(code)})`);
       }
     });
@@ -217,8 +230,8 @@ export class RuntimeSupervisor {
     }
   }
 
-  async #publishState() {
-    if (this.#controlOrigin === undefined) return;
+  #publishState() {
+    if (this.#controlOrigin === undefined || this.#shutdownRequested) return Promise.resolve();
     const state = {
       version: STATE_VERSION,
       instanceId: this.#instanceId,
@@ -234,14 +247,18 @@ export class RuntimeSupervisor {
         ...(this.#runtimeStartedAt === undefined ? {} : { startedAt: this.#runtimeStartedAt }),
       },
     };
-    const temporary = `${this.#config.stateFile}.${this.#instanceId}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    await chmod(temporary, 0o600);
-    await rename(temporary, this.#config.stateFile);
+    const publication = this.#stateWrites.then(() => {
+      if (!this.#shutdownRequested) return this.#writeState(this.#config.stateFile, this.#instanceId, state);
+    });
+    // Track a settled tail so shutdown can drain writes even after a publication fails.
+    this.#stateWrites = publication.catch(() => {});
+    return publication;
   }
 
   async #doStop(reason) {
     console.log(`Stopping DSH Companion runtime supervisor: ${reason}`);
+    // Finish initialization before tearing down resources that it may still be creating.
+    await this.#starting?.catch(() => {});
     if (this.#leaseSweep !== undefined) clearInterval(this.#leaseSweep);
     this.#leaseSweep = undefined;
     if (this.#startupTimer !== undefined) clearTimeout(this.#startupTimer);
@@ -257,9 +274,19 @@ export class RuntimeSupervisor {
     const server = this.#server;
     this.#server = undefined;
     if (server !== undefined) await new Promise((resolveClose) => { server.close(() => resolveClose()); });
+    await this.#stateWrites;
     await removeOwnState(this.#config.stateFile, this.#instanceId);
+    await rm(`${this.#config.stateFile}.${this.#instanceId}.tmp`, { force: true });
     this.#resolveStopped();
   }
+}
+
+/** Publishes one private rendezvous atomically; the supervisor serializes and drains these writes. */
+async function writeRuntimeState(stateFile, instanceId, state) {
+  const temporary = `${stateFile}.${instanceId}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await chmod(temporary, 0o600);
+  await rename(temporary, stateFile);
 }
 
 export function parseConfig(value) {
@@ -287,7 +314,7 @@ export function parseConfig(value) {
     throw new Error('Invalid DSH Companion runtime Client module');
   }
   if (value.runtimeId !== undefined && (typeof value.runtimeId !== 'string'
-    || !/^(?:source|\d+\.\d+\.\d+-linux-x64)$/u.test(value.runtimeId))) {
+    || !/^(?:source|\d+\.\d+\.\d+-linux-x64|runtime-[0-9a-f]{64}-linux-x64)$/u.test(value.runtimeId))) {
     throw new Error('Invalid DSH Companion runtime identity');
   }
   const startupTimeoutMs = value.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;

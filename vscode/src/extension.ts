@@ -5,6 +5,7 @@ import {
 } from './dshClient';
 import { renderMarkdown } from './markdown';
 import { RuntimeControl } from './runtimeControl';
+import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 import { connectRuntime } from './runtimeInstaller';
 import { SessionSidebarProvider } from './sessionTree';
 import { sessionWorkspaceKind } from './sessionWorkspace';
@@ -132,11 +133,14 @@ const panelsBySessionId = new Map<string, vscode.WebviewPanel>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
-  const runtimeControl = connectRuntime(context);
+  const runtimeProgress = new RuntimeProgress();
+  const runtimeControl = connectRuntime(context, phase => runtimeProgress.report(phase));
   const sessionTree = new SessionSidebarProvider(
     context.extensionUri,
     onDidChange => connectSessionBrowser(context, runtimeControl, onDidChange),
+    runtimeProgress,
   );
+  void runtimeControl.then(() => sessionTree.runtimeReady(), () => sessionTree.runtimeReady(false));
   context.subscriptions.push({
     dispose: () => { void runtimeControl.then((control) => { control?.dispose(); }, () => {}); },
   }, sessionTree, vscode.window.registerWebviewViewProvider('dshCompanion.sessions', sessionTree));
@@ -144,7 +148,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let handoffsReady = false;
   const roots = () => vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
   void receiveSessionHandoffs(companionLifecycleRoot(), roots,
-    sessionId => { openChatEditor(context, runtimeControl, sessionTree, sessionId); },
+    sessionId => { openChatEditor(context, runtimeControl, sessionTree, runtimeProgress, sessionId); },
     error => { console.warn('DSH Companion Session handoff failed', error); },
   ).then(stop => {
     if (handoffsReady) stop();
@@ -160,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.commands.registerCommand('dshCompanion.newChatEditor', () => {
-      openChatEditor(context, runtimeControl, sessionTree);
+      openChatEditor(context, runtimeControl, sessionTree, runtimeProgress);
     }),
     vscode.commands.registerCommand('dshCompanion.openSession', async (sessionId: unknown) => {
       if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -183,7 +187,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
         const kind = sessionWorkspaceKind(entry.cwd, roots);
         if (kind === 'local') {
-          openChatEditor(context, runtimeControl, sessionTree, sessionId);
+          openChatEditor(context, runtimeControl, sessionTree, runtimeProgress, sessionId);
           return;
         }
         if (kind === 'unknown') {
@@ -191,7 +195,7 @@ export function activate(context: vscode.ExtensionContext): void {
             'The working directory of this Session is unknown. It cannot be matched to a VS Code workspace.',
             { modal: true }, 'Open Here',
           );
-          if (choice === 'Open Here') openChatEditor(context, runtimeControl, sessionTree, sessionId);
+          if (choice === 'Open Here') openChatEditor(context, runtimeControl, sessionTree, runtimeProgress, sessionId);
           return;
         }
         const choice = await vscode.window.showInformationMessage(
@@ -222,7 +226,7 @@ export function activate(context: vscode.ExtensionContext): void {
       sessionTree.focusSearch();
     }),
     vscode.commands.registerCommand('dshCompanion.openProviderSettings', () => {
-      const panel = activeCompanionPanel() ?? openChatEditor(context, runtimeControl, sessionTree);
+      const panel = activeCompanionPanel() ?? openChatEditor(context, runtimeControl, sessionTree, runtimeProgress);
       panel.reveal(panel.viewColumn, false);
       post(panel, { type: 'openProviderSettings' });
     }),
@@ -244,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewPanelSerializer(CHAT_EDITOR_VIEW_TYPE, {
       async deserializeWebviewPanel(panel, state: unknown): Promise<void> {
         configureChatEditor(
-          context, runtimeControl, sessionTree, panel, isChatEditorState(state) ? state.sessionId : undefined,
+          context, runtimeControl, sessionTree, runtimeProgress, panel, isChatEditorState(state) ? state.sessionId : undefined,
         );
       },
     }),
@@ -274,6 +278,7 @@ function openChatEditor(
   context: vscode.ExtensionContext,
   runtimeControl: Promise<RuntimeControl | undefined>,
   sessionTree: SessionSidebarProvider,
+  runtimeProgress: RuntimeProgress,
   sessionId?: string,
 ): vscode.WebviewPanel {
   const existing = sessionId === undefined ? undefined : panelsBySessionId.get(sessionId);
@@ -292,7 +297,7 @@ function openChatEditor(
       localResourceRoots: [mediaRoot],
     },
   );
-  configureChatEditor(context, runtimeControl, sessionTree, panel, sessionId);
+  configureChatEditor(context, runtimeControl, sessionTree, runtimeProgress, panel, sessionId);
   return panel;
 }
 
@@ -307,6 +312,7 @@ function configureChatEditor(
   context: vscode.ExtensionContext,
   runtimeControl: Promise<RuntimeControl | undefined>,
   sessionTree: SessionSidebarProvider,
+  runtimeProgress: RuntimeProgress,
   panel: vscode.WebviewPanel,
   restoredSessionId?: string,
 ): void {
@@ -347,6 +353,15 @@ function configureChatEditor(
   });
   panelMessengers.set(panel, messenger);
   let client: DshClient | undefined;
+  let runtimePending = true;
+  const unsubscribeProgress = runtimeProgress.subscribe(phase => {
+    if (!disposed && runtimePending) post(panel, { type: 'status', text: runtimePhaseText[phase] });
+  });
+  void runtimeControl.then(() => {
+    runtimePending = false;
+    unsubscribeProgress();
+    if (!disposed) post(panel, { type: 'status', text: 'Connecting to DSH…' });
+  }, () => { runtimePending = false; unsubscribeProgress(); });
   const ready = connect(
     context,
     runtimeControl,
@@ -415,6 +430,7 @@ function configureChatEditor(
   });
   panel.onDidDispose(() => {
     disposed = true;
+    unsubscribeProgress();
     receive.dispose();
     viewState.dispose();
     messenger.dispose();

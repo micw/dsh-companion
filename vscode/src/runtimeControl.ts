@@ -139,7 +139,7 @@ function isRuntimeState(value: unknown): value is RuntimeState {
     || !['starting', 'ready', 'stopped'].includes(String(value.runtime.state))
     || typeof value.runtime.origin !== 'string'
     || (value.runtime.runtimeId !== undefined && (typeof value.runtime.runtimeId !== 'string'
-      || !/^(?:source|\d+\.\d+\.\d+-linux-x64)$/u.test(value.runtime.runtimeId)))
+      || !/^(?:source|\d+\.\d+\.\d+-linux-x64|runtime-[0-9a-f]{64}-linux-x64)$/u.test(value.runtime.runtimeId)))
     || (value.runtime.clientModule !== undefined && typeof value.runtime.clientModule !== 'string')) return false;
   try {
     const control = new URL(value.controlOrigin);
