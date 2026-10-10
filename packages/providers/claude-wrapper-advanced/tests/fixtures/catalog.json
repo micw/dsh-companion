@@ -1,0 +1,1 @@
+{"models":[{"id":"sonnet-5","name":"Sonnet 5","backend_model":"claude-sonnet-5","context_length":1000000,"input_modalities":["text","image"],"efforts":{"supported":["low","high"],"default":"high"},"knowledge_cutoff":null,"aliases":["sonnet"],"limit_groups":["global"]}]}
