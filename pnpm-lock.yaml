@@ -22,6 +22,12 @@ importers:
       '@dsh-companion/provider-client':
         specifier: workspace:*
         version: link:../provider-client
+      '@dsh-companion/session-title':
+        specifier: workspace:*
+        version: link:../session-title
+      '@dsh-companion/tool-session-title':
+        specifier: workspace:*
+        version: link:../tool-session-title
       '@dsh-companion/ui-provider-settings':
         specifier: workspace:*
         version: link:../ui-provider-settings
@@ -131,6 +137,73 @@ importers:
       '@dsh-companion/provider-catalog':
         specifier: workspace:*
         version: link:../provider-catalog
+      '@dsh-companion/session-title':
+        specifier: workspace:*
+        version: link:../session-title
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/session-title:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../deepseek-harness/vendor/cordis
+        version: link:../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../deepseek-harness/packages/core/session
+        version: link:../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-projection':
+        specifier: link:../../../deepseek-harness/packages/session/session-projection
+        version: link:../../../deepseek-harness/packages/session/session-projection
+      '@deepseek-ai/dsh-session-title':
+        specifier: link:../../../deepseek-harness/packages/session/session-title
+        version: link:../../../deepseek-harness/packages/session/session-title
+      '@deepseek-ai/dsh-typert-generator':
+        specifier: link:../../../deepseek-harness/packages/typert/generator
+        version: link:../../../deepseek-harness/packages/typert/generator
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: link:../../../deepseek-harness/packages/typert/protocol
+        version: link:../../../deepseek-harness/packages/typert/protocol
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/tool-session-title:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../deepseek-harness/vendor/cordis
+        version: link:../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../deepseek-harness/packages/core/agent
+        version: link:../../../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../deepseek-harness/packages/llm/llm
+        version: link:../../../deepseek-harness/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../deepseek-harness/packages/core/session
+        version: link:../../../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-projection':
+        specifier: link:../../../deepseek-harness/packages/session/session-projection
+        version: link:../../../deepseek-harness/packages/session/session-projection
+      '@deepseek-ai/dsh-session-title':
+        specifier: link:../../../deepseek-harness/packages/session/session-title
+        version: link:../../../deepseek-harness/packages/session/session-title
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../deepseek-harness/packages/core/system-prompt
+        version: link:../../../deepseek-harness/packages/core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../deepseek-harness/packages/core/tools
+        version: link:../../../deepseek-harness/packages/core/tools
       tsdown:
         specifier: ^0.22.2
         version: 0.22.14(typescript@5.9.3)

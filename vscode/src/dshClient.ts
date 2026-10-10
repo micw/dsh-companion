@@ -286,6 +286,7 @@ export type DshCompactionEvent =
 
 export interface DshOutputSink {
   sessionCreated(sessionId: string): void;
+  sessionSummary(summary: DshSessionListEntry | undefined): void;
   reset(): void;
   history(role: 'user' | 'assistant' | 'error', text: string, time?: number): void;
   historyPrependStart(): void;
@@ -1195,6 +1196,13 @@ export class DshClient {
       sink.modelSelection(modelCatalog.default);
       sink.compactAvailable(false);
       sink.permissionSelection(permissionSelection);
+      const publishSummary = () => {
+        if (client.sessionIdValue === undefined) return;
+        sink.sessionSummary(parseSessionListSnapshot(graph.sessions.list.getSnapshot()).sessions.find(
+          entry => entry.sessionId === client.sessionIdValue,
+        ));
+      };
+      client.canonical?.disposers.push(graph.sessions.list.subscribe(publishSummary));
       if (restoredSessionId !== undefined) {
         if (!canonicalSessionIds(graph.sessions.list.getSnapshot()).has(restoredSessionId)) {
           throw new Error(`DSH Session ${restoredSessionId} is not available`);
@@ -1525,6 +1533,18 @@ export class DshClient {
     if (command.kind === 'error') throw new Error(command.text ?? `Could not select permission preset ${preset}`);
   }
 
+  /** Explicitly regenerates the canonical DSH title for this live Session. */
+  async refreshTitle(): Promise<string | undefined> {
+    const result = await callCanonicalRemote(
+      this.requireCanonical().graph, 'companionSessionTitle', 'refreshTitle', this.requireSessionId(),
+    );
+    const title = unwrapCanonicalResult(result, 'companionSessionTitle.refreshTitle');
+    if (title !== undefined && typeof title !== 'string') {
+      throw new Error('DSH returned an invalid refreshed Session title');
+    }
+    return title;
+  }
+
   /** Runs DSH's canonical `/compact` command with this Session's selected model route. */
   async compact(): Promise<DshCompactResult> {
     const selection = this.modelSelectionState.current;
@@ -1621,6 +1641,9 @@ export class DshClient {
     canonical.binding = binding;
     this.sessionIdValue = sessionId;
     this.sink.sessionCreated(sessionId);
+    this.sink.sessionSummary(parseSessionListSnapshot(canonical.graph.sessions.list.getSnapshot()).sessions.find(
+      entry => entry.sessionId === sessionId,
+    ));
     const pendingSelection = this.pendingModelSelection;
     if (pendingSelection !== undefined) {
       await this.selectModelForSession(sessionId, pendingSelection);

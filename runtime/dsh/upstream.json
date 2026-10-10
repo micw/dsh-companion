@@ -67,6 +67,17 @@
       "affectedModules": [
         "scripts/build-exe-for-python-sdk"
       ]
+    },
+    {
+      "id": "agent-session-title-proposal",
+      "file": "patches/0006-add-agent-session-title-proposal.patch",
+      "sha256": "2d15d28e4af0f308137185ba59ee5bf050865752a59261a052182169d327ee33",
+      "assessment": "patches/agent-session-title-proposal.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "@deepseek-ai/dsh-session-title",
+        "@deepseek-ai/dsh-tool-cordis"
+      ]
     }
   ]
 }

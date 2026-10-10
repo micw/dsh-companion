@@ -93,6 +93,7 @@ try {
   const projected = { sessions: 0, resets: 0, historyStates: 0, permissionSelections: 0 };
   sessionClient = await DshClient.connect(cookie, storage, {
     sessionCreated: () => { projected.sessions += 1; },
+    sessionSummary: () => {},
     reset: () => { projected.resets += 1; },
     history: () => {},
     historyPrependStart: () => {},
@@ -152,6 +153,9 @@ try {
         throw new Error('Managed DSH Client restore did not bind the requested Session identity');
       }
     }
+    if (await restored[0].refreshTitle() !== undefined) {
+      throw new Error('An empty restored Session must not invent an AI title');
+    }
     restored[0].dispose();
     await restored[1].loadOlder();
   } finally {
@@ -191,6 +195,7 @@ async function callRemote(origin, cookie, method, args) {
 function projectionSink(overrides = {}) {
   return {
     sessionCreated: () => {},
+    sessionSummary: () => {},
     reset: () => {},
     history: () => {},
     historyPrependStart: () => {},

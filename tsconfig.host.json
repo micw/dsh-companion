@@ -17,6 +17,9 @@
       "path": "packages/provider-client"
     },
     {
+      "path": "packages/session-title"
+    },
+    {
       "path": "packages/ui-provider-settings"
     }
   ]

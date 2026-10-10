@@ -24,6 +24,12 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     | { readonly ok: true; readonly value: T }
     | { readonly ok: false; readonly error: RemoteFailure }
 
+  export interface TypertLookup<Host, Wire> {
+    readonly host: Host
+    readonly wire: Wire
+  }
+
+  export interface TypertLookupMap {}
   export interface TypertRemoteMap {}
   export interface TypertRemoteScopeMap {}
   export interface TypertRemoteNamespaceMap {}

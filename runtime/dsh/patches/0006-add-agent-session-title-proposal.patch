@@ -1,0 +1,341 @@
+diff --git a/docs/subsystems/session-title.md b/docs/subsystems/session-title.md
+index 75e17f06d7..858cebc21d 100644
+--- a/docs/subsystems/session-title.md
++++ b/docs/subsystems/session-title.md
+@@ -16,7 +16,7 @@ type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
+ ```
+ 
+ ```ts type-equiv
+-/** Exact auxiliary model route that produced a title. */
++/** Logged main route for agent proposals, or auxiliary route for provider generation. */
+ interface SessionTitleModelIdentity {
+   /** Registered LLM provider route. */
+   readonly provider: string
+@@ -180,6 +180,18 @@ get(session: Session): SessionTitleSnapshot | undefined
+  */
+ rename(session: Session, title: string): SessionTitleSnapshot
+ 
++/**
++ * Accept a title proposed by the session's main model agent without another model call.
++ * Only committed human text messages are cited; a manual user title remains pinned.
++ * @param session - exact live session whose agent proposed the title.
++ * @param title - untrusted proposed text, normalized to the configured byte limit.
++ * @param providerId - stable trusted plugin identity distinguishing this agent tool from auxiliary title providers.
++ * @param signal - optional cancellation checked at the commit point.
++ * @returns accepted snapshot, or undefined when pinned or without eligible human input.
++ * @throws {SessionTitleInvalidError} when proposed text normalizes to empty.
++ */
++proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined
++
+ /**
+  * Explicitly retry the registered provider, or materialize the built-in
+  * fallback when no provider is registered.
+diff --git a/docs/subsystems/session-title.zh.md b/docs/subsystems/session-title.zh.md
+index 187dad8f3a..6907860296 100644
+--- a/docs/subsystems/session-title.zh.md
++++ b/docs/subsystems/session-title.zh.md
+@@ -16,7 +16,7 @@ type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
+ ```
+ 
+ ```ts type-equiv
+-/** Exact auxiliary model route that produced a title. */
++/** Logged main route for agent proposals, or auxiliary route for provider generation. */
+ interface SessionTitleModelIdentity {
+   /** Registered LLM provider route. */
+   readonly provider: string
+@@ -180,6 +180,18 @@ get(session: Session): SessionTitleSnapshot | undefined
+  */
+ rename(session: Session, title: string): SessionTitleSnapshot
+ 
++/**
++ * Accept a title proposed by the session's main model agent without another model call.
++ * Only committed human text messages are cited; a manual user title remains pinned.
++ * @param session - exact live session whose agent proposed the title.
++ * @param title - untrusted proposed text, normalized to the configured byte limit.
++ * @param providerId - stable trusted plugin identity distinguishing this agent tool from auxiliary title providers.
++ * @param signal - optional cancellation checked at the commit point.
++ * @returns accepted snapshot, or undefined when pinned or without eligible human input.
++ * @throws {SessionTitleInvalidError} when proposed text normalizes to empty.
++ */
++proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined
++
+ /**
+  * Explicitly retry the registered provider, or materialize the built-in
+  * fallback when no provider is registered.
+diff --git a/packages/extensions/tool-cordis/src/api-catalog.ts b/packages/extensions/tool-cordis/src/api-catalog.ts
+index f417fcc6c9..0f6bdf6960 100644
+--- a/packages/extensions/tool-cordis/src/api-catalog.ts
++++ b/packages/extensions/tool-cordis/src/api-catalog.ts
+@@ -2455,6 +2455,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+         returns: 'the accepted title snapshot.',
+         throws: ['{SessionTitleInvalidError} when the title normalizes to empty.', '{Error} when the session is not live or the service is disposed.'],
+       },
++      {
++        signature: 'proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined',
++        description: 'Accept a title proposed by the session\'s main model agent without another model call. Only committed human text messages are cited; a manual user title remains pinned.',
++        parameters: [{ name: 'session', description: 'exact live session whose agent proposed the title.' }, { name: 'title', description: 'untrusted proposed text, normalized to the configured byte limit.' }, { name: 'providerId', description: 'stable trusted plugin identity distinguishing this agent tool from auxiliary title providers.' }, { name: 'signal', description: 'optional cancellation checked at the commit point.' }],
++        returns: 'accepted snapshot, or undefined when pinned or without eligible human input.',
++        throws: ['{SessionTitleInvalidError} when proposed text normalizes to empty.'],
++      },
+       {
+         signature: 'async refresh(session: Session, signal?: AbortSignal): Promise<SessionTitleSnapshot | undefined>',
+         description: 'Explicitly retry the registered provider, or materialize the built-in fallback when no provider is registered.',
+diff --git a/packages/session/session-title/README.md b/packages/session/session-title/README.md
+index 09778e4e2b..f7227b857c 100644
+--- a/packages/session/session-title/README.md
++++ b/packages/session/session-title/README.md
+@@ -29,7 +29,7 @@ Mount the service to give sessions titles that clients can display and that neve
+ 
+ ### Choosing a title source
+ 
+-Titles come from three sources, newest wins. The built-in fallback derives from the first eligible human message's leading words within the configured caps; a registered provider generates a title over eligible messages; an explicit `rename()` accepts a user-supplied title. Only text blocks from human `user/message` events are eligible, and empty or non-text prompts wait for later eligible input. A user-sourced latest title pins the session — later user messages schedule no automatic revision, and an explicit `refresh()` remains the deliberate unpin.
++Titles come from three sources, newest wins. The built-in fallback derives from the first eligible human message's leading words within the configured caps; a registered provider generates a title over eligible messages; an explicit `rename()` accepts a user-supplied title. A trusted agent-tool plugin may call `proposeFromAgent(session, title, providerId, signal?)` without a separate model request; its normalized title cites committed human text-message seqs and records the logged main-request model route when present. The tool supplies a stable branded provider ID (for example `dsh-companion/agent-title-tool`) to distinguish its persisted `provider` source from an auxiliary generator; the existing persisted source vocabulary is unchanged. This is a plugin identity, not an authentication mechanism: only trusted same-process callers may use the method. A pinned user title rejects agent proposals without appending. Only text blocks from human `user/message` events are eligible, and empty or non-text prompts wait for later eligible input. A user-sourced latest title pins the session — later user messages schedule no automatic revision, and an explicit `refresh()` remains the deliberate unpin.
+ 
+ ### Minimal configuration
+ 
+diff --git a/packages/session/session-title/README.zh.md b/packages/session/session-title/README.zh.md
+index db9efaa2ab..898771166f 100644
+--- a/packages/session/session-title/README.zh.md
++++ b/packages/session/session-title/README.zh.md
+@@ -29,7 +29,7 @@ kind: "package-reference"
+ 
+ ### 选择标题来源
+ 
+-标题来自三个来源，最新者胜出。内置回退在配置上限内从第一条符合条件用户消息的开头若干词派生；已注册提供方对符合条件的消息生成标题；显式 `rename()` 接受用户提供的标题。只有人类 `user/message` 事件中的文本块符合条件，空提示词或非文本提示词会等待后续符合条件的输入。用户来源的最新标题会钉住会话——后续用户消息不再安排自动修订，显式 `refresh()` 仍是有意的解钉手段。
++标题来自三个来源，最新者胜出。内置回退在配置上限内从第一条符合条件用户消息的开头若干词派生；已注册提供方对符合条件的消息生成标题；显式 `rename()` 接受用户提供的标题。可信的智能体工具插件可调用 `proposeFromAgent(session, title, providerId, signal?)`，无需额外模型请求；规范化后的标题引用已提交的人类文本消息 seq，并在可用时记录已写入日志的主请求模型路由。工具提供稳定的品牌化提供方 ID（例如 `dsh-companion/agent-title-tool`），以区分其持久化的 `provider` 来源与辅助生成器；现有持久化来源词汇保持不变。此 ID 标识插件而非认证机制：仅可信的同进程调用方可使用此方法。用户钉住标题时，智能体提议不会追加事件。只有人类 `user/message` 事件中的文本块符合条件，空提示词或非文本提示词会等待后续符合条件的输入。用户来源的最新标题会钉住会话——后续用户消息不再安排自动修订，显式 `refresh()` 仍是有意的解钉手段。
+ 
+ ### 最小配置
+ 
+diff --git a/packages/session/session-title/src/index.ts b/packages/session/session-title/src/index.ts
+index 8d9a550a51..1e10e698c7 100644
+--- a/packages/session/session-title/src/index.ts
++++ b/packages/session/session-title/src/index.ts
+@@ -420,6 +420,54 @@ export class SessionTitleService extends Service {
+     return snapshot
+   }
+ 
++  /**
++   * Accept a title proposed by the session's main model agent without another model call.
++   * Only committed human text messages are cited; a manual user title remains pinned.
++   * @param session - exact live session whose agent proposed the title.
++   * @param title - untrusted proposed text, normalized to the configured byte limit.
++   * @param providerId - stable trusted plugin identity distinguishing this agent tool from auxiliary title providers.
++   * @param signal - optional cancellation checked at the commit point.
++   * @returns accepted snapshot, or undefined when pinned or without eligible human input.
++   * @throws {SessionTitleInvalidError} when proposed text normalizes to empty.
++   */
++  proposeFromAgent(
++    session: Session,
++    title: string,
++    providerId: SessionTitleProviderId,
++    signal?: AbortSignal,
++  ): SessionTitleSnapshot | undefined {
++    if (typeof providerId !== 'string' || providerId.length === 0) {
++      throw new Error('session-title agent proposal requires a non-empty trusted provider id')
++    }
++    signal?.throwIfAborted()
++    this.assertServiceActive()
++    if (this.ctx.sessions.get(session.id) !== session) {
++      throw new Error(`session "${session.id}" is not live in this store`)
++    }
++    if (this.get(session)?.source.kind === 'user') return undefined
++    const normalized = normalizeSessionTitle(title, this.config.maxTitleBytes)
++    if (normalized.length === 0) {
++      throw new SessionTitleInvalidError('session title must contain visible characters')
++    }
++    // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
++    const messages = collectSessionTitleMessages(session.snapshotEvents())
++    if (messages.length === 0) return undefined
++    const state = this.stateFor(session)
++    signal?.throwIfAborted()
++    this.supersede(state, 'agent title superseded automatic title generation')
++    const config = session.requestHeader()?.config
++    session.append('session/title', {
++      title: normalized,
++      messageSeqs: messages.map(message => message.seq),
++      source: {
++        kind: 'provider',
++        provider: providerId,
++        ...(config === undefined ? {} : { model: { provider: config.provider, model: config.model } }),
++      },
++    })
++    return this.get(session)
++  }
++
+   /**
+    * Explicitly retry the registered provider, or materialize the built-in
+    * fallback when no provider is registered.
+diff --git a/packages/session/session-title/src/types.ts b/packages/session/session-title/src/types.ts
+index 20855445a5..55377047d0 100644
+--- a/packages/session/session-title/src/types.ts
++++ b/packages/session/session-title/src/types.ts
+@@ -16,7 +16,7 @@ import type { OptionalSessionSeq, SessionSeq } from '@deepseek-ai/dsh-session/ty
+ /** Identifies one session-title provider registration. */
+ export type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
+ 
+-/** Exact auxiliary model route that produced a title. */
++/** Logged main route for agent proposals, or auxiliary route for provider generation. */
+ export interface SessionTitleModelIdentity {
+   /** Registered LLM provider route. */
+   readonly provider: string
+diff --git a/packages/session/session-title/tests/agent-proposal.spec.ts b/packages/session/session-title/tests/agent-proposal.spec.ts
+new file mode 100644
+index 0000000000..acde085e5e
+--- /dev/null
++++ b/packages/session/session-title/tests/agent-proposal.spec.ts
+@@ -0,0 +1,83 @@
++import { Context } from '@deepseek-ai/cordis'
++import { describe, expect, it, vi } from 'vitest'
++import { createUserMessage } from '@deepseek-ai/dsh-llm'
++import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
++import SessionTitleService, { SessionTitleInvalidError, SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
++import type { SessionTitleProviderRequest } from '@deepseek-ai/dsh-session-title'
++
++const CONFIG = { fallbackMaxWords: 5, fallbackMaxBytes: 40, maxTitleBytes: 40 }
++const TOOL_ID = SessionTitleProviderId('dsh-companion/agent-title-tool')
++
++async function setup(id: string) {
++  const ctx = new Context()
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SessionTitleService, CONFIG)
++  const session = ctx.sessions.create(SessionId(id))
++  return { ctx, session }
++}
++
++function human(session: Session, text: string) {
++  return session.append('user/message', createUserMessage({
++    content: [{ type: 'text', text }], source: { kind: 'user' },
++  }), { surfaceOp: 'append' })
++}
++
++describe('main agent title proposals', () => {
++  it('normalizes and records human citations and the logged main route distinctly from auxiliary providers', async () => {
++    const { ctx, session } = await setup('agent-proposal-source')
++    session.append('turn/start', { turn: 1 })
++    const first = human(session, 'First human message')
++    const latest = human(session, 'Latest human message')
++    session.append('request/header', {
++      header: { config: { provider: 'main-route', model: 'main-model' } }, reason: 'change',
++    })
++    const snapshot = ctx.sessionTitle.proposeFromAgent(session, '  Agent\t title  ', TOOL_ID)
++    expect(snapshot).toMatchObject({
++      title: 'Agent title', messageSeqs: [first.seq, latest.seq],
++      source: { kind: 'provider', provider: TOOL_ID, model: { provider: 'main-route', model: 'main-model' } },
++    })
++    expect(session.snapshotEvents().findLast(event => event.type === 'session/title')?.data)
++      .toMatchObject({ source: { kind: 'provider', provider: TOOL_ID }, messageSeqs: [first.seq, latest.seq] })
++    expect(ctx.sessionTitle.get(session)).toEqual(snapshot)
++  })
++
++  it('preserves manual pin and rejects cancelled, empty, or detached proposals', async () => {
++    const { ctx, session } = await setup('agent-proposal-pin')
++    expect(ctx.sessionTitle.proposeFromAgent(session, 'No human input', TOOL_ID)).toBeUndefined()
++    human(session, 'Human prompt')
++    expect(() => ctx.sessionTitle.proposeFromAgent(session, '\u001b[31m  ', TOOL_ID))
++      .toThrow(SessionTitleInvalidError)
++    const cancelled = new AbortController()
++    cancelled.abort()
++    expect(() => ctx.sessionTitle.proposeFromAgent(session, 'Cancelled', TOOL_ID, cancelled.signal)).toThrow()
++    ctx.sessionTitle.rename(session, 'Manual title')
++    expect(ctx.sessionTitle.proposeFromAgent(session, 'Agent must not replace', TOOL_ID)).toBeUndefined()
++    expect(ctx.sessionTitle.get(session)?.title).toBe('Manual title')
++    expect(() => ctx.sessionTitle.proposeFromAgent(Session.create(SessionId('detached-agent')), 'No', TOOL_ID))
++      .toThrow(/not live/)
++  })
++
++  it('supersedes pending provider completion so a late result cannot overwrite the agent title', async () => {
++    const { ctx, session } = await setup('agent-proposal-stale')
++    let release: (() => void) | undefined
++    const gate = new Promise<void>((resolve) => { release = resolve })
++    const generate = vi.fn(async (request: SessionTitleProviderRequest) => {
++      await gate
++      return { title: 'Late provider', messageSeqs: request.messages.map(message => message.seq) }
++    })
++    ctx.sessionTitle.register({ id: SessionTitleProviderId('slow'), automatic: 'all-prompts', generate })
++    session.append('turn/start', { turn: 1 })
++    human(session, 'Prompt')
++    session.append('request/header', {
++      header: { config: { provider: 'main', model: 'model' } }, reason: 'change',
++    })
++    await new Promise(resolve => setTimeout(resolve, 0))
++    expect(generate).toHaveBeenCalledOnce()
++    ctx.sessionTitle.proposeFromAgent(session, 'Agent wins', TOOL_ID)
++    release?.()
++    await new Promise(resolve => setTimeout(resolve, 0))
++    expect(ctx.sessionTitle.get(session)?.title).toBe('Agent wins')
++  })
++})
+diff --git a/packages/session/session-title/tests/persistence.spec.ts b/packages/session/session-title/tests/persistence.spec.ts
+index ef164362d7..6db7e0d282 100644
+--- a/packages/session/session-title/tests/persistence.spec.ts
++++ b/packages/session/session-title/tests/persistence.spec.ts
+@@ -7,7 +7,7 @@ import { join } from 'node:path'
+ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+ import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+-import SessionTitleService, { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
++import SessionTitleService, { foldSessionTitle, SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+ 
+ const CONFIG = {
+   fallbackMaxWords: 5,
+@@ -61,6 +61,46 @@ async function expectPersistedTitle(ctx: Context, id: ReturnType<typeof SessionI
+ }
+ 
+ describe('session title persistence round trips', () => {
++  it('reopens an agent-proposed title with its human citations and main model route', async () => {
++    const root = await mkdtemp(join(tmpdir(), 'dsh-agent-title-jsonl-'))
++    roots.push(root)
++    const id = SessionId('agent-title-jsonl')
++    const writer = new Context()
++    await writer.plugin(SessionStore)
++    await writer.plugin(SessionProjectionRegistry)
++    await writer.plugin(JsonlSessionPersistence, { root, compression: 'none' })
++    await writer.plugin(SessionTitleService, CONFIG)
++    const session = writer.sessions.create(id)
++    const handle = await writer.sessionPersistence.create(session.header)
++    session.append('turn/start', { turn: 1 })
++    const message = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'A human request' }], source: { kind: 'user' },
++    }), { surfaceOp: 'append' })
++    session.append('request/header', {
++      header: { config: { provider: 'main', model: 'chat' } }, reason: 'change',
++    })
++    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
++    writer.sessionTitle.proposeFromAgent(session, '  Agent title  ', SessionTitleProviderId('dsh-companion/agent-title-tool'))
++    await handle.close()
++    await writer.fiber.dispose()
++
++    const reader = new Context()
++    await reader.plugin(SessionStore)
++    await reader.plugin(SessionProjectionRegistry)
++    await reader.plugin(JsonlSessionPersistence, { root, compression: 'none' })
++    const restored = await reader.sessionPersistence.open(id, 'read')
++    try {
++      const { events } = await restored.read()
++      expect(foldSessionTitle(events)).toMatchObject({
++        title: 'Agent title', messageSeqs: [message.seq],
++        source: { kind: 'provider', provider: 'dsh-companion/agent-title-tool', model: { provider: 'main', model: 'chat' } },
++      })
++    } finally {
++      await restored.close()
++      await reader.fiber.dispose()
++    }
++  })
++
+   it('round-trips through a remounted JSONL backend', async () => {
+     const root = await mkdtemp(join(tmpdir(), 'dsh-title-jsonl-'))
+     roots.push(root)
+diff --git a/scripts/gen-cordis-catalog.ts b/scripts/gen-cordis-catalog.ts
+index 98e46537f4..99c8d3143e 100644
+--- a/scripts/gen-cordis-catalog.ts
++++ b/scripts/gen-cordis-catalog.ts
+@@ -583,6 +583,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
+   SessionTitleObservation: 'session-query.md',
+   SessionTitleObservationResult: 'session-query.md',
+   SessionTitleProvider: 'session-title.md',
++  SessionTitleProviderId: 'session-title.md',
+   SessionTitleSnapshot: 'session-title.md',
+   SkillCatalogSnapshot: 'skills.md',
+   SkillDefinition: 'skills.md',
