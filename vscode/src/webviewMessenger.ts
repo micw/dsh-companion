@@ -12,10 +12,12 @@ export class WebviewMessenger {
   private ready = false;
   private disposed = false;
   private pump: Promise<void> | undefined;
+  private nextBatchId = 0;
 
   constructor(
     private readonly target: WebviewMessageTarget,
     private readonly onFailure: (error: unknown) => void,
+    private readonly onBatch?: (batch: { readonly id: number; readonly count: number; readonly accepted: boolean; readonly trace: boolean }) => void,
   ) {}
 
   /** Enqueues one host-to-Webview message without allowing concurrent posts. */
@@ -58,7 +60,11 @@ export class WebviewMessenger {
   private async deliver(): Promise<void> {
     while (this.ready && !this.disposed && this.queue.length > 0) {
       const messages = this.queue.splice(0, MAX_BATCH_MESSAGES);
-      const accepted = await this.target.postMessage({ type: 'batch', messages });
+      const id = ++this.nextBatchId;
+      const trace = id <= 8 || id % 64 === 0 || messages.some(message =>
+        ['resetTranscript', 'historyPrependStart', 'historyPrependEnd', 'connected'].includes(String(Reflect.get(message, 'type'))));
+      const accepted = await this.target.postMessage({ type: 'batch', batchId: id, trace, messages });
+      try { this.onBatch?.({ id, count: messages.length, accepted, trace }); } catch (_error) { /* Diagnostics cannot affect delivery. */ }
       if (!accepted && !this.disposed) throw new Error('DSH Companion Webview rejected a message batch');
     }
   }

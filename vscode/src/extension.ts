@@ -11,6 +11,7 @@ import { SessionSidebarProvider } from './sessionTree';
 import { sessionWorkspaceKind } from './sessionWorkspace';
 import { publishSessionHandoff, receiveSessionHandoffs } from './sessionHandoff';
 import { companionLifecycleRoot } from './runtimeInstaller';
+import { installRestoreTraceSink, isDiagnosticBatchMessage, isDiagnosticScrollMessage, restoreTrace } from './restoreDiagnostics';
 import { TabStatusProjection } from './tabStatus';
 import { WebviewMessenger } from './webviewMessenger';
 
@@ -133,6 +134,10 @@ const panelsBySessionId = new Map<string, vscode.WebviewPanel>();
 
 /** Registers the DSH Companion editor and runtime commands. */
 export function activate(context: vscode.ExtensionContext): void {
+  const restoreLog = vscode.window.createOutputChannel('DSH Companion Restore', { log: true });
+  const releaseRestoreLog = installRestoreTraceSink(line => restoreLog.info(line));
+  context.subscriptions.push(restoreLog, { dispose: releaseRestoreLog });
+  restoreTrace(undefined, 'diagnostics-started', { companionVersion: String(context.extension.packageJSON.version) });
   const runtimeProgress = new RuntimeProgress();
   const runtimeControl = connectRuntime(context, phase => runtimeProgress.report(phase));
   const sessionTree = new SessionSidebarProvider(
@@ -317,6 +322,13 @@ function configureChatEditor(
   restoredSessionId?: string,
 ): void {
   if (restoredSessionId !== undefined) panelsBySessionId.set(restoredSessionId, panel);
+  const panelTraceId = randomBytes(4).toString('hex');
+  let traceSessionId = restoredSessionId;
+  let scrollTraceLogged = false;
+  restoreTrace(traceSessionId, 'panel-open', {
+    panelTraceId, restored: restoredSessionId !== undefined,
+    companionVersion: String(context.extension.packageJSON.version),
+  });
   const seenKey = (sessionId: string) => `sessionSeenThrough:${sessionId}`;
   const seenThrough = restoredSessionId === undefined ? 0 : context.globalState.get<number>(seenKey(restoredSessionId), 0);
   const tabStatus = new TabStatusProjection(seenThrough);
@@ -344,12 +356,18 @@ function configureChatEditor(
   panel.webview.html = editorHtml(
     panel.webview,
     vscode.Uri.joinPath(mediaRoot, 'transcript-state.js'),
+    vscode.Uri.joinPath(mediaRoot, 'scroll-diagnostics.js'),
     vscode.Uri.joinPath(mediaRoot, 'main.js'),
     vscode.Uri.joinPath(mediaRoot, 'style.css'),
   );
 
   const messenger = new WebviewMessenger(panel.webview, (error) => {
-    console.warn('DSH Companion Webview message delivery failed', error);
+    restoreTrace(traceSessionId, 'batch-delivery-error', {
+      panelTraceId, errorKind: error instanceof Error ? error.name : 'unknown',
+    });
+  }, batch => {
+    if (!batch.trace && batch.accepted) return;
+    restoreTrace(traceSessionId, 'batch-posted', { panelTraceId, ...batch });
   });
   panelMessengers.set(panel, messenger);
   let client: DshClient | undefined;
@@ -369,6 +387,8 @@ function configureChatEditor(
     restoredSessionId,
     () => { sessionTree.requestRefresh(); },
     (sessionId, backendVersion) => {
+      traceSessionId = sessionId;
+      restoreTrace(sessionId, 'session-bound', { panelTraceId, backendVersion });
       panelsBySessionId.set(sessionId, panel);
       if (restoredSessionId === undefined) panel.title = 'DSH Chat';
       sessionTree.requestRefresh();
@@ -398,13 +418,26 @@ function configureChatEditor(
     return connected.client;
   });
   void ready.catch((error: unknown) => {
+    restoreTrace(traceSessionId, 'connection-failed', { panelTraceId, errorKind: error instanceof Error ? error.name : 'unknown' });
     post(panel, {
       type: 'error',
       text: error instanceof Error ? error.message : String(error),
     });
   });
   const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
-    if (isReadyMessage(message)) messenger.markReady();
+    if (isReadyMessage(message)) {
+      restoreTrace(traceSessionId, 'webview-ready', { panelTraceId });
+      messenger.markReady();
+    }
+    if (isDiagnosticBatchMessage(message)) {
+      restoreTrace(traceSessionId, 'batch-applied', { panelTraceId, batchId: message.batchId, processed: message.processed, failed: message.failed });
+    }
+    if (!scrollTraceLogged && isDiagnosticScrollMessage(message)) {
+      scrollTraceLogged = true;
+      restoreTrace(traceSessionId, 'scroll-jump', {
+        panelTraceId, reason: message.reason, startTop: message.startTop, samples: message.samples,
+      });
+    }
     if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
     if (isStopMessage(message)) void stop(panel, ready);
     if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
@@ -429,6 +462,7 @@ function configureChatEditor(
     );
   });
   panel.onDidDispose(() => {
+    restoreTrace(traceSessionId, 'panel-dispose', { panelTraceId });
     disposed = true;
     unsubscribeProgress();
     receive.dispose();
@@ -478,12 +512,26 @@ async function connect(
     // A retained rollback runtime may predate the authenticated version endpoint.
   }
   let streamingAssistant = '';
+  let renderPending = false;
+  let renderTimer: ReturnType<typeof setTimeout> | undefined;
+  const cancelRender = () => {
+    if (renderTimer !== undefined) clearTimeout(renderTimer);
+    renderTimer = undefined;
+    renderPending = false;
+  };
+  const flushRender = () => {
+    if (!renderPending) return;
+    cancelRender();
+    post(panel, { type: 'assistantRender', html: renderMarkdown(streamingAssistant), text: streamingAssistant });
+  };
+  panel.onDidDispose(cancelRender);
   const sink = {
     sessionCreated: (sessionId: string) => { onSessionCreated?.(sessionId, backendVersion); },
     sessionSummary: (summary: import('./dshClient').DshSessionListEntry | undefined) => {
       if (summary !== undefined) onSummary?.(summary.title);
     },
     reset: () => {
+      cancelRender();
       streamingAssistant = '';
       post(panel, { type: 'resetTranscript' });
     },
@@ -494,7 +542,7 @@ async function connect(
       ...(role === 'assistant' ? { html: renderMarkdown(text) } : {}),
       ...(time === undefined ? {} : { time }),
     }),
-    historyPrependStart: () => post(panel, { type: 'historyPrependStart' }),
+    historyPrependStart: () => { flushRender(); post(panel, { type: 'historyPrependStart' }); },
     historyPrependEnd: () => post(panel, { type: 'historyPrependEnd' }),
     historyState: (hasMore: boolean) => post(panel, { type: 'historyState', hasMore }),
     modelCatalog: (catalog: import('./dshClient').DshModelCatalog) => post(panel, { type: 'modelCatalog', catalog }),
@@ -516,21 +564,30 @@ async function connect(
     compactAvailable: (value: boolean) => post(panel, { type: 'compactAvailable', value }),
     compaction: (event: import('./dshClient').DshCompactionEvent) => post(panel, { type: 'compaction', event }),
     compacting: (value: boolean) => post(panel, { type: 'compacting', value }),
-    assistantStart: () => {
+    assistantStart: (turn: number, step: number) => {
+      flushRender();
       streamingAssistant = '';
-      post(panel, { type: 'assistantStart' });
+      post(panel, { type: 'assistantStart', turn, step });
     },
     assistantDelta: (text: string) => {
       streamingAssistant += text;
-      post(panel, { type: 'assistantRender', html: renderMarkdown(streamingAssistant) });
+      renderPending = true;
+      renderTimer ??= setTimeout(flushRender, 32);
     },
-    assistantTime: (time: number) => post(panel, { type: 'assistantTime', time }),
+    assistantAbandoned: () => {
+      cancelRender();
+      streamingAssistant = '';
+      post(panel, { type: 'assistantAbandoned' });
+    },
+    assistantTime: (time: number) => { flushRender(); post(panel, { type: 'assistantTime', time }); },
     process: (event: import('./dshClient').DshProcessEvent) => {
+      flushRender();
       if (event.type === 'turn-end') onTurnEnd?.(event.time, event.reason);
       post(panel, { type: 'process', event });
     },
     queue: (items: readonly import('./dshClient').DshQueuedPrompt[]) => post(panel, { type: 'queue', items }),
     running: (value: boolean) => {
+      if (!value) flushRender();
       onRunning?.(value);
       post(panel, { type: 'running', value });
       onSessionListChange?.();
@@ -1034,11 +1091,13 @@ function isChatEditorState(value: unknown): value is ChatEditorState {
 function editorHtml(
   webview: vscode.Webview,
   transcriptState: vscode.Uri,
+  scrollDiagnostics: vscode.Uri,
   script: vscode.Uri,
   style: vscode.Uri,
 ): string {
   const nonce = randomBytes(16).toString('base64');
   const transcriptStateUri = webview.asWebviewUri(transcriptState);
+  const scrollDiagnosticsUri = webview.asWebviewUri(scrollDiagnostics);
   const scriptUri = webview.asWebviewUri(script);
   const styleUri = webview.asWebviewUri(style);
   return `<!doctype html>
@@ -1162,6 +1221,7 @@ function editorHtml(
     </section>
   </div>
   <script nonce="${nonce}" src="${transcriptStateUri}"></script>
+  <script nonce="${nonce}" src="${scrollDiagnosticsUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

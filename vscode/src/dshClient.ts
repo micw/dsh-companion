@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
+import { eventWindowTrace, restoreTrace } from './restoreDiagnostics';
 
 /** Fixed source-development DSH Web origin. */
 export const DSH_ORIGIN = 'http://127.0.0.1:3081';
@@ -46,6 +47,7 @@ export type DshProcessEvent =
   }
   | {
     readonly type: 'status'; readonly id: string; readonly turn: number;
+    readonly step: number; readonly retroactive?: boolean;
     readonly kind: 'reasoning-token-progress'; readonly basis: 'reported' | 'estimated';
     readonly deltaTokens?: number; readonly totalTokens?: number;
   }
@@ -301,8 +303,9 @@ export interface DshOutputSink {
   compactAvailable(value: boolean): void;
   compaction(event: DshCompactionEvent): void;
   compacting(value: boolean): void;
-  assistantStart(): void;
+  assistantStart(turn: number, step: number): void;
   assistantDelta(text: string): void;
+  assistantAbandoned(): void;
   assistantTime(time: number): void;
   process(event: DshProcessEvent): void;
   queue(items: readonly DshQueuedPrompt[]): void;
@@ -1723,24 +1726,42 @@ export class DshClient {
     const canonical = this.requireCanonical();
     const binding = this.requireBinding();
     const session = binding.session;
+    restoreTrace(this.sessionIdValue, 'open', {});
     const inboxProjection = session.projections.faceOf('inbox');
     const projectInbox = (): void => {
       this.sink.queue(parseInboxQueue(
         inboxProjection.getSnapshot(), this.sessionRunning, canonical.requestAliases,
       ));
     };
+    let lastSessionTrace: string | undefined;
     const projectSession = (): void => {
       const snapshot = session.getSnapshot();
       if (!isRecord(snapshot) || typeof snapshot.running !== 'boolean'
         || typeof snapshot.hasMore !== 'boolean' || typeof snapshot.openState !== 'string') {
         throw new Error('DSH Client returned an invalid Session snapshot');
       }
+      const currentTrace = `${snapshot.openState}:${snapshot.running}:${snapshot.hasMore}`;
+      if (currentTrace !== lastSessionTrace) {
+        lastSessionTrace = currentTrace;
+        restoreTrace(this.sessionIdValue, 'session-state', {
+          openState: snapshot.openState, running: snapshot.running, hasMore: snapshot.hasMore,
+        });
+      }
       this.sessionRunning = snapshot.running;
       this.sink.running(snapshot.running);
       this.sink.historyState(snapshot.hasMore);
       projectInbox();
     };
-    const projectEvents = (): void => { this.receiveCanonicalWindow(binding.eventSource.getSnapshot()); };
+    let eventWindowInitialized = false;
+    const projectEvents = (): void => {
+      try {
+        this.receiveCanonicalWindow(binding.eventSource.getSnapshot(), !eventWindowInitialized);
+        eventWindowInitialized = true;
+      } catch (error) {
+        restoreTrace(this.sessionIdValue, 'event-window-failed', {});
+        throw error;
+      }
+    };
     const modelProjection = session.projections.faceOf('modelSelection');
     const contextProjection = session.projections.faceOf('contextPressure');
     const costProjection = session.projections.faceOf('modelCost');
@@ -1757,14 +1778,26 @@ export class DshClient {
     };
     const projectPermission = (): void => {
       const snapshot = permissionProjection.getSnapshot();
-      this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection({
-        ...snapshot,
-        options: this.permissionSelectionValue?.options ?? [],
-      });
+      try {
+        this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection({
+          ...snapshot,
+          options: this.permissionSelectionValue?.options ?? [],
+        });
+      } catch (error) {
+        restoreTrace(this.sessionIdValue, 'permission-projection-failed', { present: snapshot !== undefined });
+        throw error;
+      }
       this.sink.permissionSelection(this.permissionSelectionValue);
     };
+    let lastConnectionTrace: string | undefined;
     const projectConnection = (): void => {
       const state = canonical.graph.connection.state.getSnapshot();
+      const phase = state === 'connected' || state === 'connecting' || state === 'disconnected'
+        ? state : 'other';
+      if (phase !== lastConnectionTrace) {
+        lastConnectionTrace = phase;
+        restoreTrace(this.sessionIdValue, 'connection', { state: phase });
+      }
       if (state === 'connecting') {
         this.connectionInterrupted = true;
         this.sink.status('Reconnecting to DSH…');
@@ -1799,14 +1832,26 @@ export class DshClient {
     projectPermission();
     projectConnection();
     await waitForCanonicalSession(session);
+    restoreTrace(this.sessionIdValue, 'ready', {});
   }
 
-  private receiveCanonicalWindow(value: unknown): void {
+  private receiveCanonicalWindow(value: unknown, initial = false): void {
     if (!isRecord(value) || !Array.isArray(value.entries) || !isRecord(value.change)
       || typeof value.hasMore !== 'boolean') {
       throw new Error('DSH Client returned an invalid event window');
     }
     const change = value.change;
+    if (initial) {
+      // `change` describes only the last mutation, even when the full window already holds history.
+      restoreTrace(this.sessionIdValue, 'event-window-initial', eventWindowTrace(value.entries, change, value.hasMore));
+      this.replaceCanonicalWindow(value.entries, value.hasMore);
+      return;
+    }
+    if (change.kind !== 'append' || (Array.isArray(change.entries) && change.entries.some(entry =>
+      isRecord(entry) && entry.type === 'event' && isRecord(entry.event)
+        && (entry.event.type === 'user/message' || entry.event.type === 'turn/end')))) {
+      restoreTrace(this.sessionIdValue, 'event-window', eventWindowTrace(value.entries, change, value.hasMore));
+    }
     if (change.kind === 'append' && Array.isArray(change.entries)) {
       for (const entry of change.entries) this.receiveCanonicalEntry(entry, false);
       return;
@@ -1829,26 +1874,35 @@ export class DshClient {
       }
       return;
     }
-    if (change.kind === 'settle-assistant' && isRecord(change.entry)) {
-      if (this.canonical !== undefined) this.canonical.assistantAttemptId = undefined;
-      this.receiveCanonicalEntry(change.entry, false);
+    if (change.kind === 'settle-assistant') {
+      const currentAttempt = this.canonical?.assistantAttemptId === change.attemptId;
+      if (currentAttempt && this.canonical !== undefined) this.canonical.assistantAttemptId = undefined;
+      if (isRecord(change.entry)) this.receiveCanonicalEntry(change.entry, false);
+      else if (currentAttempt && this.hasLiveAssistantText) {
+        this.hasLiveAssistantText = false;
+        this.sink.assistantAbandoned();
+      }
       return;
     }
-    if (change.kind !== 'replace' && change.kind !== 'settle-assistant') {
+    if (change.kind !== 'replace') {
       throw new Error('DSH Client returned an invalid event-window change');
     }
-    this.retireCanonicalSubmissions(value.entries);
+    this.replaceCanonicalWindow(value.entries, value.hasMore);
+  }
+
+  private replaceCanonicalWindow(entries: readonly unknown[], hasMore: boolean): void {
+    this.retireCanonicalSubmissions(entries);
     this.resetParser();
     this.sink.reset();
-    const hints = historyTurnHints(value.entries);
-    for (const [index, entry] of value.entries.entries()) {
+    const hints = historyTurnHints(entries);
+    for (const [index, entry] of entries.entries()) {
       this.receiveCanonicalEntry(entry, true, false, hints[index]);
     }
     if (this.openTurn !== undefined && !this.sessionRunning) {
       this.sink.process({ type: 'turn-incomplete', turn: this.openTurn });
     }
     this.sink.compacting(this.compactionActive());
-    this.sink.historyState(value.hasMore);
+    this.sink.historyState(hasMore);
   }
 
   private receiveCanonicalEntry(
@@ -1872,7 +1926,7 @@ export class DshClient {
     this.currentStep = event.data.step;
     if (canonical.assistantAttemptId !== event.data.attemptId) {
       canonical.assistantAttemptId = event.data.attemptId;
-      this.sink.assistantStart();
+      this.sink.assistantStart(this.currentTurn, this.currentStep);
     }
     this.receiveAssistantChunk(event.data.chunk, event.time);
   }
@@ -1985,13 +2039,14 @@ export class DshClient {
         type: 'status',
         id: reasoningStatusId(this.currentTurn, this.currentStep),
         turn: this.currentTurn,
+        step: this.currentStep,
+        retroactive: this.hasLiveAssistantText,
         kind: 'reasoning-token-progress',
         basis: chunk.status.basis as 'reported' | 'estimated',
         deltaTokens: chunk.status.deltaTokens,
       });
       return;
     }
-    this.receiveFinish(chunk);
   }
 
   private receiveHistoryRecord(
@@ -2003,12 +2058,14 @@ export class DshClient {
     if (!isRecord(record) || record.type !== 'event' || !isRecord(record.event)) return;
     const event = record.event;
     if (!isRecord(event.data)) return;
-    if (typeof event.data.turn === 'number') this.currentTurn = event.data.turn;
-    else if (this.currentTurn === 0 && turnHint !== undefined) this.currentTurn = turnHint;
-    if (typeof event.data.step === 'number') this.currentStep = event.data.step;
-    if (this.currentTurn > 0 && event.type !== 'turn/end'
-      && (typeof event.data.turn === 'number' || event.type === 'user/message')) {
-      this.openTurn = this.currentTurn;
+    if (event.type !== 'tool/result') {
+      if (typeof event.data.turn === 'number') this.currentTurn = event.data.turn;
+      else if (this.currentTurn === 0 && turnHint !== undefined) this.currentTurn = turnHint;
+      if (typeof event.data.step === 'number') this.currentStep = event.data.step;
+      if (this.currentTurn > 0 && event.type !== 'turn/end'
+        && (typeof event.data.turn === 'number' || event.type === 'user/message')) {
+        this.openTurn = this.currentTurn;
+      }
     }
 
     if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
@@ -2131,7 +2188,7 @@ export class DshClient {
         : undefined;
       const usage = event.data.usage ?? usageFromStream(event.data.stream);
       if (fromSnapshot) this.emitRestoredStatuses(event.data.statuses, step);
-      this.emitFinalReasoningStatus(usage, step);
+      this.emitFinalReasoningStatus(usage, step, !fromSnapshot && this.hasLiveAssistantText);
       this.turnStats?.addAttempt(
         step,
         event.time,
@@ -2139,26 +2196,34 @@ export class DshClient {
         route,
         reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
       );
+      if (this.hasLiveAssistantText) {
+        this.hasLiveAssistantText = false;
+        if (typeof event.time === 'number') this.sink.assistantTime(event.time);
+        return;
+      }
       if (fromSnapshot && Array.isArray(event.data.message.content)) {
+        let texts: { type: 'text'; text: string }[] = [];
+        const flushText = (): void => {
+          emitContent(this.sink, 'assistant', texts, event.time);
+          texts = [];
+        };
         for (const [index, block] of event.data.message.content.entries()) {
+          if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
+            texts.push({ type: 'text', text: block.text });
+            continue;
+          }
+          flushText();
           if (isRecord(block) && block.type === 'reasoning' && typeof block.text === 'string') {
             this.sink.process({
               type: 'reasoning',
-              id: reasoningDisclosureId(
-                this.currentTurn,
-                typeof event.data.step === 'number' ? event.data.step : this.currentStep,
-                index,
-              ),
+              id: reasoningDisclosureId(this.currentTurn, step, index),
               turn: this.currentTurn,
               text: block.text,
               append: false,
             });
           }
         }
-      }
-      if (this.hasLiveAssistantText) {
-        this.hasLiveAssistantText = false;
-        if (typeof event.time === 'number') this.sink.assistantTime(event.time);
+        flushText();
         return;
       }
       emitContent(this.sink, 'assistant', event.data.message.content, event.time);
@@ -2188,7 +2253,7 @@ export class DshClient {
       const first = Array.isArray(event.data.message.content) ? event.data.message.content[0] : undefined;
       this.sink.process({
         type: 'tool-result',
-        turn: this.currentTurn,
+        turn: typeof event.data.turn === 'number' ? event.data.turn : this.currentTurn,
         callId: event.data.message.source.callId,
         detail: isRecord(first) ? contentText(first.content) : '',
         isError: isRecord(first) && first.isError === true,
@@ -2209,11 +2274,6 @@ export class DshClient {
         undefined,
         reconcileSettlementAccounting(event.data.accounting, accountingFromStream(event.data.stream)),
       );
-      for (const item of event.data.stream) {
-        if (isRecord(item) && item.type === 'chunk' && isRecord(item.chunk)) {
-          this.receiveFinish(item.chunk);
-        }
-      }
     }
   }
 
@@ -2230,6 +2290,7 @@ export class DshClient {
         type: 'status',
         id: reasoningStatusId(this.currentTurn, step),
         turn: this.currentTurn,
+        step,
         kind: 'reasoning-token-progress',
         basis: status.basis as 'reported' | 'estimated',
         deltaTokens: status.deltaTokens,
@@ -2237,12 +2298,14 @@ export class DshClient {
     }
   }
 
-  private emitFinalReasoningStatus(usage: unknown, step: number): void {
+  private emitFinalReasoningStatus(usage: unknown, step: number, retroactive = false): void {
     if (!isRecord(usage) || !isCount(usage.reasoningTokens) || Object.is(usage.reasoningTokens, -0)) return;
     this.sink.process({
       type: 'status',
       id: reasoningStatusId(this.currentTurn, step),
       turn: this.currentTurn,
+      step,
+      retroactive,
       kind: 'reasoning-token-progress',
       basis: 'reported',
       totalTokens: usage.reasoningTokens,
@@ -2251,12 +2314,6 @@ export class DshClient {
 
   private compactionActive(): boolean {
     return this.activeCompactions.size > 0 || this.activeCompactionCommands.size > 0;
-  }
-
-  private receiveFinish(chunk: Record<string, unknown>): void {
-    if (chunk.type !== 'finish' || !isRecord(chunk.reason) || !isRecord(chunk.reason.failure)
-      || typeof chunk.reason.failure.message !== 'string') return;
-    this.reportError(chunk.reason.failure.message);
   }
 
   private reportError(message: string): void {

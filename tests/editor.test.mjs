@@ -37,6 +37,22 @@ test('Session Information explicitly refreshes the DSH-owned title for its bound
   assert.match(script, /sessionInfoRefreshTitle\.disabled = false/);
 });
 
+test('the first canonical event window replays its full snapshot before subscribing to deltas', async () => {
+  const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
+  assert.match(client, /let eventWindowInitialized = false/);
+  assert.match(client, /receiveCanonicalWindow\(binding\.eventSource\.getSnapshot\(\), !eventWindowInitialized\)/);
+  assert.match(client, /if \(initial\) \{[\s\S]*?replaceCanonicalWindow\(value\.entries, value\.hasMore\)/);
+});
+
+test('an orphan Tool result does not create a Webview Turn placeholder', async () => {
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  const processEvent = script.slice(script.indexOf('function applyProcessEvent(event) {'),
+    script.indexOf('function createProcessSegment('));
+  assert.match(processEvent,
+    /if \(event\.type === 'tool-result'\) \{\s*appendToolResult\(event\);\s*return;\s*\}\s*activeTurn = event\.turn;\s*const turn = ensureTurn\(event\.turn\)/);
+  assert.match(script, /function appendToolResult\(event\) \{\s*const row = tools\.get\(event\.callId\);\s*if \(row === undefined\) return;/);
+});
+
 test('tab titles and activity are derived from canonical Session and Turn events', async () => {
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
   const client = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
@@ -192,7 +208,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /function resetTranscript/);
   assert.match(script, /function beginHistoryPrepend/);
   assert.match(script, /mergePrependedTurnState/);
-  assert.match(script, /placeTurnProcessAfterMessage/);
+  assert.match(script, /advanceTurnProcessSegment/);
+  assert.match(script, /placeEmptyTurnProcessAfterMessage/);
   assert.match(script, /following: scrollMode === 'follow'/);
   assert.match(script, /if \(previous\.following\) \{[\s\S]*followOutput\(\)/);
   assert.match(script, /reattachTranscriptTail\(output, \[\.\.\.fragment\.childNodes\], previous\.nodes\)/);
@@ -203,15 +220,23 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /stickyPromptTarget\.scrollIntoView/);
   assert.match(script, /function markUserScrollIntent/);
   assert.match(script, /function finishPointerInteraction/);
+  assert.match(script, /document\.addEventListener\('selectionchange', flushAssistantRenders\)/);
+  assert.match(script, /pendingAssistantRenders\.set\(activeAssistant, html\)/);
+  assert.match(script, /reconcileTranscriptNodes\(body, template\.content\)/);
+  assert.match(script, /captureAssistantSelection\(body, selection\)/);
+  assert.match(script, /restoreAssistantSelection\(body, selection, savedSelection\)/);
+  assert.match(extension, /renderTimer \?\?= setTimeout\(flushRender, 32\)/);
+  assert.doesNotMatch(script, /activeAssistant\.innerHTML = html/);
   assert.match(script, /function setOutputSticky/);
   assert.match(script, /function updateScrollButton/);
   assert.match(script, /scrollBottom\.addEventListener\('click', scrollToLatestOutput\)/);
-  assert.match(script, /function scrollToLatestOutput[\s\S]*behavior: 'smooth'/);
-  assert.match(script, /stickyPromptJump\.addEventListener[\s\S]*setOutputSticky\(true\)[\s\S]*scrollIntoView/);
+  assert.match(script, /function scrollToLatestOutput\(\) \{\s*setOutputFollow\(\)/);
+  assert.match(script, /stickyPromptJump\.addEventListener[\s\S]*setOutputSticky\(\)[\s\S]*scrollIntoView/);
   assert.match(script, /output\.contains\(selection\.anchorNode\)/);
   assert.match(script, /output\.scrollHeight - output\.scrollTop - output\.clientHeight < 32/);
-  assert.match(script, /scrollMode = nearBottom \? 'follow' : 'sticky'/);
-  assert.match(script, /scrollMode === 'sticky' && nearBottom && !bottomLatchSuppressed/);
+  assert.match(script, /scrollModeAfterScroll\(scrollMode, nearBottom, userGesture, userScrollAwayIntent, recentDown\)/);
+  assert.match(script, /const wasPointerScrolling = pointerScrolling/);
+  assert.match(script, /const refreshScrollBounds = createScrollBoundsRefresher\(output, requestAnimationFrame,/);
   assert.match(script, /scrollMode !== 'follow' \|\| userScrollIntent \|\| pointerScrolling/);
   assert.match(script, /output\.addEventListener\('wheel', markUserScrollIntent/);
   assert.match(script, /message\.type === 'userCommitted'/);
@@ -225,6 +250,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.turn-process-static/);
   assert.match(style, /\.message\.assistant pre/);
   assert.match(style, /#output \{[\s\S]*padding: 24px 20px/);
+  assert.match(style, /#output \{[\s\S]*overflow-anchor: none/);
   assert.match(style, /#sticky-prompt \{[\s\S]*position: absolute/);
   assert.match(style, /#sticky-prompt-jump \{[\s\S]*border-radius: 50%/);
   assert.match(style, /#scroll-bottom \{[\s\S]*position: absolute/);
