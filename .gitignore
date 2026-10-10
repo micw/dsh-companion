@@ -2,6 +2,7 @@ node_modules/
 lib/
 *.tsbuildinfo
 vscode/out/
+vscode/media/mermaid-bundle.js
 build/
 dist/
 *.vsix

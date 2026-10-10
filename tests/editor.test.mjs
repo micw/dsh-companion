@@ -59,7 +59,7 @@ test('tab titles and activity are derived from canonical Session and Turn events
   const sidebar = await readFile(new URL('../vscode/media/sessions.js', import.meta.url), 'utf8');
   assert.match(client, /graph\.sessions\.list\.subscribe\(publishSummary\)/);
   assert.match(client, /sink\.sessionSummary\(parseSessionListSnapshot/);
-  assert.match(extension, /panel\.title = title/);
+  assert.match(extension, /panel\.title = summary\.title/);
   assert.match(extension, /tabStatus\.end\(time, reason\)/);
   assert.match(extension, /context\.globalState\.update\(seenKey\(sessionId\), watermark\)/);
   assert.match(sidebar, /title\.textContent = item\.title/);
@@ -225,6 +225,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /reconcileTranscriptNodes\(body, template\.content\)/);
   assert.match(script, /captureAssistantSelection\(body, selection\)/);
   assert.match(script, /restoreAssistantSelection\(body, selection, savedSelection\)/);
+  assert.match(script, /mermaid\.render\(/);
+  assert.match(script, /new Blob\(\[svg\], \{ type: 'image\/svg\+xml' \}\)/);
+  assert.match(script, /type: 'copyText', format, text: markdown/);
   assert.match(extension, /renderTimer \?\?= setTimeout\(flushRender, 32\)/);
   assert.doesNotMatch(script, /activeAssistant\.innerHTML = html/);
   assert.match(script, /function setOutputSticky/);
@@ -279,6 +282,8 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.session-info-session:hover #session-info-copy/);
   assert.match(style, /\.session-info-session:focus-within #session-info-copy/);
   assert.match(style, /\.provider-usage-time-marker \{/);
+  assert.match(style, /\.message-time, \.message \.role, \.turn-footer/);
+  assert.match(style, /#sticky-prompt \{ user-select: none; \}/);
   assert.match(style, /\.compaction-activity/);
   assert.match(style, /#status\[data-running='true'\]::before/);
   assert.match(extension, /rows="1"/);

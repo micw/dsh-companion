@@ -73,6 +73,22 @@
       {
         "command": "dshCompanion.stopManagedRuntime",
         "title": "DSH: Stop Managed Runtime"
+      },
+      {
+        "command": "dshCompanion.openWebviewLink",
+        "title": "Open Link"
+      },
+      {
+        "command": "dshCompanion.openWebviewLinkBeside",
+        "title": "Open File to the Side"
+      },
+      {
+        "command": "dshCompanion.copyWebviewLink",
+        "title": "Copy Link"
+      },
+      {
+        "command": "dshCompanion.copyWebviewAbsolutePath",
+        "title": "Copy Absolute Path"
       }
     ],
     "viewsContainers": {
@@ -116,11 +132,33 @@
           "command": "dshCompanion.openSession",
           "when": "false"
         }
+      ],
+      "webview/context": [
+        {
+          "command": "dshCompanion.openWebviewLink",
+          "when": "webviewId == 'dshCompanion.chatEditor' && webviewSection == 'dshCompanionLink'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dshCompanion.openWebviewLinkBeside",
+          "when": "webviewId == 'dshCompanion.chatEditor' && webviewSection == 'dshCompanionLink' && dshCompanionLinkKind == 'file'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dshCompanion.copyWebviewLink",
+          "when": "webviewId == 'dshCompanion.chatEditor' && webviewSection == 'dshCompanionLink'",
+          "group": "clipboard@1"
+        },
+        {
+          "command": "dshCompanion.copyWebviewAbsolutePath",
+          "when": "webviewId == 'dshCompanion.chatEditor' && webviewSection == 'dshCompanionLink' && dshCompanionLinkKind == 'file'",
+          "group": "clipboard@2"
+        }
       ]
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && node ../scripts/bundle-mermaid.mjs",
     "watch": "tsc --watch -p ./"
   },
   "dependencies": {
@@ -133,6 +171,7 @@
     "@types/vscode": "^1.93.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.10",
+    "mermaid": "^11.17.2",
     "typescript": "^5.4.0"
   }
 }

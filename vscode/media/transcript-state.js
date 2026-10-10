@@ -243,10 +243,28 @@
     output.replaceChildren(...prependedNodes, ...tailNodes);
   }
 
+  /** Builds a host action from the file identity stored on one rendered link. */
+  function fileLinkRequest(dataset, action = 'open') {
+    const path = dataset?.filePath;
+    if (typeof path !== 'string' || path.length === 0
+      || !['open', 'openBeside', 'copyPath'].includes(action)) return undefined;
+    const line = dataset.fileLine;
+    const endLine = dataset.fileEndLine;
+    if (line !== undefined && (!Number.isSafeInteger(Number(line)) || Number(line) <= 0)) return undefined;
+    if (endLine !== undefined && (line === undefined || !Number.isSafeInteger(Number(endLine))
+      || Number(endLine) < Number(line))) return undefined;
+    return {
+      type: 'openFile', path, action,
+      ...(line === undefined ? {} : { line: Number(line) }),
+      ...(endLine === undefined ? {} : { endLine: Number(endLine) }),
+    };
+  }
+
   globalThis.dshCompanionTranscriptState = Object.freeze({
     activityStatusText,
     advanceTurnProcessSegment,
     createScrollBoundsRefresher,
+    fileLinkRequest,
     mergePrependedTurnState,
     placeEmptyTurnProcessAfterMessage,
     placeUserMessageBeforeTurn,

@@ -48,6 +48,10 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
       command: 'dshCompanion.stopManagedRuntime',
       title: 'DSH: Stop Managed Runtime',
     },
+    { command: 'dshCompanion.openWebviewLink', title: 'Open Link' },
+    { command: 'dshCompanion.openWebviewLinkBeside', title: 'Open File to the Side' },
+    { command: 'dshCompanion.copyWebviewLink', title: 'Copy Link' },
+    { command: 'dshCompanion.copyWebviewAbsolutePath', title: 'Copy Absolute Path' },
   ]);
   assert.deepEqual(manifest.activationEvents, [
     'onStartupFinished',
@@ -64,4 +68,11 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
   }]);
   assert.equal(manifest.contributes.viewsContainers.activitybar[0].id, 'dshCompanion');
   assert.equal(manifest.contributes.viewsWelcome, undefined);
+  const linkMenu = manifest.contributes.menus['webview/context'];
+  assert.deepEqual(linkMenu.map(item => item.command), [
+    'dshCompanion.openWebviewLink', 'dshCompanion.openWebviewLinkBeside',
+    'dshCompanion.copyWebviewLink', 'dshCompanion.copyWebviewAbsolutePath',
+  ]);
+  assert.ok(linkMenu.every(item => item.when.includes("webviewId == 'dshCompanion.chatEditor'")
+    && item.when.includes("webviewSection == 'dshCompanionLink'")));
 });
