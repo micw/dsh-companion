@@ -65,6 +65,58 @@ test('initial settle-assistant delta also replays the complete retained window',
   assert.equal(output.find(item => item.kind === 'history' && item.text === 'original')?.role, 'user');
 });
 
+test('subagent messages retain their Inbox identity and Turn in live and restored context rows', () => {
+  const entries = [
+    event(1, 'turn/start', { turn: 3 }),
+    event(2, 'step/start', { turn: 3, step: 1 }),
+    event(3, 'user/message', { id: 'relay-1', source: { kind: 'agent-message' },
+      content: [{ type: 'text', text: 'Agent report' }] }),
+    event(4, 'user/message', { id: 'settled-1', source: { kind: 'subagent-settled' },
+      content: [{ type: 'text', text: 'Finished' }] }),
+  ];
+  const live = createProjection();
+  const restored = createProjection();
+  applyWindow(live.client, entries.slice(0, 2), { kind: 'replace', entries: entries.slice(0, 2) }, true);
+  for (let index = 2; index < entries.length; index += 1) {
+    applyWindow(live.client, entries.slice(0, index + 1), { kind: 'append', entries: [entries[index]] });
+  }
+  applyWindow(restored.client, entries, { kind: 'replace', entries }, true);
+  const contexts = output => output.filter(item => item.type === 'context')
+    .map(({ turn, messageId, label, detail }) => ({ turn, messageId, label, detail }));
+  assert.deepEqual(contexts(live.output), [
+    { turn: 3, messageId: 'relay-1', label: 'Subagent message', detail: 'Agent report' },
+    { turn: 3, messageId: 'settled-1', label: 'Subagent finished', detail: 'Finished' },
+  ]);
+  assert.deepEqual(contexts(restored.output), contexts(live.output));
+});
+
+test('background-job and unknown context sources render the same metadata live and after restore', () => {
+  const entries = [
+    event(1, 'turn/start', { turn: 5 }),
+    event(2, 'step/start', { turn: 5, step: 1 }),
+    event(3, 'user/message', { id: 'job-1', source: {
+      kind: 'tool-jobs', form: 'notice', summary: 'bash-828 finished',
+    }, content: [{ type: 'text', text: 'Full completion notice' }] }),
+    event(4, 'user/message', { id: 'future-1', source: { kind: 'future-source' },
+      content: [{ type: 'text', text: 'Future context' }] }),
+  ];
+  const live = createProjection();
+  const restored = createProjection();
+  applyWindow(live.client, entries.slice(0, 2), { kind: 'replace', entries: entries.slice(0, 2) }, true);
+  for (let index = 2; index < entries.length; index += 1) {
+    applyWindow(live.client, entries.slice(0, index + 1), { kind: 'append', entries: [entries[index]] });
+  }
+  applyWindow(restored.client, entries, { kind: 'replace', entries }, true);
+  const contexts = output => output.filter(item => item.type === 'context')
+    .map(({ turn, messageId, label, summary, detail }) => ({ turn, messageId, label, summary, detail }));
+  assert.deepEqual(contexts(live.output), [
+    { turn: 5, messageId: 'job-1', label: 'Background job', summary: 'bash-828 finished',
+      detail: 'Full completion notice' },
+    { turn: 5, messageId: 'future-1', label: 'Context update', summary: undefined, detail: 'Future context' },
+  ]);
+  assert.deepEqual(contexts(restored.output), contexts(live.output));
+});
+
 test('a recovered context-overflow attempt does not publish a final error in live or restored history', () => {
   const entries = [
     event(1, 'turn/start', { turn: 4 }),

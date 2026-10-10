@@ -50,6 +50,20 @@ body {
   white-space: pre-wrap;
 }
 
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.message-images img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+}
+
 .message.assistant {
   background: transparent;
 }
@@ -555,6 +569,40 @@ body {
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
 }
+
+#image-tray[hidden],
+#image-error[hidden] { display: none; }
+#image-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.image-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  padding: 3px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+}
+.image-chip img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.image-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font: inherit;
+}
+.image-chip button:disabled { cursor: default; opacity: 0.5; }
+#image-error { margin-bottom: 8px; color: var(--vscode-errorForeground); }
 
 #prompt {
   width: 100%;
@@ -1370,7 +1418,28 @@ body {
   cursor: pointer;
 }
 
-#send { min-width: 72px; }
+#send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 84px;
+  padding: 0 10px;
+}
+#send .send-icon {
+  display: none;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#send[data-mode='send'] .send-icon-send,
+#send[data-mode='queue'] .send-icon-queue,
+#send[data-mode='steer'] .send-icon-steer { display: block; }
 #stop { width: 32px; padding: 8px; }
 #stop span {
   display: block;
@@ -1412,9 +1481,9 @@ body {
 
 #queue {
   width: calc(100% - 40px);
-  max-height: 160px;
+  max-height: calc(100vh - 160px);
   margin: 0 20px 4px;
-  overflow: auto;
+  overflow-y: auto;
   border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
   border-radius: 6px;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
@@ -1426,7 +1495,8 @@ body {
 
 .queue-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
   padding: 7px 9px;
   border-bottom: 1px solid var(--vscode-panel-border);
@@ -1441,11 +1511,42 @@ body {
   font-size: 0.8em;
 }
 
+.queue-content { min-width: 0; }
+.queue-content .message-images img { width: 36px; height: 36px; }
+
 .queue-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.queue-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.queue-actions button {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.queue-actions button:hover:not(:disabled),
+.queue-actions button:focus-visible {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.queue-actions button:disabled { opacity: 0.5; cursor: default; }
+
+.queue-notice {
+  margin: 0;
+  padding: 7px 9px;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
 }
 
 @keyframes status-spin {

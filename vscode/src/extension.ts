@@ -7,6 +7,8 @@ import { renderMarkdown, renderPortableMarkdown } from './markdown';
 import { isOpenFileMessage, resolveLocalFilePath, uriForLocalFile } from './fileLinks';
 import type { OpenFileMessage } from './fileLinks';
 import { isCopyTextMessage } from './clipboardMessages';
+import { isLoadImageMessage, isQueueActionMessage, isStopMessage, isSubmitMessage } from './queueMessages';
+import type { LoadImageMessage, QueueActionMessage, SubmitMessage } from './queueMessages';
 import { RuntimeControl } from './runtimeControl';
 import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 import { connectRuntime } from './runtimeInstaller';
@@ -20,16 +22,6 @@ import { WebviewMessenger } from './webviewMessenger';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
 const COOKIE_SECRET_KEY = 'dshCompanion.developmentCookie';
-
-interface SubmitMessage {
-  readonly type: 'submit';
-  readonly requestId: string;
-  readonly text: string;
-}
-
-interface StopMessage {
-  readonly type: 'stop';
-}
 
 interface CopySessionIdMessage {
   readonly type: 'copySessionId';
@@ -489,8 +481,10 @@ function configureChatEditor(
         panelTraceId, reason: message.reason, startTop: message.startTop, samples: message.samples,
       });
     }
-    if (isSubmitMessage(message)) void submit(panel, ready, message.requestId, message.text);
+    if (isSubmitMessage(message)) void submit(panel, ready, message);
     if (isStopMessage(message)) void stop(panel, ready);
+    if (isQueueActionMessage(message)) void queueAction(panel, ready, message);
+    if (isLoadImageMessage(message)) void loadImage(panel, ready, message);
     if (isCopySessionIdMessage(message)) void copySessionId(panel, ready);
     if (isRefreshSessionTitleMessage(message)) void refreshSessionTitle(panel, ready);
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
@@ -592,12 +586,15 @@ async function connect(
       streamingAssistant = '';
       post(panel, { type: 'resetTranscript' });
     },
-    history: (role: 'user' | 'assistant' | 'error', text: string, time?: number) => post(panel, {
+    history: (role: 'user' | 'assistant' | 'error', text: string, time?: number, turn?: number, step?: number,
+      images?: readonly import('./dshClient').DshImageAttachment[]) => post(panel, {
       type: 'message',
       role,
       text,
       ...(role === 'assistant' ? { html: renderMarkdown(text) } : {}),
       ...(time === undefined ? {} : { time }),
+      ...(turn === undefined ? {} : { turn, step }),
+      ...(images === undefined ? {} : { images }),
     }),
     historyPrependStart: () => { flushRender(); post(panel, { type: 'historyPrependStart' }); },
     historyPrependEnd: () => post(panel, { type: 'historyPrependEnd' }),
@@ -651,8 +648,9 @@ async function connect(
     },
     status: (text: string) => post(panel, { type: 'status', text }),
     submissionObserved: (requestId: string) => post(panel, { type: 'submissionObserved', requestId }),
-    userCommitted: (requestId: string | undefined, text: string, time: number, turn: number) => post(panel, {
-      type: 'userCommitted', requestId, text, time, turn,
+    userCommitted: (requestId: string | undefined, text: string, time: number, turn: number, step: number,
+      images?: readonly import('./dshClient').DshImageAttachment[]) => post(panel, {
+      type: 'userCommitted', requestId, text, time, turn, step, images,
     }),
   };
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -770,15 +768,15 @@ async function refreshSessionTitle(panel: vscode.WebviewPanel, ready: Promise<Ds
 async function submit(
   panel: vscode.WebviewPanel,
   ready: Promise<DshClient>,
-  requestId: string,
-  text: string,
+  message: SubmitMessage,
 ): Promise<void> {
   post(panel, { type: 'sending', value: true });
   try {
     const client = await ready;
-    await client.prompt(text, requestId);
+    await client.prompt(message.text, message.requestId, message.mode, message.images ?? []);
+    post(panel, { type: 'submissionAccepted', requestId: message.requestId });
   } catch (error) {
-    post(panel, { type: 'submissionFailed', requestId });
+    post(panel, { type: 'submissionFailed', requestId: message.requestId });
     post(panel, {
       type: 'error',
       text: error instanceof Error ? error.message : String(error),
@@ -791,7 +789,11 @@ async function submit(
 async function stop(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
   post(panel, { type: 'stopping', value: true });
   try {
-    await (await ready).cancel();
+    const result = await (await ready).stopAndClearQueue();
+    for (const item of result.removed) {
+      post(panel, { type: 'queueItemRemoved', itemId: item.id, requestId: item.requestId, action: 'remove' });
+    }
+    post(panel, { type: 'queueStopResult', failed: result.failed, cancelFailed: result.cancelFailed });
   } catch (error) {
     post(panel, {
       type: 'error',
@@ -799,6 +801,36 @@ async function stop(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Prom
     });
   } finally {
     post(panel, { type: 'stopping', value: false });
+  }
+}
+
+async function queueAction(panel: vscode.WebviewPanel, ready: Promise<DshClient>, message: QueueActionMessage): Promise<void> {
+  try {
+    const client = await ready;
+    if (message.action === 'steer') {
+      await client.steerQueued(message.itemId);
+      post(panel, { type: 'queueItemSteered', itemId: message.itemId });
+      return;
+    }
+    const item = await client.removeQueued(message.itemId, message.action === 'takeBack');
+    post(panel, {
+      type: 'queueItemRemoved', itemId: item.id, requestId: item.requestId, action: message.action,
+      ...(message.action === 'takeBack' ? { text: item.text, images: item.restoredImages ?? [] } : {}),
+    });
+  } catch (error) {
+    post(panel, {
+      type: 'queueActionFailed', itemId: message.itemId,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function loadImage(panel: vscode.WebviewPanel, ready: Promise<DshClient>, message: LoadImageMessage): Promise<void> {
+  try {
+    const image = await (await ready).readImage(message.attachmentId);
+    post(panel, { type: 'imageLoaded', attachmentId: message.attachmentId, image });
+  } catch (_error) {
+    post(panel, { type: 'imageLoadFailed', attachmentId: message.attachmentId });
   }
 }
 
@@ -1038,19 +1070,6 @@ function isReadyMessage(value: unknown): value is ReadyMessage {
     && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'ready';
 }
 
-function isSubmitMessage(value: unknown): value is SubmitMessage {
-  return typeof value === 'object' && value !== null
-    && Reflect.get(value, 'type') === 'submit'
-    && typeof Reflect.get(value, 'requestId') === 'string'
-    && Reflect.get(value, 'requestId').length > 0
-    && typeof Reflect.get(value, 'text') === 'string'
-    && Reflect.get(value, 'text').trim().length > 0;
-}
-
-function isStopMessage(value: unknown): value is StopMessage {
-  return typeof value === 'object' && value !== null && Reflect.get(value, 'type') === 'stop';
-}
-
 function isCopySessionIdMessage(value: unknown): value is CopySessionIdMessage {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     && Object.keys(value).length === 1 && Reflect.get(value, 'type') === 'copySessionId';
@@ -1196,7 +1215,7 @@ function editorHtml(
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
   <title>DSH Chat</title>
@@ -1216,7 +1235,9 @@ function editorHtml(
   <section id="queue" aria-label="Pending messages" hidden></section>
   <div id="status" role="status">Connecting…</div>
   <form id="composer">
-    <textarea id="prompt" rows="1" aria-label="Message" placeholder="Ask DSH Companion… (Enter sends, Shift+Enter = newline)"></textarea>
+    <div id="image-tray" aria-label="Attached images" hidden></div>
+    <div id="image-error" role="alert" hidden></div>
+    <textarea id="prompt" rows="1" aria-label="Message" aria-keyshortcuts="Enter Control+Enter" title="Enter queues; Ctrl+Enter steers while a Turn is running; Shift+Enter inserts a newline" placeholder="Ask DSH Companion… (Enter sends, Ctrl+Enter = steer, Shift+Enter = newline)"></textarea>
     <div id="composer-toolbar">
       <div id="model-controls">
         <button id="model-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" disabled>Loading models…</button>
@@ -1285,10 +1306,15 @@ function editorHtml(
         </div>
       </div>
       <div id="composer-actions">
-        <button id="stop" type="button" aria-label="Stop" title="Stop">
+        <button id="stop" type="button" aria-label="Stop and clear waiting messages" title="Stop active work and clear waiting messages">
           <span aria-hidden="true"></span>
         </button>
-        <button id="send" type="submit">Send</button>
+        <button id="send" type="submit" data-mode="send" aria-label="Send message (Enter or click)" title="Send message (Enter or click)">
+          <svg class="send-icon send-icon-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17 17 4M8 4h9v9"/></svg>
+          <svg class="send-icon send-icon-queue" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h12M4 9h12M4 13h7m0 4h6m-3-3 3 3-3 3"/></svg>
+          <svg class="send-icon send-icon-steer" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17h7a5 5 0 0 0 5-5V4m-4 4 4-4 4 4"/></svg>
+          <span id="send-label">Send</span>
+        </button>
       </div>
     </div>
   </form>

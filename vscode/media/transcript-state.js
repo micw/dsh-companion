@@ -55,11 +55,11 @@
     return true;
   }
 
-  /** Keeps post-compaction process rows below the durable compaction activity in the same Turn. */
-  function splitTurnProcessAtCompaction(turn, activity) {
-    if (turn === undefined || turn.completed || turn.root.parentNode !== activity.parentNode) return false;
+  /** Keeps later process rows below a durable within-Turn boundary. */
+  function splitTurnProcessAtBoundary(turn, boundary) {
+    if (turn === undefined || turn.completed || turn.root.parentNode !== boundary.parentNode) return false;
     if (turn.rows.childNodes.length === 0) {
-      activity.after(turn.root);
+      boundary.after(turn.root);
     } else {
       turn.pendingProcessSegment = true;
     }
@@ -97,8 +97,9 @@
     return true;
   }
 
-  /** Places a Turn's canonical user message before every rendered item owned by that Turn. */
-  function placeUserMessageBeforeTurn(turn, message) {
+  /** First-step input precedes the Turn; later steering remains at its committed Step position. */
+  function placeUserMessageBeforeTurn(turn, message, step) {
+    if (step > 1) return false;
     const root = turn.segments?.[0]?.root ?? turn.root;
     const parent = root.parentNode;
     if (parent === null) return false;
@@ -108,6 +109,24 @@
     if (anchor === undefined) return false;
     anchor.before(message);
     return true;
+  }
+
+  /** Describes the send action selected by the draft prefix or held modifier. */
+  function sendActionForGesture(running, controlHeld, draft = '', compacting = false) {
+    if (compacting && !running) return { mode: 'queue', label: 'Queue',
+      title: draft.startsWith('!')
+        ? 'Queue after compaction; leading ! is not sent'
+        : 'Queue after compaction (Enter or click)' };
+    if (draft.startsWith('!')) {
+      return { mode: 'steer', label: 'Steer', title: running
+        ? 'Steer into the current Turn; leading ! is not sent'
+        : 'Send immediately in a new Turn; leading ! is not sent' };
+    }
+    if (!running) return { mode: 'send', label: 'Send', title: 'Send message (Enter or click)' };
+    if (controlHeld) {
+      return { mode: 'steer', label: 'Steer', title: 'Steer into the current Turn (Ctrl+Enter or Ctrl+click)' };
+    }
+    return { mode: 'queue', label: 'Queue', title: 'Queue for the next Turn (Enter or click)' };
   }
 
   /** Derives the visible activity line without letting connection readiness hide active work. */
@@ -260,14 +279,122 @@
     };
   }
 
+  /** Projects DSH inbox rows and local submissions without resurrecting committed or removed messages. */
+  function projectQueueDock(hostQueue, pendingSubmissions, committedIds, removedIds) {
+    const visibleHostQueue = hostQueue.filter((item) => !removedIds.has(item.id)
+      && (typeof item.requestId !== 'string' || !committedIds.has(item.requestId)));
+    const represented = new Set(visibleHostQueue.map((item) => item.requestId).filter(Boolean));
+    return {
+      lastQueuedId: visibleHostQueue.filter((item) => item.placement === 'queued' && item.sourceKind === 'user').at(-1)?.id,
+      items: [
+        ...visibleHostQueue.map((item) => ({ ...item, state: item.sourceKind !== 'user'
+          ? `${item.contextLabel ?? 'Context update'} · ${item.placement === 'queued' ? 'Queued' : 'Next step'}`
+          : item.placement === 'steering' ? 'Steering' : item.placement === 'context' ? 'Next step' : 'Queued' })),
+        ...[...pendingSubmissions].filter((item) => !represented.has(item.requestId)
+          && !committedIds.has(item.requestId))
+          .map((item) => ({ ...item, state: item.mode === 'steer' ? 'Submitting steering' : 'Submitting' })),
+      ],
+    };
+  }
+
+  /** Retire one provisional subagent row by DSH message id without replacing its DOM identity. */
+  function takePendingAgentRow(pendingRows, committedIds, messageId) {
+    if (typeof messageId !== 'string' || messageId.length === 0) return undefined;
+    committedIds.add(messageId);
+    const pending = pendingRows.get(messageId);
+    pendingRows.delete(messageId);
+    return pending?.row;
+  }
+
+  /** Place each still-waiting non-user message in the running Turn once, not in the composer queue. */
+  function appendPendingAgentRows(turn, turnNumber, items, pendingRows, committedIds, activate, createRow) {
+    if (turn === undefined || turn.completed) return false;
+    let added = false;
+    for (const item of items) {
+      if (item.sourceKind === 'user' || item.placement !== 'steering'
+        || committedIds.has(item.id) || pendingRows.has(item.id)) continue;
+      activate(turn);
+      const row = createRow(item);
+      row.root.dataset.state = 'pending';
+      turn.rows.append(row.root);
+      pendingRows.set(item.id, { row, turnNumber });
+      added = true;
+    }
+    return added;
+  }
+
+  /** Replace a provisional row's status and move that same disclosure to its committed Step. */
+  function settleAgentMessageRow(pendingRows, committedIds, messageId, turnRows, label, detail, createRow, summary = 'Delivered') {
+    const pending = takePendingAgentRow(pendingRows, committedIds, messageId);
+    const row = pending ?? createRow();
+    if (pending !== undefined) {
+      delete row.root.dataset.state;
+      row.root.querySelector('.row-title').textContent = label;
+      row.summary.textContent = summary;
+      row.detail.textContent = detail;
+    }
+    turnRows.append(row.root);
+    return row;
+  }
+
+  /** Drop provisional disclosures for an ended Turn or a transcript reset. */
+  function clearPendingAgentRows(pendingRows, turnNumber) {
+    for (const [id, pending] of pendingRows) {
+      if (turnNumber !== undefined && pending.turnNumber !== turnNumber) continue;
+      pending.row.root.remove();
+      pendingRows.delete(id);
+    }
+  }
+
+  /** A next-Turn occurrence can move into the current running Turn. */
+  function canSteerQueued(item, running) {
+    return running && item?.placement === 'queued';
+  }
+
+  /** The draft prefix steers even at idle; Ctrl steers only during a running Turn. */
+  function submitModeForGesture(running, ctrlKey, draft = '', compacting = false) {
+    if (compacting && !running) return 'queue';
+    return draft.startsWith('!') || running && ctrlKey ? 'steer' : 'queue';
+  }
+
+  /** Holds a local compact request until a live DSH start marker or settlement. */
+  function createCompactionSubmitGate() {
+    let awaitingStart = false;
+    return {
+      get locked() { return awaitingStart; },
+      request() { awaitingStart = true; },
+      observe(event) {
+        if (!awaitingStart || event.type !== 'start' || event.live !== true) return false;
+        awaitingStart = false;
+        return true;
+      },
+      settle() {
+        const wasLocked = awaitingStart;
+        awaitingStart = false;
+        return wasLocked;
+      },
+    };
+  }
+
+  /** Remove only the leading steering marker before DSH receives the prompt. */
+  function submittedPromptText(draft) {
+    return (draft.startsWith('!') ? draft.slice(1) : draft).trim();
+  }
+
   globalThis.dshCompanionTranscriptState = Object.freeze({
     activityStatusText,
     advanceTurnProcessSegment,
+    appendPendingAgentRows,
+    canSteerQueued,
+    clearPendingAgentRows,
+    createCompactionSubmitGate,
     createScrollBoundsRefresher,
     fileLinkRequest,
     mergePrependedTurnState,
     placeEmptyTurnProcessAfterMessage,
     placeUserMessageBeforeTurn,
+    projectQueueDock,
+    takePendingAgentRow,
     reconcileTranscriptNodes,
     removeAbandonedAssistant,
     reattachTranscriptTail,
@@ -275,6 +402,10 @@
     scrollModeAfterScroll,
     selectReasoningStatusSegment,
     selectionTouchesNode,
-    splitTurnProcessAtCompaction,
+    sendActionForGesture,
+    settleAgentMessageRow,
+    splitTurnProcessAtBoundary,
+    submitModeForGesture,
+    submittedPromptText,
   });
 })();

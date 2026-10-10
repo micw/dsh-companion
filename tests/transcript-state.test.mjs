@@ -6,11 +6,16 @@ await import('../vscode/media/transcript-state.js');
 const {
   activityStatusText,
   advanceTurnProcessSegment,
+  appendPendingAgentRows,
+  canSteerQueued,
+  clearPendingAgentRows,
+  createCompactionSubmitGate,
   createScrollBoundsRefresher,
   fileLinkRequest,
   mergePrependedTurnState,
   placeEmptyTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
+  projectQueueDock,
   reconcileTranscriptNodes,
   removeAbandonedAssistant,
   reattachTranscriptTail,
@@ -18,8 +23,25 @@ const {
   scrollModeAfterScroll,
   selectReasoningStatusSegment,
   selectionTouchesNode,
-  splitTurnProcessAtCompaction,
+  sendActionForGesture,
+  settleAgentMessageRow,
+  splitTurnProcessAtBoundary,
+  submitModeForGesture,
+  submittedPromptText,
+  takePendingAgentRow,
 } = globalThis.dshCompanionTranscriptState;
+
+test('committed subagent messages reuse the pending Turn row and suppress stale Inbox echoes', () => {
+  const row = { root: { id: 'same-dom-row' } };
+  const pending = new Map([['message-1', { row, turnNumber: 3 }]]);
+  const committed = new Set();
+  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), row);
+  assert.equal(pending.size, 0);
+  assert.equal(committed.has('message-1'), true);
+  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), undefined);
+  assert.equal(takePendingAgentRow(pending, committed, undefined), undefined);
+  assert.equal(committed.size, 1);
+});
 
 test('file-link clicks and context actions preserve a line range without treating it as a path', () => {
   const dataset = {
@@ -189,6 +211,138 @@ function turn(name, rows, options = {}) {
   };
 }
 
+function agentDisclosure(name, title, detail) {
+  const root = new FakeNode(name);
+  const heading = { textContent: title };
+  root.querySelector = selector => selector === '.row-title' ? heading : null;
+  root.open = false;
+  return { root, heading, summary: { textContent: 'Waiting for next Step' }, detail: { textContent: detail } };
+}
+
+test('subagent steering stays in one collapsed Turn disclosure until its committed Step moves the same node', () => {
+  const transcript = new FakeNode('transcript');
+  const waitingTurn = turn('waiting', [], { number: 7 });
+  const committedStep = turn('committed-step', [], { number: 7 });
+  transcript.append(waitingTurn.root, committedStep.root);
+  const rows = new Map();
+  const committed = new Set();
+  const inbox = [{ id: 'relay-1', sourceKind: 'agent-message', placement: 'steering', text: 'Long report' }];
+  const created = [];
+  const makeRow = item => {
+    const row = agentDisclosure(item.id, 'Subagent message', item.text);
+    created.push(row);
+    return row;
+  };
+  assert.equal(appendPendingAgentRows(waitingTurn, 7, inbox, rows, committed, () => {}, makeRow), true);
+  assert.equal(appendPendingAgentRows(waitingTurn, 7, inbox, rows, committed, () => {}, makeRow), false);
+  assert.equal(created.length, 1);
+  const row = created[0];
+  assert.equal(row.root.parentNode, waitingTurn.rows);
+  assert.equal(row.root.open, false);
+  assert.equal(row.root.dataset.state, 'pending');
+  assert.equal(row.summary.textContent, 'Waiting for next Step');
+  row.root.open = true;
+
+  // The Inbox can clear before the committed event arrives; it must not retire this disclosure.
+  assert.deepEqual(projectQueueDock([], [], new Set(), new Set()).items, []);
+  assert.equal(row.root.parentNode, waitingTurn.rows);
+  const settled = settleAgentMessageRow(rows, committed, 'relay-1', committedStep.rows,
+    'Subagent message', 'Committed report', () => assert.fail('a second row would duplicate the message'));
+  assert.equal(settled, row);
+  assert.equal(row.root.parentNode, committedStep.rows);
+  assert.equal(waitingTurn.rows.childNodes.length, 0);
+  assert.deepEqual(committedStep.rows.childNodes, [row.root]);
+  assert.equal(row.root.open, true);
+  assert.equal(row.root.dataset.state, undefined);
+  assert.equal(row.heading.textContent, 'Subagent message');
+  assert.equal(row.summary.textContent, 'Delivered');
+  assert.equal(row.detail.textContent, 'Committed report');
+  assert.equal(rows.size, 0);
+  assert.equal(committed.has('relay-1'), true);
+  assert.equal(appendPendingAgentRows(committedStep, 7, inbox, rows, committed, () => {}, makeRow), false);
+  assert.equal(created.length, 1);
+});
+
+test('restored and stale subagent messages do not duplicate committed rows', () => {
+  const restored = turn('restored', [], { number: 8 });
+  const rows = new Map();
+  const committed = new Set();
+  const row = settleAgentMessageRow(rows, committed, 'settled-1', restored.rows,
+    'Subagent finished', 'Finished report', () => agentDisclosure('settled-1', 'Subagent finished', 'Finished report'));
+  assert.deepEqual(restored.rows.childNodes, [row.root]);
+  assert.equal(row.root.open, false);
+  assert.equal(appendPendingAgentRows(restored, 8,
+    [{ id: 'settled-1', sourceKind: 'subagent-settled', placement: 'steering', text: 'Finished report' }],
+    rows, committed, () => {}, () => assert.fail('committed message reappeared')), false);
+  assert.deepEqual(restored.rows.childNodes, [row.root]);
+  clearPendingAgentRows(rows);
+  assert.deepEqual(restored.rows.childNodes, [row.root]);
+});
+
+test('only uncommitted non-user next-Step messages become provisional rows and ended Turns clear them', () => {
+  const current = turn('current', [], { number: 10 });
+  const later = turn('later', [], { number: 11 });
+  const rows = new Map();
+  const committed = new Set();
+  const inbox = [
+    { id: 'human', sourceKind: 'user', placement: 'steering', text: 'User steer' },
+    { id: 'unknown', sourceKind: 'other', placement: 'steering', text: 'Other context' },
+    { id: 'queued-agent', sourceKind: 'agent-message', placement: 'queued', text: 'Later' },
+    { id: 'relay-1', sourceKind: 'agent-message', placement: 'steering', text: 'First' },
+    { id: 'relay-2', sourceKind: 'subagent-settled', placement: 'steering', text: 'Second' },
+  ];
+  let activations = 0;
+  const create = item => agentDisclosure(item.id, item.sourceKind, item.text);
+  assert.equal(appendPendingAgentRows(current, 10, inbox, rows, committed,
+    () => { activations += 1; }, create), true);
+  assert.equal(activations, 3);
+  assert.deepEqual(current.rows.childNodes.map(node => node.name), ['unknown', 'relay-1', 'relay-2']);
+  assert.equal(appendPendingAgentRows(later, 11,
+    [{ id: 'relay-3', sourceKind: 'agent-message', placement: 'steering', text: 'Later turn' }],
+    rows, committed, () => {}, create), true);
+  clearPendingAgentRows(rows, 10);
+  assert.deepEqual(current.rows.childNodes, []);
+  assert.deepEqual(later.rows.childNodes.map(node => node.name), ['relay-3']);
+  assert.deepEqual([...rows.keys()], ['relay-3']);
+  later.completed = true;
+  assert.equal(appendPendingAgentRows(later, 11,
+    [{ id: 'relay-4', sourceKind: 'agent-message', placement: 'steering', text: 'Too late' }],
+    rows, committed, () => {}, create), false);
+  clearPendingAgentRows(rows);
+  assert.equal(later.rows.childNodes.length, 0);
+});
+
+test('a background-job notice keeps its disclosure and DSH summary from pending through committed Step', () => {
+  const pendingTurn = turn('pending-job', [], { number: 12 });
+  const committedStep = turn('committed-job', [], { number: 12 });
+  const rows = new Map();
+  const committed = new Set();
+  const item = { id: 'job-1', sourceKind: 'other', contextLabel: 'Background job',
+    placement: 'steering', text: 'Full completion notice' };
+  const dock = projectQueueDock([item], [], committed, new Set());
+  assert.equal(dock.items[0].state, 'Background job · Next step');
+  assert.equal(appendPendingAgentRows(pendingTurn, 12, [item], rows, committed, () => {},
+    value => agentDisclosure(value.id, value.contextLabel, value.text)), true);
+  const row = rows.get('job-1').row;
+  assert.equal(row.heading.textContent, 'Background job');
+  assert.equal(row.summary.textContent, 'Waiting for next Step');
+  row.root.open = true;
+  const delivered = settleAgentMessageRow(rows, committed, 'job-1', committedStep.rows,
+    'Background job', 'Full completion notice', () => assert.fail('duplicate row'), 'bash-828 finished');
+  assert.equal(delivered, row);
+  assert.equal(row.root.open, true);
+  assert.equal(row.summary.textContent, 'bash-828 finished');
+  assert.equal(row.root.parentNode, committedStep.rows);
+  assert.equal(appendPendingAgentRows(committedStep, 12, [item], rows, committed,
+    () => {}, () => assert.fail('stale Inbox row')), false);
+  const restored = turn('restored-job', [], { number: 12 });
+  const restoredRow = settleAgentMessageRow(new Map(), new Set(), 'job-1', restored.rows,
+    'Background job', 'Full completion notice',
+    () => agentDisclosure('job-1', 'Background job', 'Full completion notice'), 'bash-828 finished');
+  assert.equal(restoredRow.root.open, false);
+  assert.equal(restoredRow.root.parentNode, restored.rows);
+});
+
 test('a Turn split across history pages merges into one ordered process presentation', () => {
   const transcript = new FakeNode('transcript');
   const olderRootRow = new FakeNode('older-tool');
@@ -220,7 +374,7 @@ test('a compaction at a history-page seam keeps the same Turn in two disclosures
   const newer = turn('after', [new FakeNode('retry-tool')]);
   const compaction = new FakeNode('compaction');
   transcript.append(older.root, compaction, newer.root);
-  assert.equal(splitTurnProcessAtCompaction(older, compaction), true);
+  assert.equal(splitTurnProcessAtBoundary(older, compaction), true);
 
   const merged = mergePrependedTurnState(older, newer);
   assert.deepEqual(transcript.childNodes.map(node => node.name), ['before-root', 'compaction', 'after-root']);
@@ -362,7 +516,7 @@ test('context-overflow compaction separates process rows before a retry in live 
     const compaction = new FakeNode('compaction');
     transcript.append(value.root, error, compaction);
 
-    assert.equal(splitTurnProcessAtCompaction(value, compaction), true, `replay=${replay}`);
+    assert.equal(splitTurnProcessAtBoundary(value, compaction), true, `replay=${replay}`);
     assert.equal(advanceTurnProcessSegment(value, () => {
       const next = turn('retry', []);
       transcript.append(next.root);
@@ -382,7 +536,7 @@ test('idle manual compaction does not reopen a completed Turn', () => {
   value.completed = true;
   const compaction = new FakeNode('compaction');
   transcript.append(value.root, compaction);
-  assert.equal(splitTurnProcessAtCompaction(value, compaction), false);
+  assert.equal(splitTurnProcessAtBoundary(value, compaction), false);
   assert.equal(value.pendingProcessSegment, undefined);
 });
 
@@ -476,6 +630,206 @@ test('a delayed canonical prompt also precedes an Assistant preamble', () => {
 
   assert.equal(placeUserMessageBeforeTurn({ root: process, firstAssistantMessage: preamble }, prompt), true);
   assert.deepEqual(transcript.childNodes.map(node => node.name), ['prompt', 'preamble', 'process', 'final']);
+});
+
+test('a steered prompt stays after earlier output in its committed Turn step', () => {
+  const transcript = new FakeNode('transcript');
+  const firstPrompt = new FakeNode('first-prompt');
+  const process = new FakeNode('process');
+  const answer = new FakeNode('answer');
+  const steering = new FakeNode('steering');
+  transcript.append(firstPrompt, process, answer);
+  assert.equal(placeUserMessageBeforeTurn({ root: process, firstAssistantMessage: answer }, steering, 2), false);
+  transcript.append(steering);
+  assert.deepEqual(transcript.childNodes.map(node => node.name), [
+    'first-prompt', 'process', 'answer', 'steering',
+  ]);
+});
+
+test('three steering messages split one Turn process in live and restored Step order', () => {
+  for (const replay of [false, true]) {
+    const transcript = new FakeNode('transcript');
+    const value = turn('before-steering', [new FakeNode('tool-before')], { number: 13 });
+    transcript.append(value.root);
+    for (const step of [5, 6, 8]) {
+      const steering = new FakeNode(`steer-${step}`);
+      transcript.append(steering);
+      assert.equal(placeUserMessageBeforeTurn(value, steering, step), false, `replay=${replay}`);
+      assert.equal(splitTurnProcessAtBoundary(value, steering), true, `replay=${replay}`);
+      assert.equal(advanceTurnProcessSegment(value, () => {
+        const next = turn(`after-${step}`, [], { number: 13 });
+        transcript.append(next.root);
+        return next.segments[0];
+      }), true, `replay=${replay}`);
+      value.rows.append(new FakeNode(`tool-after-${step}`));
+    }
+    assert.deepEqual(transcript.childNodes.map(node => node.name), [
+      'before-steering-root', 'steer-5', 'after-5-root', 'steer-6',
+      'after-6-root', 'steer-8', 'after-8-root',
+    ], `replay=${replay}`);
+    assert.deepEqual(value.segments.map(segment => segment.rows.childNodes.map(node => node.name)), [
+      ['tool-before'], ['tool-after-5'], ['tool-after-6'], ['tool-after-8'],
+    ], `replay=${replay}`);
+  }
+});
+
+test('batched steering messages share one process boundary', () => {
+  const transcript = new FakeNode('transcript');
+  const value = turn('before', [new FakeNode('tool')]);
+  const first = new FakeNode('first-steer');
+  const second = new FakeNode('second-steer');
+  transcript.append(value.root, first, second);
+  assert.equal(splitTurnProcessAtBoundary(value, first), true);
+  assert.equal(splitTurnProcessAtBoundary(value, second), true);
+  assert.equal(advanceTurnProcessSegment(value, () => {
+    const next = turn('after', []);
+    transcript.append(next.root);
+    return next.segments[0];
+  }), true);
+  assert.deepEqual(transcript.childNodes.map(node => node.name), [
+    'before-root', 'first-steer', 'second-steer', 'after-root',
+  ]);
+  assert.equal(value.segments.length, 2);
+});
+
+test('a steering message moves an empty process disclosure below itself', () => {
+  const transcript = new FakeNode('transcript');
+  const value = turn('empty', []);
+  const steering = new FakeNode('steering');
+  transcript.append(value.root, steering);
+  assert.equal(splitTurnProcessAtBoundary(value, steering), true);
+  assert.deepEqual(transcript.childNodes.map(node => node.name), ['steering', 'empty-root']);
+  assert.equal(value.pendingProcessSegment, undefined);
+});
+
+test('queue dock preserves DSH order through live acceptance, removal, and restore', () => {
+  const host = [
+    { id: 'S', requestId: 'steer', sourceKind: 'user', text: 'soon', placement: 'steering' },
+    { id: 'A', requestId: 'first', sourceKind: 'user', text: 'first', placement: 'queued' },
+    { id: 'B', requestId: 'second', sourceKind: 'user', text: 'second', placement: 'queued' },
+  ];
+  const pending = [
+    { requestId: 'first', text: 'first', mode: 'queue' },
+    { requestId: 'third', text: 'third', mode: 'steer' },
+  ];
+  const committed = new Set();
+  const removed = new Set();
+  const live = projectQueueDock(host, pending, committed, removed);
+  assert.deepEqual(live.items.map(item => [item.id ?? item.requestId, item.state]), [
+    ['S', 'Steering'], ['A', 'Queued'], ['B', 'Queued'], ['third', 'Submitting steering'],
+  ]);
+  assert.equal(live.lastQueuedId, 'B');
+  committed.add('first');
+  removed.add('B');
+  assert.deepEqual(projectQueueDock(host, pending, committed, removed).items.map(item => item.id ?? item.requestId), [
+    'S', 'third',
+  ]);
+  const restored = projectQueueDock([host[0]], [], new Set(), new Set());
+  assert.deepEqual(restored.items.map(item => item.id), ['S']);
+  assert.equal(restored.lastQueuedId, undefined);
+  assert.equal(projectQueueDock([...host, { id: 'agent', sourceKind: 'agent-message', placement: 'queued' }],
+    [], new Set(), new Set()).lastQueuedId, 'B');
+  assert.equal(projectQueueDock([{ id: 'context', sourceKind: 'other', placement: 'steering' }],
+    [], new Set(), new Set()).items[0].state, 'Context update · Next step');
+});
+
+test('queued image references replace the local preview and survive queue restore', () => {
+  const pending = [{ requestId: 'image', text: '', mode: 'queue', images: [{ previewUrl: 'blob:preview' }] }];
+  const image = { attachmentId: 'image-1', mediaType: 'image/png', bytes: 3, width: 2, height: 1 };
+  const admitted = [{ id: 'queued-image', requestId: 'image', text: '', images: [image], placement: 'queued' }];
+  const local = projectQueueDock([], pending, new Set(), new Set());
+  assert.equal(local.items[0].images[0].previewUrl, 'blob:preview');
+  const live = projectQueueDock(admitted, pending, new Set(), new Set());
+  assert.equal(live.items.length, 1);
+  assert.deepEqual(live.items[0].images, [image]);
+  const restored = projectQueueDock(admitted, [], new Set(), new Set());
+  assert.deepEqual(restored.items[0].images, [image]);
+});
+
+test('only DSH next-Turn rows can steer during a running Turn, including after restore', () => {
+  const queued = { id: 'Q', placement: 'queued' };
+  const steering = { id: 'S', placement: 'steering' };
+  assert.equal(canSteerQueued(queued, true), true);
+  assert.equal(canSteerQueued(queued, false), false);
+  assert.equal(canSteerQueued(steering, true), false);
+  assert.equal(canSteerQueued({ id: 'C', placement: 'context' }, true), false);
+  assert.equal(canSteerQueued({ requestId: 'pending' }, true), false);
+  const restored = projectQueueDock([steering, queued], [], new Set(), new Set());
+  assert.deepEqual(restored.items.map(item => canSteerQueued(item, true)), [false, true]);
+});
+
+test('Ctrl+Enter steers only during a running Turn', () => {
+  assert.equal(submitModeForGesture(true, true), 'steer');
+  assert.equal(submitModeForGesture(true, false), 'queue');
+  assert.equal(submitModeForGesture(false, true), 'queue');
+  assert.equal(submitModeForGesture(false, false), 'queue');
+});
+
+test('leading ! keeps the draft in steering mode after a Turn ends without entering DSH text', () => {
+  for (const running of [true, false]) {
+    assert.equal(submitModeForGesture(running, false, '! inspect this'), 'steer');
+    assert.equal(submitModeForGesture(running, true, '! inspect this'), 'steer');
+    assert.equal(submittedPromptText('! inspect this'), 'inspect this');
+    assert.equal(submittedPromptText('!\ninspect this'), 'inspect this');
+  }
+  assert.equal(submittedPromptText('!'), '');
+  assert.equal(submittedPromptText('!   '), '');
+  assert.equal(submittedPromptText('!!literal'), '!literal');
+  assert.equal(submittedPromptText('normal ! text'), 'normal ! text');
+  assert.equal(submitModeForGesture(true, false, 'normal ! text'), 'queue');
+  assert.equal(submitModeForGesture(false, false, 'normal ! text'), 'queue');
+  assert.equal(submitModeForGesture(true, false, ' ! not at the start'), 'queue');
+});
+
+test('send action shows Send, Queue, and Steer for the active modifier state', () => {
+  assert.deepEqual(sendActionForGesture(false, false), {
+    mode: 'send', label: 'Send', title: 'Send message (Enter or click)',
+  });
+  assert.deepEqual(sendActionForGesture(false, true), sendActionForGesture(false, false));
+  assert.deepEqual(sendActionForGesture(true, false), {
+    mode: 'queue', label: 'Queue', title: 'Queue for the next Turn (Enter or click)',
+  });
+  assert.deepEqual(sendActionForGesture(true, true), {
+    mode: 'steer', label: 'Steer', title: 'Steer into the current Turn (Ctrl+Enter or Ctrl+click)',
+  });
+  assert.deepEqual(sendActionForGesture(true, false, '! inspect this'), {
+    mode: 'steer', label: 'Steer', title: 'Steer into the current Turn; leading ! is not sent',
+  });
+  assert.deepEqual(sendActionForGesture(false, false, '! inspect this'), {
+    mode: 'steer', label: 'Steer', title: 'Send immediately in a new Turn; leading ! is not sent',
+  });
+  assert.deepEqual(sendActionForGesture(false, false, 'inspect this'), sendActionForGesture(false, false));
+});
+
+test('a live compaction start releases only the local request gate', () => {
+  const gate = createCompactionSubmitGate();
+  assert.equal(gate.locked, false);
+  gate.request();
+  assert.equal(gate.locked, true);
+  assert.equal(gate.observe({ type: 'start', id: 'older', time: 1 }), false);
+  assert.equal(gate.observe({ type: 'summary', id: 'current' }), false);
+  assert.equal(gate.locked, true);
+  assert.equal(gate.observe({ type: 'start', id: 'current', time: 2, live: true }), true);
+  assert.equal(gate.locked, false);
+  assert.equal(gate.settle(), false);
+
+  gate.request();
+  assert.equal(gate.settle(), true);
+  assert.equal(gate.locked, false);
+  assert.equal(gate.observe({ type: 'start', id: 'late', time: 3, live: true }), false);
+  assert.equal(createCompactionSubmitGate().locked, false);
+});
+
+test('manual compaction queues instead of steering, including Ctrl and leading bang', () => {
+  assert.equal(submitModeForGesture(false, false, 'later', true), 'queue');
+  assert.equal(submitModeForGesture(false, true, '! later', true), 'queue');
+  assert.deepEqual(sendActionForGesture(false, true, '! later', true), {
+    mode: 'queue', label: 'Queue', title: 'Queue after compaction; leading ! is not sent',
+  });
+  assert.deepEqual(sendActionForGesture(false, false, 'later', true), {
+    mode: 'queue', label: 'Queue', title: 'Queue after compaction (Enter or click)',
+  });
+  assert.equal(submitModeForGesture(true, true, 'later', true), 'steer');
 });
 
 test('activity status keeps running work distinct from connection readiness', () => {

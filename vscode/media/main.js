@@ -1,11 +1,16 @@
 const {
   activityStatusText,
   advanceTurnProcessSegment,
+  appendPendingAgentRows,
+  canSteerQueued,
+  clearPendingAgentRows,
+  createCompactionSubmitGate,
   createScrollBoundsRefresher,
   fileLinkRequest,
   mergePrependedTurnState,
   placeEmptyTurnProcessAfterMessage,
   placeUserMessageBeforeTurn,
+  projectQueueDock,
   reconcileTranscriptNodes,
   removeAbandonedAssistant,
   reattachTranscriptTail,
@@ -13,7 +18,11 @@ const {
   scrollModeAfterScroll,
   selectReasoningStatusSegment,
   selectionTouchesNode,
-  splitTurnProcessAtCompaction,
+  sendActionForGesture,
+  settleAgentMessageRow,
+  splitTurnProcessAtBoundary,
+  submitModeForGesture,
+  submittedPromptText,
 } = globalThis.dshCompanionTranscriptState;
 const vscode = acquireVsCodeApi();
 const output = document.getElementById('output');
@@ -25,6 +34,8 @@ const scrollBottom = document.getElementById('scroll-bottom');
 const queue = document.getElementById('queue');
 const composer = document.getElementById('composer');
 const prompt = document.getElementById('prompt');
+const imageTray = document.getElementById('image-tray');
+const imageError = document.getElementById('image-error');
 const modelControls = document.getElementById('model-controls');
 const modelTrigger = document.getElementById('model-trigger');
 const modelPicker = document.getElementById('model-picker');
@@ -69,6 +80,7 @@ const sessionCostSummary = document.getElementById('session-cost-summary');
 const sessionCostBreakdown = document.getElementById('session-cost-breakdown');
 const sessionInfoStatus = document.getElementById('session-info-status');
 const send = document.getElementById('send');
+const sendLabel = document.getElementById('send-label');
 const stop = document.getElementById('stop');
 const status = document.getElementById('status');
 const restored = vscode.getState() ?? {};
@@ -82,7 +94,6 @@ if (isRecord(restored.processOpenByTurn)) {
 const state = {
   version: 2,
   sessionId: restoredSessionId,
-  draft: typeof restored.draft === 'string' ? restored.draft : '',
   scrollTop: 0,
   disclosures: { ...restoredDisclosures },
 };
@@ -91,7 +102,21 @@ let tools = new Map();
 let compactions = new Map();
 const pendingSubmissions = new Map();
 const committedRequestIds = new Set();
+const removedQueueIds = new Set();
+const pendingQueueActions = new Map();
+let pendingImages = [];
+let imageReading = false;
+let imageErrorText = '';
+let activeSubmissionId;
+const imageUrls = new Map();
+const imageWaiters = new Map();
+const imageFailures = new Set();
 let hostQueue = [];
+let queueNotice;
+const pendingAgentRows = new Map();
+const committedAgentIds = new Set();
+let nextSubmitMode = 'queue';
+let controlHeld = false;
 let activeAssistant;
 let activeAssistantMessage;
 let activeAssistantIdentity;
@@ -172,6 +197,7 @@ let permissionSelecting = false;
 let contextPressure;
 let compactAvailable = false;
 let compacting = false;
+const compactionSubmitGate = createCompactionSubmitGate();
 let contextPinned = false;
 let providerUsagePinned = false;
 let providerUsageRendering = false;
@@ -187,41 +213,224 @@ let sending = false;
 let stopping = false;
 let hostStatus = 'Connecting…';
 
-prompt.value = state.draft;
 requestAnimationFrame(autoGrowPrompt);
 
 composer.addEventListener('submit', (event) => {
   event.preventDefault();
-  const text = prompt.value.trim();
-  if (text.length === 0) return;
+  const mode = submitModeForGesture(running, nextSubmitMode === 'steer', prompt.value, compacting);
+  nextSubmitMode = 'queue';
+  const text = submittedPromptText(prompt.value);
+  if ((text.length === 0 && pendingImages.length === 0) || stopping || send.disabled || imageReading) return;
   setOutputFollow();
   const requestId = crypto.randomUUID();
-  pendingSubmissions.set(requestId, { requestId, text, submittedAt: Date.now() });
+  pendingSubmissions.set(requestId, {
+    requestId, text, mode, submittedAt: Date.now(),
+    images: pendingImages.map(image => ({ previewUrl: image.url, name: image.name })),
+  });
+  activeSubmissionId = requestId;
+  sending = true;
+  queueNotice = undefined;
   renderQueue();
-  prompt.value = '';
-  autoGrowPrompt();
-  state.draft = '';
-  saveState();
+  updateInputAvailability();
+  renderImageTray();
   activeAssistant = undefined;
   activeAssistantMessage = undefined;
-  vscode.postMessage({ type: 'submit', requestId, text });
+  vscode.postMessage({
+    type: 'submit', requestId, text, mode,
+    images: pendingImages.map(({ mediaType, data, name }) => ({ mediaType, data, name })),
+  });
 });
 
 prompt.addEventListener('input', () => {
   autoGrowPrompt();
-  state.draft = prompt.value;
-  saveState();
+  renderQueue();
+  renderSendAction();
 });
 
+prompt.addEventListener('paste', (event) => {
+  if (sending || compactionSubmitGate.locked || imageReading || prompt.readOnly) return;
+  const files = [...(event.clipboardData?.files ?? [])].filter(file => file.type.startsWith('image/'));
+  if (files.length === 0) return;
+  event.preventDefault();
+  void addPastedImages(files);
+});
+
+function showImageError(text) {
+  imageErrorText = text;
+  renderImageError();
+}
+
+function renderImageError() {
+  const text = pendingImages.length > 0 && !selectedModelAcceptsImages()
+    ? 'The selected model does not support image input.' : imageErrorText;
+  imageError.textContent = text;
+  imageError.hidden = text === '';
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return reject(new Error('The pasted image could not be read.'));
+      resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('The pasted image could not be read.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addPastedImages(files) {
+  imageReading = true;
+  updateInputAvailability();
+  showImageError('');
+  try {
+    for (const file of files) {
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+        throw new Error('Only PNG, JPEG, WebP, and GIF images can be pasted.');
+      }
+      if (file.size === 0 || file.size > 20 * 1024 * 1024) throw new Error('An image must be at most 20 MiB.');
+      if (pendingImages.length >= 20
+        || pendingImages.reduce((bytes, image) => bytes + image.bytes, 0) + file.size > 200 * 1024 * 1024) {
+        throw new Error('One message can contain at most 20 images and 200 MiB of source images.');
+      }
+      const data = await fileBase64(file);
+      const url = URL.createObjectURL(file);
+      pendingImages.push({
+        id: crypto.randomUUID(), mediaType: file.type, data, url, bytes: file.size,
+        name: file.name.length > 0 && file.name.length <= 255 ? file.name : 'Clipboard image',
+      });
+    }
+    renderImageTray();
+  } catch (error) {
+    showImageError(error instanceof Error ? error.message : 'The pasted image could not be read.');
+  } finally {
+    imageReading = false;
+    updateInputAvailability();
+  }
+}
+
+function renderImageTray() {
+  imageTray.replaceChildren();
+  for (const image of pendingImages) {
+    const chip = document.createElement('div');
+    chip.className = 'image-chip';
+    const preview = document.createElement('img');
+    preview.src = image.url;
+    preview.alt = image.name;
+    const name = document.createElement('span');
+    name.textContent = image.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.title = 'Remove image';
+    remove.setAttribute('aria-label', `Remove ${image.name}`);
+    remove.disabled = sending || compactionSubmitGate.locked || imageReading;
+    remove.addEventListener('click', () => {
+      pendingImages = pendingImages.filter(candidate => candidate.id !== image.id);
+      URL.revokeObjectURL(image.url);
+      showImageError('');
+      renderImageTray();
+      updateInputAvailability();
+    });
+    chip.append(preview, name, remove);
+    imageTray.append(chip);
+  }
+  imageTray.hidden = pendingImages.length === 0;
+}
+
+function validImageUpload(value) {
+  return isRecord(value) && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(value.mediaType)
+    && typeof value.data === 'string' && value.data.length > 0
+    && value.data.length <= Math.ceil(20 * 1024 * 1024 / 3) * 4
+    && value.data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/u.test(value.data)
+    && (value.name === undefined || typeof value.name === 'string' && value.name.length <= 255);
+}
+
+function validImageRefs(value) {
+  return Array.isArray(value) && value.length <= 20 && value.every(image => isRecord(image)
+    && typeof image.attachmentId === 'string' && image.attachmentId.length > 0 && image.attachmentId.length <= 256
+    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(image.mediaType)
+    && Number.isSafeInteger(image.bytes) && image.bytes > 0
+    && Number.isSafeInteger(image.width) && image.width > 0
+    && Number.isSafeInteger(image.height) && image.height > 0
+    && (image.name === undefined || typeof image.name === 'string'));
+}
+
+function pendingImageFromUpload(upload) {
+  const raw = atob(upload.data);
+  const bytes = Uint8Array.from(raw, character => character.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: upload.mediaType }));
+  return {
+    id: crypto.randomUUID(), mediaType: upload.mediaType, data: upload.data,
+    name: upload.name ?? 'Clipboard image', bytes: bytes.byteLength, url,
+  };
+}
+
+function attachDurableImage(image, node) {
+  const cached = imageUrls.get(image.attachmentId);
+  if (cached !== undefined) {
+    node.src = cached;
+    return;
+  }
+  if (imageFailures.has(image.attachmentId)) {
+    node.alt = 'Image unavailable';
+    return;
+  }
+  const waiting = imageWaiters.get(image.attachmentId);
+  if (waiting !== undefined) {
+    waiting.push(node);
+    return;
+  }
+  imageWaiters.set(image.attachmentId, [node]);
+  vscode.postMessage({ type: 'loadImage', attachmentId: image.attachmentId });
+}
+
+function appendImageGallery(parent, images) {
+  if (!Array.isArray(images) || images.length === 0) return;
+  const gallery = document.createElement('div');
+  gallery.className = 'message-images';
+  for (const image of images) {
+    const preview = document.createElement('img');
+    preview.alt = image.name ?? 'Attached image';
+    preview.title = preview.alt;
+    if (typeof image.previewUrl === 'string') preview.src = image.previewUrl;
+    else attachDurableImage(image, preview);
+    gallery.append(preview);
+  }
+  parent.append(gallery);
+}
+
 prompt.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    composer.requestSubmit();
+    requestSubmission(event.ctrlKey);
   }
 });
 
+send.addEventListener('click', (event) => {
+  event.preventDefault();
+  requestSubmission(event.ctrlKey);
+});
+function requestSubmission(controlKey) {
+  nextSubmitMode = submitModeForGesture(running, controlKey, prompt.value, compacting);
+  try { composer.requestSubmit(); }
+  finally { nextSubmitMode = 'queue'; }
+}
+document.addEventListener('keydown', event => setControlHeld(event.ctrlKey));
+document.addEventListener('keyup', event => setControlHeld(event.ctrlKey));
+document.addEventListener('pointermove', event => setControlHeld(event.ctrlKey));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) setControlHeld(false);
+});
+window.addEventListener('blur', () => setControlHeld(false));
+
 stop.addEventListener('click', () => {
-  if (running || compacting) vscode.postMessage({ type: 'stop' });
+  if (stopping || (!running && !compacting && !hasWaitingQueue())) return;
+  stopping = true;
+  queueNotice = undefined;
+  updateInputAvailability();
+  renderQueue();
+  vscode.postMessage({ type: 'stop' });
 });
 
 modelTrigger.addEventListener('click', () => {
@@ -303,9 +512,10 @@ sessionInfoRefreshTitle.addEventListener('click', (event) => {
   vscode.postMessage({ type: 'refreshSessionTitle' });
 });
 compactButton.addEventListener('click', () => {
-  if (running || compacting || !compactAvailable) return;
+  if (running || compacting || compactionSubmitGate.locked || !compactAvailable) return;
   compactResult.hidden = true;
   closeContextPanel();
+  compactionSubmitGate.request();
   setCompacting(true);
   vscode.postMessage({ type: 'compact' });
 });
@@ -516,7 +726,28 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'message') {
-    appendMessage(message.role, message.text, message.html, message.time);
+    if (message.images !== undefined && !validImageRefs(message.images)) return;
+    if (message.role === 'user' && Number.isSafeInteger(message.turn) && message.turn > 0) {
+      activeTurn = message.turn;
+    }
+    appendMessage(message.role, message.text, message.html, message.time, message.step, message.images);
+    return;
+  }
+  if (message.type === 'imageLoaded') {
+    if (typeof message.attachmentId !== 'string' || !validImageUpload(message.image)) return;
+    const waiting = imageWaiters.get(message.attachmentId);
+    if (waiting === undefined) return;
+    const image = pendingImageFromUpload(message.image);
+    imageUrls.set(message.attachmentId, image.url);
+    for (const node of waiting) node.src = image.url;
+    imageWaiters.delete(message.attachmentId);
+    return;
+  }
+  if (message.type === 'imageLoadFailed') {
+    if (typeof message.attachmentId !== 'string') return;
+    imageFailures.add(message.attachmentId);
+    for (const node of imageWaiters.get(message.attachmentId) ?? []) node.alt = 'Image unavailable';
+    imageWaiters.delete(message.attachmentId);
     return;
   }
   if (message.type === 'historyPrependStart') {
@@ -726,12 +957,14 @@ function applyHostMessage(message) {
   }
   if (message.type === 'compaction') {
     if (!isCompactionEvent(message.event)) return;
+    if (compactionSubmitGate.observe(message.event)) updateInputAvailability();
     applyCompactionEvent(message.event);
     return;
   }
   if (message.type === 'compactResult') {
     if (!['success', 'error'].includes(message.kind)
       || (message.text !== undefined && typeof message.text !== 'string')) return;
+    if (compactionSubmitGate.settle()) updateInputAvailability();
     compactResult.hidden = message.text === undefined;
     compactResult.dataset.kind = message.kind;
     compactResult.textContent = message.text ?? '';
@@ -765,11 +998,78 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'queue') {
-    hostQueue = Array.isArray(message.items) ? message.items : [];
+    if (!Array.isArray(message.items) || !message.items.every((item) =>
+      isRecord(item) && typeof item.id === 'string' && typeof item.text === 'string'
+      && typeof item.textOnly === 'boolean' && typeof item.takeBackAvailable === 'boolean'
+      && validImageRefs(item.images)
+      && ['user', 'agent-message', 'subagent-settled', 'other'].includes(item.sourceKind)
+      && (item.contextLabel === undefined || typeof item.contextLabel === 'string')
+      && ['queued', 'steering', 'context'].includes(item.placement)
+      && (item.requestId === undefined || typeof item.requestId === 'string'))) return;
+    hostQueue = message.items.filter((item) => !removedQueueIds.has(item.id));
+    syncPendingAgentRows();
+    updateInputAvailability();
+    renderQueue();
+    return;
+  }
+  if (message.type === 'queueItemRemoved') {
+    if (typeof message.itemId !== 'string'
+      || (message.action !== 'remove' && message.action !== 'takeBack')
+      || (message.requestId !== undefined && typeof message.requestId !== 'string')
+      || (message.action === 'takeBack' && (typeof message.text !== 'string'
+        || !Array.isArray(message.images) || !message.images.every(validImageUpload)))) return;
+    const restoredImages = message.action === 'takeBack'
+      ? message.images.map(pendingImageFromUpload) : [];
+    pendingQueueActions.delete(message.itemId);
+    removedQueueIds.add(message.itemId);
+    hostQueue = hostQueue.filter((item) => item.id !== message.itemId);
+    pendingAgentRows.get(message.itemId)?.row.root.remove();
+    pendingAgentRows.delete(message.itemId);
+    if (typeof message.requestId === 'string') pendingSubmissions.delete(message.requestId);
+    if (message.action === 'takeBack') {
+      if (prompt.value.trim().length === 0 && pendingImages.length === 0) {
+        prompt.value = message.text;
+        pendingImages = restoredImages;
+        renderImageTray();
+        autoGrowPrompt();
+        prompt.focus();
+      } else {
+        prompt.value = `${message.text}${prompt.value === '' ? '' : `\n\n${prompt.value}`}`;
+        pendingImages = [...restoredImages, ...pendingImages];
+        renderImageTray();
+        autoGrowPrompt();
+        queueNotice = 'The queued message was returned above the newer draft.';
+      }
+    }
+    updateInputAvailability();
+    renderQueue();
+    return;
+  }
+  if (message.type === 'queueItemSteered') {
+    if (typeof message.itemId !== 'string' || Object.keys(message).length !== 2) return;
+    pendingQueueActions.delete(message.itemId);
+    updateInputAvailability();
+    renderQueue();
+    return;
+  }
+  if (message.type === 'queueActionFailed') {
+    if (typeof message.itemId !== 'string' || typeof message.text !== 'string') return;
+    pendingQueueActions.delete(message.itemId);
+    queueNotice = message.text;
+    updateInputAvailability();
+    renderQueue();
+    return;
+  }
+  if (message.type === 'queueStopResult') {
+    if (!Number.isSafeInteger(message.failed) || message.failed < 0
+      || typeof message.cancelFailed !== 'boolean') return;
+    queueNotice = message.failed > 0 || message.cancelFailed
+      ? 'Stop could not clear every waiting message. Check the queue before sending again.' : undefined;
     renderQueue();
     return;
   }
   if (message.type === 'userCommitted') {
+    if (message.images !== undefined && !validImageRefs(message.images)) return;
     if (typeof message.requestId === 'string') {
       pendingSubmissions.delete(message.requestId);
       committedRequestIds.add(message.requestId);
@@ -777,10 +1077,26 @@ function applyHostMessage(message) {
     hostQueue = hostQueue.filter((item) => item.requestId !== message.requestId);
     renderQueue();
     activeTurn = message.turn;
-    appendMessage('user', message.text, undefined, message.time);
+    appendMessage('user', message.text, undefined, message.time, message.step, message.images);
+    return;
+  }
+  if (message.type === 'submissionAccepted') {
+    if (typeof message.requestId !== 'string') return;
+    if (activeSubmissionId === message.requestId) {
+      activeSubmissionId = undefined;
+      prompt.value = '';
+      pendingImages.forEach(image => URL.revokeObjectURL(image.url));
+      pendingImages = [];
+      showImageError('');
+      autoGrowPrompt();
+      updateInputAvailability();
+    }
+    pendingSubmissions.delete(message.requestId);
+    renderQueue();
     return;
   }
   if (message.type === 'submissionFailed') {
+    if (activeSubmissionId === message.requestId) activeSubmissionId = undefined;
     pendingSubmissions.delete(message.requestId);
     renderQueue();
     return;
@@ -808,6 +1124,7 @@ function applyHostMessage(message) {
   if (message.type === 'stopping') {
     stopping = message.value === true;
     updateInputAvailability();
+    renderQueue();
     return;
   }
   if (message.type === 'error') appendMessage('error', message.text);
@@ -815,6 +1132,7 @@ function applyHostMessage(message) {
 
 function resetTranscript() {
   scrollTrace.record('reset-before');
+  clearPendingAgentRows(pendingAgentRows);
   clearMermaidImages();
   output.replaceChildren();
   refreshScrollBounds.invalidate();
@@ -822,6 +1140,7 @@ function resetTranscript() {
   turns = new Map();
   tools = new Map();
   compactions = new Map();
+  committedAgentIds.clear();
   activeAssistant = undefined;
   activeAssistantMessage = undefined;
   activeAssistantIdentity = undefined;
@@ -834,7 +1153,7 @@ function resetTranscript() {
   scrollTrace.afterMutation('reset-after');
 }
 
-function appendMessage(role, text, html, time = Date.now()) {
+function appendMessage(role, text, html, time = Date.now(), step, images = []) {
   const article = document.createElement('article');
   article.className = `message ${role}`;
   const label = document.createElement('div');
@@ -844,12 +1163,15 @@ function appendMessage(role, text, html, time = Date.now()) {
   body.className = 'body';
   if (role === 'assistant' && typeof html === 'string') body.innerHTML = html;
   else body.textContent = text;
-  article.append(label, body);
+  article.append(label);
+  if (role === 'user') appendImageGallery(article, images);
+  article.append(body);
   setMessageTime(article, time);
   const turn = activeTurn === undefined ? undefined : turns.get(activeTurn);
-  if (role !== 'user' || turn === undefined || !placeUserMessageBeforeTurn(turn, article)) {
+  if (role !== 'user' || turn === undefined || !placeUserMessageBeforeTurn(turn, article, step)) {
     renderTarget.append(article);
   }
+  if (role === 'user' && step > 1) splitTurnProcessAtBoundary(turn, article);
   if (role === 'assistant') {
     renderMermaidBlocks(body);
     assistantMarkdown.set(article, text);
@@ -881,19 +1203,18 @@ function appendMessage(role, text, html, time = Date.now()) {
   followOutput();
 }
 
+function hasWaitingQueue() {
+  return hostQueue.some((item) => !removedQueueIds.has(item.id)
+    && (typeof item.requestId !== 'string' || !committedRequestIds.has(item.requestId)));
+}
+
 function renderQueue() {
+  const previousScrollTop = queue.scrollTop;
   queue.replaceChildren();
-  const visibleHostQueue = hostQueue.filter(
-    (item) => typeof item.requestId !== 'string' || !committedRequestIds.has(item.requestId),
-  );
-  const represented = new Set(visibleHostQueue.map((item) => item.requestId).filter(Boolean));
-  const items = [
-    ...visibleHostQueue.map((item) => ({ ...item, state: queueLabel(item.placement) })),
-    ...[...pendingSubmissions.values()]
-      .filter((item) => !represented.has(item.requestId))
-      .map((item) => ({ ...item, state: 'Submitting' })),
-  ];
-  queue.hidden = items.length === 0;
+  const dockQueue = hostQueue.filter(item => !pendingAgentRows.has(item.id) && !committedAgentIds.has(item.id));
+  const { items, lastQueuedId } = projectQueueDock(dockQueue, pendingSubmissions.values(),
+    committedRequestIds, removedQueueIds);
+  queue.hidden = items.length === 0 && queueNotice === undefined;
   for (const item of items) {
     const row = document.createElement('article');
     row.className = 'queue-item';
@@ -903,15 +1224,66 @@ function renderQueue() {
     const text = document.createElement('span');
     text.className = 'queue-text';
     text.textContent = item.text;
-    row.append(label, text);
+    const content = document.createElement('div');
+    content.className = 'queue-content';
+    appendImageGallery(content, item.images);
+    content.append(text);
+    row.append(label, content);
+    if (typeof item.id === 'string' && item.sourceKind === 'user') {
+      const actions = document.createElement('div');
+      actions.className = 'queue-actions';
+      if (item.placement === 'queued') {
+        const steer = document.createElement('button');
+        steer.type = 'button';
+        steer.textContent = 'Steer';
+        steer.setAttribute('aria-label', 'Steer queued message into current Turn');
+        steer.title = running ? 'Move this message into the running Turn' : 'Available while a Turn is running';
+        steer.disabled = !canSteerQueued(item, running) || stopping || pendingQueueActions.size > 0;
+        steer.addEventListener('click', () => requestQueueAction(item.id, 'steer'));
+        actions.append(steer);
+      }
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', 'Remove waiting message');
+      remove.disabled = stopping || pendingQueueActions.size > 0;
+      remove.addEventListener('click', () => requestQueueAction(item.id, 'remove'));
+      actions.append(remove);
+      if (item.id === lastQueuedId && item.placement === 'queued') {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = 'Edit';
+        edit.setAttribute('aria-label', 'Return last queued message to composer');
+        edit.title = 'Remove this message and return its text and images to the composer';
+        edit.disabled = stopping || pendingQueueActions.size > 0 || !item.takeBackAvailable
+          || prompt.value.trim().length > 0 || pendingImages.length > 0;
+        actions.append(edit);
+        edit.addEventListener('click', () => requestQueueAction(item.id, 'takeBack'));
+      }
+      row.append(actions);
+    }
     queue.append(row);
   }
+  if (queueNotice !== undefined) {
+    const notice = document.createElement('p');
+    notice.className = 'queue-notice';
+    notice.setAttribute('role', 'status');
+    notice.textContent = queueNotice;
+    queue.append(notice);
+  }
+  queue.scrollTop = previousScrollTop;
 }
 
-function queueLabel(placement) {
-  if (placement === 'steering') return 'Steering';
-  if (placement === 'context') return 'Next step';
-  return 'Queued';
+function requestQueueAction(itemId, action) {
+  const item = hostQueue.find((candidate) => candidate.id === itemId);
+  if (stopping || pendingQueueActions.size > 0 || item === undefined) return;
+  if (action === 'steer' && !canSteerQueued(item, running)) return;
+  if (action === 'takeBack' && (prompt.value.trim().length > 0 || pendingImages.length > 0)) return;
+  pendingQueueActions.set(itemId, action);
+  queueNotice = undefined;
+  updateInputAvailability();
+  renderQueue();
+  vscode.postMessage({ type: 'queueAction', itemId, action });
 }
 
 function applyCompactionEvent(event) {
@@ -927,7 +1299,7 @@ function applyCompactionEvent(event) {
     label.className = 'compaction-label';
     root.append(indicator, label);
     renderTarget.append(root);
-    splitTurnProcessAtCompaction(activeTurn === undefined ? undefined : turns.get(activeTurn), root);
+    splitTurnProcessAtBoundary(activeTurn === undefined ? undefined : turns.get(activeTurn), root);
     item = { root, label };
     compactions.set(event.id, item);
   }
@@ -938,6 +1310,9 @@ function applyCompactionEvent(event) {
     item.itemCount = event.itemCount;
     item.tokenCount = event.tokenCount;
     item.label.textContent = `Compacting ${String(event.itemCount)} history ${event.itemCount === 1 ? 'item' : 'items'}…`;
+  } else if (event.type === 'interrupted') {
+    item.root.dataset.state = 'error';
+    item.label.textContent = 'Context compaction interrupted';
   } else {
     item.root.dataset.state = event.error === undefined ? 'completed' : 'error';
     if (event.error !== undefined) {
@@ -1107,11 +1482,14 @@ function flushAssistantRender(body) {
 function applyProcessEvent(event) {
   if (!isRecord(event) || typeof event.turn !== 'number') return;
   if (event.type === 'turn-start') {
+    clearPendingAgentRows(pendingAgentRows);
     activeTurn = event.turn;
     activeAssistant = undefined;
     activeAssistantMessage = undefined;
     activeAssistantIdentity = undefined;
     ensureTurn(event.turn, event.time);
+    syncPendingAgentRows();
+    renderQueue();
     return;
   }
   if (event.type === 'tool-result') {
@@ -1121,6 +1499,7 @@ function applyProcessEvent(event) {
   activeTurn = event.turn;
   const turn = ensureTurn(event.turn);
   if (event.type === 'turn-end') {
+    clearPendingAgentRows(pendingAgentRows, event.turn);
     completeTurn(turn, event.time, event.reason);
     for (const segment of turn.segments) {
       const key = segment.root.dataset.disclosureId;
@@ -1129,11 +1508,14 @@ function applyProcessEvent(event) {
       state.disclosures[key] = false;
     }
     saveState();
+    renderQueue();
     followOutput();
     return;
   }
   if (event.type === 'turn-incomplete') {
+    clearPendingAgentRows(pendingAgentRows, event.turn);
     markTurnIncomplete(turn);
+    renderQueue();
     followOutput();
     return;
   }
@@ -1333,17 +1715,30 @@ function appendToolResult(event) {
   }
 }
 
+function syncPendingAgentRows() {
+  const turn = activeTurn === undefined ? undefined : turns.get(activeTurn);
+  if (!running) return;
+  const added = appendPendingAgentRows(turn, activeTurn, hostQueue, pendingAgentRows, committedAgentIds,
+    activeProcessSegment, item => disclosureRow('context', `agent-message:${item.id}`,
+      item.contextLabel ?? 'Context update',
+      'Waiting for next Step', item.text));
+  if (added) followOutput();
+}
+
 function appendContext(turn, event) {
   if (turn.segments.some(segment => segment.contextIds.has(event.id))) return;
+  const messageId = typeof event.messageId === 'string' && event.messageId.length > 0
+    ? event.messageId : undefined;
   activeProcessSegment(turn);
-  const row = disclosureRow(
-    'context', event.id, 'Context injection', event.label ?? '', event.detail ?? '',
-  );
-  turn.rows.append(row.root);
+  settleAgentMessageRow(pendingAgentRows, committedAgentIds, messageId, turn.rows,
+    event.label, event.detail ?? '', () => disclosureRow('context',
+      messageId === undefined ? event.id : `agent-message:${messageId}`,
+      event.label, event.summary ?? 'Delivered', event.detail ?? ''), event.summary ?? 'Delivered');
   turn.contextIds.add(event.id);
   turn.contextCount += 1;
   turn.segments.at(-1).contextCount = turn.contextCount;
   updateTurnProcessLabel(turn, true);
+  if (messageId !== undefined) renderQueue();
   followOutput();
 }
 
@@ -2047,6 +2442,12 @@ function selectedModelEnabled() {
   return model?.enabled !== false;
 }
 
+function selectedModelAcceptsImages() {
+  const model = modelCatalog?.groups.find(group => group.id === modelSelection?.provider)
+    ?.models.find(candidate => candidate.id === modelSelection?.model);
+  return model?.inputModalities === undefined || model.inputModalities.includes('image');
+}
+
 function renderModelTrigger() {
   const found = modelSelection === undefined
     ? undefined
@@ -2638,8 +3039,8 @@ function renderContextMeter() {
   contextReading.textContent = label;
   contextFigures.textContent = `~${compactTokens(usedTokens)} / ${compactTokens(contextWindow)}`;
   compactButton.hidden = !compactAvailable;
-  compactButton.disabled = running || compacting;
-  compactButton.textContent = compacting ? 'Compacting…' : 'Compact';
+  compactButton.disabled = running || compacting || compactionSubmitGate.locked;
+  compactButton.textContent = compacting || compactionSubmitGate.locked ? 'Compacting…' : 'Compact';
 }
 
 function setContextOpen(open) {
@@ -2685,7 +3086,9 @@ function closeContextPanel(restoreFocus = false) {
 function setRunning(value) {
   running = value;
   if (value) closeModelPicker();
+  syncPendingAgentRows();
   updateInputAvailability();
+  renderQueue();
   renderActivityStatus();
   renderModelTrigger();
   renderPermissionSelect();
@@ -2702,12 +3105,31 @@ function setCompacting(value) {
   renderContextMeter();
 }
 
+function setControlHeld(value) {
+  if (controlHeld === value) return;
+  controlHeld = value;
+  renderSendAction();
+}
+
+function renderSendAction() {
+  const action = sendActionForGesture(running, controlHeld, prompt.value, compacting);
+  send.dataset.mode = action.mode;
+  sendLabel.textContent = action.label;
+  send.title = action.title;
+  send.setAttribute('aria-label', action.title);
+}
+
 function updateInputAvailability() {
-  prompt.disabled = compacting;
-  send.disabled = !clientReady || sending || compacting || !selectedModelEnabled();
-  stop.hidden = !running && !compacting;
+  prompt.disabled = compactionSubmitGate.locked;
+  prompt.readOnly = sending || [...pendingQueueActions.values()].includes('takeBack');
+  send.disabled = !clientReady || sending || stopping || prompt.readOnly || compactionSubmitGate.locked || imageReading
+    || !selectedModelEnabled() || pendingImages.length > 0 && !selectedModelAcceptsImages();
+  stop.hidden = !running && !compacting && !hasWaitingQueue();
   stop.disabled = stopping;
   composer.dataset.running = running || compacting ? 'true' : 'false';
+  renderSendAction();
+  renderImageTray();
+  renderImageError();
 }
 
 function renderActivityStatus() {
@@ -2942,7 +3364,9 @@ function setStickyPrompt(target) {
   stickyPromptTarget = target;
   stickyPrompt.hidden = target === undefined;
   if (target === undefined) return;
-  stickyPromptText.textContent = target.querySelector('.body')?.textContent ?? '';
+  const text = target.querySelector('.body')?.textContent ?? '';
+  const imageCount = target.querySelectorAll('.message-images img').length;
+  stickyPromptText.textContent = text || (imageCount === 1 ? 'Image' : imageCount > 1 ? `${imageCount} images` : '');
   const sourceTime = target.querySelector('.message-time');
   stickyPromptTime.hidden = sourceTime === null;
   if (sourceTime !== null) {
@@ -3205,9 +3629,11 @@ function isOptionalCount(value) {
 
 function isCompactionEvent(value) {
   if (!isRecord(value) || typeof value.id !== 'string' || value.id.length === 0) return false;
-  if (value.type === 'start') return Number.isFinite(value.time);
+  if (value.type === 'start') return Number.isFinite(value.time)
+    && (value.live === undefined || value.live === true);
   if (value.type === 'summary') return isOptionalCount(value.itemCount) && value.itemCount !== undefined
     && isOptionalCount(value.tokenCount) && value.tokenCount !== undefined;
+  if (value.type === 'interrupted') return true;
   return value.type === 'end' && Number.isFinite(value.time)
     && (value.error === undefined || typeof value.error === 'string');
 }
@@ -3239,6 +3665,11 @@ function isModelCatalog(value) {
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+window.addEventListener('beforeunload', () => {
+  for (const image of pendingImages) URL.revokeObjectURL(image.url);
+  for (const url of imageUrls.values()) URL.revokeObjectURL(url);
+});
 
 updateInputAvailability();
 renderModelTrigger();
