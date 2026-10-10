@@ -49,7 +49,7 @@ test('an orphan Tool result does not create a Webview Turn placeholder', async (
   const processEvent = script.slice(script.indexOf('function applyProcessEvent(event) {'),
     script.indexOf('function createProcessSegment('));
   assert.match(processEvent,
-    /if \(event\.type === 'tool-result'\) \{\s*appendToolResult\(event\);\s*return;\s*\}\s*activeTurn = event\.turn;\s*const turn = ensureTurn\(event\.turn\)/);
+    /if \(event\.type === 'tool-result'\) \{\s*appendToolResult\(event\);\s*return;\s*\}[\s\S]*?activeTurn = event\.turn;\s*const turn = ensureTurn\(event\.turn\)/);
   assert.match(script, /function appendToolResult\(event\) \{\s*const row = tools\.get\(event\.callId\);\s*if \(row === undefined\) return;/);
 });
 
@@ -781,6 +781,37 @@ test('permission catalogs provide the default draft selection', () => {
     ],
     currentValue: 'workspace-write',
   });
+});
+
+test('permission selector recovers after a missing restore projection without losing catalog options', () => {
+  const selections = [];
+  const catalog = {
+    options: [
+      { value: 'workspace-write', name: 'Workspace Write' },
+      { value: 'danger-full-access', name: 'Full Access' },
+    ],
+    currentValue: 'workspace-write',
+  };
+  const client = new DshClient(undefined, {
+    permissionSelection(value) { selections.push(value); },
+  }, {
+    default: { provider: 'provider', model: 'model' },
+    routableProviders: ['provider'],
+    groups: [],
+    failures: [],
+  }, {}, catalog);
+
+  client.acceptPermissionProjection(undefined, 'connected');
+  client.acceptPermissionProjection({ currentValue: 'workspace-write' }, 'connected');
+  client.acceptPermissionProjection({ currentValue: 'custom' }, 'connected');
+  client.acceptPermissionProjection({ currentValue: 'danger-full-access' }, 'connected');
+
+  assert.deepEqual(selections, [
+    undefined,
+    catalog,
+    { options: [...catalog.options, { value: 'custom', name: 'Custom' }], currentValue: 'custom' },
+    { options: catalog.options, currentValue: 'danger-full-access' },
+  ]);
 });
 
 test('Inbox projections retain authoritative queue order and request identities', () => {

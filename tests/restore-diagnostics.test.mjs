@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { eventWindowTrace, installRestoreTraceSink, isDiagnosticBatchMessage, isDiagnosticScrollMessage, restoreTrace, sequenceRange } from '../vscode/out/restoreDiagnostics.js';
+import { eventWindowTrace, installRestoreTraceSink, isDiagnosticBatchMessage, isDiagnosticScrollMessage, permissionProjectionTrace, restoreTrace, sequenceRange } from '../vscode/out/restoreDiagnostics.js';
 import { WebviewMessenger } from '../vscode/out/webviewMessenger.js';
 
 const event = (seq, text = 'secret text') => ({ type: 'event', event: { seq, type: 'user/message', data: { content: [{ type: 'text', text }] } } });
@@ -32,6 +32,17 @@ test('window diagnostics keep only durable sequence coordinates and change kind'
   assert.equal(eventWindowTrace(entries, { kind: 'untrusted\nentry' }, false).kind, 'invalid');
 });
 
+test('permission diagnostics distinguish missing projections from missing catalog options without logging values', () => {
+  const options = [{ value: 'private-preset-name' }];
+  const present = permissionProjectionTrace({ currentValue: 'private-preset-name', text: 'secret' }, options, 'connected');
+  const cleared = permissionProjectionTrace(undefined, options, 'disconnected');
+  const recovered = permissionProjectionTrace({ currentValue: 'private-preset-name' }, [], 'unexpected secret');
+  assert.deepEqual(present, { present: true, optionCount: 1, currentInCatalog: true, connection: 'connected' });
+  assert.deepEqual(cleared, { present: false, optionCount: 1, currentInCatalog: false, connection: 'disconnected' });
+  assert.deepEqual(recovered, { present: true, optionCount: 0, currentInCatalog: false, connection: 'other' });
+  assert.doesNotMatch(JSON.stringify([present, cleared, recovered]), /private-preset-name|secret/u);
+});
+
 test('extension activates a VS Code log channel rather than console-only tracing', async () => {
   const extension = await readFile(new URL('../vscode/src/extension.ts', import.meta.url), 'utf8');
   const diagnostics = await readFile(new URL('../vscode/src/restoreDiagnostics.ts', import.meta.url), 'utf8');
@@ -42,6 +53,8 @@ test('extension activates a VS Code log channel rather than console-only tracing
   assert.match(extension, /isDiagnosticScrollMessage\(message\)/u);
   assert.match(extension, /scrollTraceLogged = true;[\s\S]*restoreTrace\(traceSessionId, 'scroll-jump'/u);
   assert.doesNotMatch(diagnostics, /console\.info\(/u);
+  const dshClient = await readFile(new URL('../vscode/src/dshClient.ts', import.meta.url), 'utf8');
+  assert.match(dshClient, /restoreTrace\(this\.sessionIdValue, 'permission-projection', permissionProjectionTrace\(/u);
 });
 
 test('Webview acknowledgment validation rejects content, malformed counts and extra keys', () => {

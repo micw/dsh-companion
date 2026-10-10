@@ -7,6 +7,7 @@ const {
   activityStatusText,
   advanceTurnProcessSegment,
   appendPendingAgentRows,
+  approvalOperation,
   canSteerQueued,
   clearPendingAgentRows,
   createCompactionSubmitGate,
@@ -30,6 +31,41 @@ const {
   submittedPromptText,
   takePendingAgentRow,
 } = globalThis.dshCompanionTranscriptState;
+
+test('approval presentation names the exact requested write path without exposing content', () => {
+  const detail = JSON.stringify({
+    file_path: '/home/user/Downloads/test.txt', content: 'private file body',
+    sandbox_permissions: 'danger-full-access', justification: 'private explanation',
+  });
+  const expected = {
+    action: 'Write file (write)', targetLabel: 'Requested path',
+    target: '/home/user/Downloads/test.txt', access: 'Full access for this call',
+  };
+  assert.deepEqual(approvalOperation('write', detail), expected);
+  assert.deepEqual(approvalOperation('write', detail), expected);
+  assert.doesNotMatch(JSON.stringify(expected), /private file body|private explanation/u);
+});
+
+test('approval presentation shows a shell command literally without claiming inferred file effects', () => {
+  const command = 'rm -- /home/user/Downloads/test.txt';
+  assert.deepEqual(approvalOperation('bash', JSON.stringify({ command,
+    sandbox_permissions: 'danger-full-access' })), {
+    action: 'Run Bash command (bash)', targetLabel: 'Command', target: command,
+    access: 'Full access for this call',
+  });
+  assert.deepEqual(approvalOperation('pwsh', JSON.stringify({ command: 'Remove-Item test.txt' })), {
+    action: 'Run PowerShell command (pwsh)', targetLabel: 'Command', target: 'Remove-Item test.txt',
+  });
+});
+
+test('malformed or unrelated Tool arguments cannot invent an approval target', () => {
+  assert.deepEqual(approvalOperation('write', '{bad json'), { action: 'Write file (write)' });
+  assert.deepEqual(approvalOperation('write', JSON.stringify({ content: 'secret' })), { action: 'Write file (write)' });
+  assert.deepEqual(approvalOperation('bash', JSON.stringify({ command: 17 })), { action: 'Run Bash command (bash)' });
+  assert.deepEqual(approvalOperation('unknown-tool', JSON.stringify({ file_path: '/secret' })), { action: 'unknown-tool' });
+  assert.deepEqual(approvalOperation('__proto__', JSON.stringify({ sandbox_permissions: '__proto__' })),
+    { action: '__proto__' });
+});
 
 test('committed subagent messages reuse the pending Turn row and suppress stale Inbox echoes', () => {
   const row = { root: { id: 'same-dom-row' } };

@@ -381,10 +381,37 @@
     return (draft.startsWith('!') ? draft.slice(1) : draft).trim();
   }
 
+  /** Projects only actionable fields from a Tool call; never echoes file content or infers shell effects. */
+  function approvalOperation(toolName, detail) {
+    const action = toolName === 'write' ? 'Write file (write)'
+      : toolName === 'edit' ? 'Edit file (edit)'
+        : toolName === 'bash' ? 'Run Bash command (bash)'
+          : toolName === 'pwsh' ? 'Run PowerShell command (pwsh)' : toolName;
+    const base = { action };
+    if (typeof detail !== 'string') return base;
+    let args;
+    try {
+      args = JSON.parse(detail);
+    } catch (_error) {
+      return base;
+    }
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) return base;
+    const path = (toolName === 'write' || toolName === 'edit')
+      && typeof args.file_path === 'string' && args.file_path.length > 0
+      ? { targetLabel: 'Requested path', target: args.file_path } : {};
+    const command = (toolName === 'bash' || toolName === 'pwsh')
+      && typeof args.command === 'string' && args.command.length > 0
+      ? { targetLabel: 'Command', target: args.command } : {};
+    const access = args.sandbox_permissions === 'workspace-write' ? 'Workspace write for this call'
+      : args.sandbox_permissions === 'danger-full-access' ? 'Full access for this call' : undefined;
+    return { ...base, ...path, ...command, ...(access === undefined ? {} : { access }) };
+  }
+
   globalThis.dshCompanionTranscriptState = Object.freeze({
     activityStatusText,
     advanceTurnProcessSegment,
     appendPendingAgentRows,
+    approvalOperation,
     canSteerQueued,
     clearPendingAgentRows,
     createCompactionSubmitGate,

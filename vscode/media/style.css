@@ -415,6 +415,60 @@ body {
   text-overflow: ellipsis;
 }
 
+.approval-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+.approval-badge[data-outcome='rejected'],
+.approval-badge[data-outcome='unavailable'] { color: var(--vscode-errorForeground); }
+
+.approval-panel {
+  margin: 8px 0 8px 24px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+}
+.approval-subject { padding: 10px 12px; }
+.approval-field {
+  display: grid;
+  grid-template-columns: minmax(90px, 110px) minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 0;
+}
+.approval-field-name { color: var(--vscode-descriptionForeground); }
+.approval-field-value {
+  min-width: 0;
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+code.approval-field-value { font-family: var(--vscode-editor-font-family); }
+.approval-card {
+  padding: 10px 12px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+.approval-card p { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.approval-actions button {
+  padding: 5px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font: inherit;
+}
+.approval-actions button + button {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+.approval-actions button:disabled { opacity: 0.55; cursor: default; }
+.approval-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+
 .row-detail {
   max-height: 220px;
   margin: 6px 0 4px 24px;

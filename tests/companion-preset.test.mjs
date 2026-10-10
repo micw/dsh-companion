@@ -23,9 +23,10 @@ test('the Companion preset tracks pinned DSH standard except fork delegation and
   ], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
   const companion = await readFile(presetUrl, 'utf8');
   const standardIds = rowIds(standard)
-    .filter(id => id !== 'tool-subagent-fork')
+    .filter(id => id !== 'tool-subagent-fork' && id !== 'tool-ask-user')
     .map(id => id === 'preset-standard' ? 'preset-dsh-companion' : id);
   assert.deepEqual(rowIds(companion).filter(id => id !== 'tool-session-title'), standardIds);
+  assert.doesNotMatch(companion, /- id: tool-ask-user/u);
   assert.match(companion, /- id: tool-session-title\n\s+name: '@dsh-companion\/tool-session-title'/u);
   assert.match(companion, /id: dsh-companion/u);
   assert.match(companion, /When the user explicitly asks for a diagram, use a fenced mermaid block/u);

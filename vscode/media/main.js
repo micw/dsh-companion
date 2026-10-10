@@ -2,6 +2,7 @@ const {
   activityStatusText,
   advanceTurnProcessSegment,
   appendPendingAgentRows,
+  approvalOperation,
   canSteerQueued,
   clearPendingAgentRows,
   createCompactionSubmitGate,
@@ -99,6 +100,9 @@ const state = {
 };
 let turns = new Map();
 let tools = new Map();
+let approvalRows = new Map();
+let approvalAsked = new Map();
+let approvalPending = new Map();
 let compactions = new Map();
 const pendingSubmissions = new Map();
 const committedRequestIds = new Set();
@@ -997,6 +1001,11 @@ function applyHostMessage(message) {
     applyProcessEvent(message.event);
     return;
   }
+  if (message.type === 'approvalAnswerUnavailable') {
+    const pending = approvalPending.get(message.token);
+    if (pending !== undefined) closeApprovalPending(message.token, pending, 'Decision unavailable');
+    return;
+  }
   if (message.type === 'queue') {
     if (!Array.isArray(message.items) || !message.items.every((item) =>
       isRecord(item) && typeof item.id === 'string' && typeof item.text === 'string'
@@ -1139,6 +1148,9 @@ function resetTranscript() {
   pendingAssistantRenders.clear();
   turns = new Map();
   tools = new Map();
+  approvalRows = new Map();
+  approvalAsked = new Map();
+  approvalPending = new Map();
   compactions = new Map();
   committedAgentIds.clear();
   activeAssistant = undefined;
@@ -1496,11 +1508,24 @@ function applyProcessEvent(event) {
     appendToolResult(event);
     return;
   }
+  if (event.type === 'approval-asked') {
+    appendApprovalAsked(event);
+    return;
+  }
+  if (event.type === 'approval-decided') {
+    appendApprovalDecided(event);
+    return;
+  }
+  if (event.type === 'approval-pending') {
+    updateApprovalPending(event);
+    return;
+  }
   activeTurn = event.turn;
   const turn = ensureTurn(event.turn);
   if (event.type === 'turn-end') {
     clearPendingAgentRows(pendingAgentRows, event.turn);
     completeTurn(turn, event.time, event.reason);
+    markUnresolvedApprovals(event.turn);
     for (const segment of turn.segments) {
       const key = segment.root.dataset.disclosureId;
       if (event.replay === true && Object.hasOwn(restoredDisclosures, key)) continue;
@@ -1515,6 +1540,7 @@ function applyProcessEvent(event) {
   if (event.type === 'turn-incomplete') {
     clearPendingAgentRows(pendingAgentRows, event.turn);
     markTurnIncomplete(turn);
+    markUnresolvedApprovals(event.turn);
     renderQueue();
     followOutput();
     return;
@@ -1686,13 +1712,18 @@ function appendToolCall(turn, event) {
   if (typeof event.callId !== 'string' || typeof event.name !== 'string') return;
   if (turn.segments.some(segment => segment.toolCallIds.has(event.callId))) return;
   activeProcessSegment(turn);
-  const row = disclosureRow(
-    'tool',
-    `turn:${String(event.turn)}:tool:${event.callId}`,
-    titleCase(event.name),
-    event.summary ?? '',
-    event.detail ?? '',
+  const detail = typeof event.detail === 'string' ? event.detail : '';
+  const row = approvalRows.get(`call:${event.callId}`) ?? disclosureRow(
+    'tool', `turn:${String(event.turn)}:tool:${event.callId}`,
+    titleCase(event.name), event.summary ?? '', detail,
   );
+  row.callDetail = detail;
+  if (row.approvalSubject !== undefined) {
+    row.root.querySelector('.row-title').textContent = titleCase(event.name);
+    row.summary.textContent = event.summary ?? '';
+    row.detail.textContent = detail;
+    renderApprovalSubject(row, event.name);
+  }
   row.root.dataset.callId = event.callId;
   turn.rows.append(row.root);
   turn.toolCallIds.add(event.callId);
@@ -1713,6 +1744,140 @@ function appendToolResult(event) {
     result.textContent = event.detail;
     row.detail.append(result);
   }
+}
+
+function approvalRow(turn, toolName, callId) {
+  const key = typeof callId === 'string' ? `call:${callId}` : `turn:${turn}:tool:${toolName}`;
+  let row = approvalRows.get(key);
+  if (row !== undefined) return row;
+  row = typeof callId === 'string' ? tools.get(callId) : undefined;
+  if (row === undefined) {
+    const owner = ensureTurn(turn);
+    activeProcessSegment(owner);
+    const id = typeof callId === 'string' ? `turn:${turn}:tool:${callId}` : `turn:${turn}:approval:${key}`;
+    row = disclosureRow('tool', id, titleCase(toolName), '', '');
+    owner.rows.append(row.root);
+  }
+  const badge = document.createElement('span');
+  badge.className = 'approval-badge';
+  badge.textContent = 'Waiting for approval';
+  row.root.querySelector('summary').append(badge);
+  row.root.open = true;
+  row.approvalBadge = badge;
+  row.approvalTurn = turn;
+  const panel = document.createElement('div');
+  panel.className = 'approval-panel';
+  const subject = document.createElement('div');
+  subject.className = 'approval-subject';
+  panel.append(subject);
+  row.root.append(panel);
+  row.approvalPanel = panel;
+  row.approvalSubject = subject;
+  renderApprovalSubject(row, toolName);
+  approvalRows.set(key, row);
+  return row;
+}
+
+function renderApprovalSubject(row, toolName) {
+  const operation = approvalOperation(toolName, row.callDetail);
+  const field = (label, value, code = false) => {
+    const item = document.createElement('div');
+    item.className = 'approval-field';
+    const name = document.createElement('span');
+    name.className = 'approval-field-name';
+    name.textContent = label;
+    const text = document.createElement(code ? 'code' : 'span');
+    text.className = 'approval-field-value';
+    text.textContent = value;
+    item.append(name, text);
+    return item;
+  };
+  row.approvalSubject.replaceChildren(
+    field('Action', operation.action),
+    ...(operation.target === undefined ? [] : [field(operation.targetLabel, operation.target, true)]),
+    ...(operation.access === undefined ? [] : [field('Access', operation.access)]),
+  );
+}
+
+function markUnresolvedApprovals(turn) {
+  for (const row of approvalRows.values()) {
+    if (row.approvalTurn !== turn || row.approvalBadge.dataset.outcome !== undefined
+      || [...approvalPending.values()].some(pending => pending.row === row)) continue;
+    row.approvalBadge.textContent = 'Decision not recorded';
+  }
+}
+
+function appendApprovalAsked(event) {
+  if (!Number.isSafeInteger(event.turn) || event.turn < 1
+    || typeof event.id !== 'string' || event.id.length === 0
+    || typeof event.toolName !== 'string' || event.toolName.length === 0
+    || (event.callId !== undefined && (typeof event.callId !== 'string' || event.callId.length === 0))) return;
+  approvalAsked.set(event.id, approvalRow(event.turn, event.toolName, event.callId));
+}
+
+function appendApprovalDecided(event) {
+  if (typeof event.id !== 'string' || event.id.length === 0
+    || !['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(event.outcome)) return;
+  const row = approvalAsked.get(event.id);
+  if (row === undefined) return;
+  row.approvalBadge.textContent = {
+    'allowed-once': 'Allowed once', rejected: 'Rejected', cancelled: 'Cancelled', unavailable: 'Approval unavailable',
+  }[event.outcome];
+  row.approvalBadge.dataset.outcome = event.outcome;
+}
+
+function closeApprovalPending(token, pending, label) {
+  pending.card.remove();
+  approvalPending.delete(token);
+  if (label !== undefined && pending.row.approvalBadge.dataset.outcome === undefined) {
+    pending.row.approvalBadge.textContent = label;
+  }
+}
+
+function updateApprovalPending(event) {
+  if (!Number.isSafeInteger(event.turn) || event.turn < 1
+    || typeof event.token !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(event.token)
+    || typeof event.toolName !== 'string' || event.toolName.length === 0
+    || !['answerable', 'settling', 'closed'].includes(event.state)
+    || (event.callId !== undefined && (typeof event.callId !== 'string' || event.callId.length === 0))
+    || (event.reason !== undefined && typeof event.reason !== 'string')) return;
+  const existing = approvalPending.get(event.token);
+  if (event.state === 'closed') {
+    if (existing !== undefined) closeApprovalPending(event.token, existing, 'Decision pending…');
+    return;
+  }
+  if (existing !== undefined) {
+    for (const button of existing.card.querySelectorAll('button')) button.disabled = true;
+    if (event.state === 'settling') existing.row.approvalBadge.textContent = 'Decision pending…';
+    return;
+  }
+  if (event.state !== 'answerable') return;
+  const row = approvalRow(event.turn, event.toolName, event.callId);
+  const card = document.createElement('div');
+  card.className = 'approval-card';
+  const explanation = document.createElement('p');
+  explanation.textContent = typeof event.reason === 'string' && event.reason.length > 0
+    ? event.reason : 'This tool needs one-time approval.';
+  const actions = document.createElement('div');
+  actions.className = 'approval-actions';
+  for (const [label, outcome] of [['Allow once', 'allowed-once'], ['Reject', 'rejected']]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      if (!approvalPending.has(event.token)) return;
+      for (const action of actions.querySelectorAll('button')) action.disabled = true;
+      row.approvalBadge.textContent = 'Decision pending…';
+      vscode.postMessage({ type: 'answerApproval', token: event.token, outcome });
+    });
+    actions.append(button);
+  }
+  card.append(explanation, actions);
+  row.approvalPanel.append(card);
+  approvalPending.set(event.token, { row, card });
+  row.root.open = true;
+  followOutput();
 }
 
 function syncPendingAgentRows() {
