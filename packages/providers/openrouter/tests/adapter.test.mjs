@@ -19,8 +19,9 @@ const TEXT = [{
   content: [{ type: 'text', text: 'Hello' }],
 }]
 
-function adapter(generation) {
+function adapter(generation, provider = 'openrouter') {
   return new OpenRouterAdapter({
+    provider,
     generation: async signal => {
       signal?.throwIfAborted()
       return generation
@@ -92,7 +93,7 @@ const reasoningToolEvents = [
 test('reuses PiAiAdapter for a complete text stream', async (t) => {
   const server = await mockServer([{ events: textEvents }])
   t.after(() => server.close())
-  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), server.url)
+  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), 'openrouter', server.url)
   const chunks = await collect(adapter(generation).stream({
     provider: 'openrouter', model: 'acme/reasoner', messages: TEXT,
   }))
@@ -111,10 +112,40 @@ test('reuses PiAiAdapter for a complete text stream', async (t) => {
   assert.equal(server.headers[0]?.authorization, 'Bearer test-key')
 })
 
+test('streams through the exact configured instance route', async (t) => {
+  const server = await mockServer([{ events: textEvents }])
+  t.after(() => server.close())
+  const provider = 'openrouter-instance-1'
+  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), provider, server.url)
+  const chunks = await collect(adapter(generation, provider).stream({
+    provider, model: 'acme/reasoner', messages: TEXT,
+  }))
+  assert.ok(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'hello'))
+  assert.equal(generation.model('acme/reasoner').provider, provider)
+  assert.equal(server.requests.length, 1)
+})
+
+test('one model without reasoning efforts does not hide other OpenRouter models', async () => {
+  const source = catalogPayload()
+  const incomplete = structuredClone(source.data[0])
+  incomplete.id = 'apodex/apodex-1.1-mini:free'
+  incomplete.reasoning.supported_efforts = []
+  delete incomplete.reasoning.default_effort
+  source.data.push(incomplete)
+  source.total_count = 2
+  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(source), 'openrouter')
+  const route = adapter(generation)
+  assert.deepEqual((await route.listModels('openrouter')).map(model => model.id), [
+    'acme/reasoner', 'apodex/apodex-1.1-mini:free',
+  ])
+  assert.equal((await route.resolveModel('openrouter', incomplete.id)).reasoning, undefined)
+  assert.ok((await route.resolveModel('openrouter', 'acme/reasoner')).reasoning)
+})
+
 test('reuses PiAiAdapter for reasoning and a tool call', async (t) => {
   const server = await mockServer([{ events: reasoningToolEvents }])
   t.after(() => server.close())
-  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), server.url)
+  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), 'openrouter', server.url)
   const chunks = await collect(adapter(generation).stream({
     provider: 'openrouter',
     model: 'acme/reasoner',
@@ -135,7 +166,7 @@ test('reuses PiAiAdapter for reasoning and a tool call', async (t) => {
 test('forwards cancellation through PiAiAdapter to the active request', async (t) => {
   const server = await mockServer([{ events: textEvents, delayMs: 100 }])
   t.after(() => server.close())
-  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), server.url)
+  const generation = new OpenRouterCatalogGeneration(decodeOpenRouterCatalog(catalogPayload()), 'openrouter', server.url)
   const controller = new AbortController()
   const operation = collect(adapter(generation).stream({
     provider: 'openrouter', model: 'acme/reasoner', messages: TEXT, signal: controller.signal,

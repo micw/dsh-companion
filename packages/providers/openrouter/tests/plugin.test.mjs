@@ -23,10 +23,17 @@ test('defaults the provider family to no configured instances', () => {
 test('registers one configured instance backed by catalog LKG and account services', async () => {
   const originalFetch = globalThis.fetch
   const calls = []
+  const payload = catalogPayload()
+  const incomplete = structuredClone(payload.data[0])
+  incomplete.id = 'apodex/apodex-1.1-mini:free'
+  incomplete.reasoning.supported_efforts = []
+  delete incomplete.reasoning.default_effort
+  payload.data.push(incomplete)
+  payload.total_count = 2
   globalThis.fetch = async (input, init) => {
     const url = String(input)
     calls.push({ url, init })
-    if (url.endsWith('/models')) return Response.json(catalogPayload())
+    if (url.endsWith('/models')) return Response.json(payload)
     if (url.endsWith('/key')) return Response.json(keyPayload())
     throw new Error(`unexpected request ${url}`)
   }
@@ -75,7 +82,10 @@ test('registers one configured instance backed by catalog LKG and account servic
       credential: 'configured',
     }])
     await waitFor(() => catalog.snapshot('openrouter-primary')?.status === 'ready')
-    assert.deepEqual((await ctx.llm.listModels('openrouter-primary')).map(model => model.id), ['acme/reasoner'])
+    assert.deepEqual((await ctx.llm.listModels('openrouter-primary')).map(model => model.id), [
+      'acme/reasoner', incomplete.id,
+    ])
+    assert.equal((await ctx.llm.resolveModelInfo('openrouter-primary', incomplete.id)).reasoning, undefined)
     await waitFor(() => ctx.companionProviderAccounts.snapshot('openrouter-primary')?.status === 'ready')
     assert.deepEqual(new Set(calls.map(call => call.url)), new Set([
       'https://openrouter.example/api/v1/models',

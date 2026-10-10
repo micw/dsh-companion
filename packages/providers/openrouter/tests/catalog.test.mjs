@@ -9,10 +9,11 @@ import { catalogPayload } from './fixture.mjs'
 
 test('strictly decodes and projects one dynamic OpenRouter generation', () => {
   const payload = decodeOpenRouterCatalog(catalogPayload())
-  const generation = new OpenRouterCatalogGeneration(payload, 'https://gateway.example/v1')
+  const generation = new OpenRouterCatalogGeneration(payload, 'openrouter-work', 'https://gateway.example/v1')
   const model = generation.model('acme/reasoner')
   assert.deepEqual({
     id: model.id,
+    provider: model.provider,
     api: model.api,
     baseUrl: model.baseUrl,
     input: model.input,
@@ -21,6 +22,7 @@ test('strictly decodes and projects one dynamic OpenRouter generation', () => {
     cost: model.cost,
   }, {
     id: 'acme/reasoner',
+    provider: 'openrouter-work',
     api: 'openai-completions',
     baseUrl: 'https://gateway.example/v1',
     input: ['text', 'image'],
@@ -75,12 +77,34 @@ test('normalizes OpenRouter none reasoning effort to DSH off', () => {
   })
 })
 
-test('accepts reasoning metadata without selectable efforts', () => {
+test('does not advertise reasoning without selectable efforts', () => {
   const source = catalogPayload()
   delete source.data[0].reasoning.supported_efforts
   delete source.data[0].reasoning.default_effort
   const payload = decodeOpenRouterCatalog(source)
-  assert.deepEqual(payload.data[0].reasoning.supported_efforts, [])
+  assert.equal(payload.data[0].reasoning, undefined)
+  assert.equal(projectOpenRouterCatalog(payload).models[0].reasoning, undefined)
+  const model = new OpenRouterCatalogGeneration(payload, 'openrouter-work').models[0]
+  assert.equal(model.reasoning, false)
+  assert.equal(model.thinkingLevelMap, undefined)
+})
+
+test('one malformed reasoning block does not remove independent models', () => {
+  const source = catalogPayload()
+  const malformed = structuredClone(source.data[0])
+  malformed.id = 'apodex/apodex-1.1-mini:free'
+  malformed.reasoning.supported_efforts = ['surprise']
+  source.data.push(malformed)
+  source.total_count = 2
+  const payload = decodeOpenRouterCatalog(source)
+  assert.equal(payload.data.length, 2)
+  assert.equal(payload.data[1].reasoning, undefined)
+  assert.deepEqual(projectOpenRouterCatalog(payload).models.map(model => model.id), [
+    'acme/reasoner', 'apodex/apodex-1.1-mini:free',
+  ])
+  const generation = new OpenRouterCatalogGeneration(payload, 'openrouter-work')
+  assert.equal(generation.model('acme/reasoner').reasoning, true)
+  assert.equal(generation.model(malformed.id).reasoning, false)
 })
 
 test('keeps dynamically priced router models without inventing reported rates', () => {
@@ -89,7 +113,7 @@ test('keeps dynamically priced router models without inventing reported rates', 
   source.data[0].top_provider.context_length = null
   source.data[0].top_provider.max_completion_tokens = null
   const payload = decodeOpenRouterCatalog(source)
-  const model = new OpenRouterCatalogGeneration(payload, 'https://gateway.example/v1').models[0]
+  const model = new OpenRouterCatalogGeneration(payload, 'openrouter-work', 'https://gateway.example/v1').models[0]
   assert.deepEqual(model.cost, {
     input: 0,
     output: 0,

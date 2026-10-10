@@ -1,4 +1,4 @@
-/** Strict OpenRouter model-catalog decoding and immutable pi-ai generation projection. */
+/** OpenRouter model-catalog decoding and immutable pi-ai generation projection. */
 
 import type { Model } from '@earendil-works/pi-ai'
 import type {
@@ -85,8 +85,8 @@ export function decodeOpenRouterCatalog(value: unknown): OpenRouterCatalog {
 export class OpenRouterCatalogGeneration {
   readonly models: readonly Model<'openai-completions'>[]
 
-  constructor(readonly payload: OpenRouterCatalog, apiBaseURL = DEFAULT_OPENROUTER_API_BASE_URL) {
-    this.models = Object.freeze(payload.data.map(model => toPiModel(model, apiBaseURL)))
+  constructor(readonly payload: OpenRouterCatalog, provider: string, apiBaseURL = DEFAULT_OPENROUTER_API_BASE_URL) {
+    this.models = Object.freeze(payload.data.map(model => toPiModel(model, provider, apiBaseURL)))
   }
 
   /** Resolve one exact model from this generation. */
@@ -116,9 +116,7 @@ function decodeModel(value: unknown, index: number): OpenRouterModel {
   const architecture = record(source.architecture, `${label} architecture`)
   const pricing = record(source.pricing, `${label} pricing`)
   const topProvider = record(source.top_provider, `${label} top_provider`)
-  const reasoning = source.reasoning === undefined || source.reasoning === null
-    ? undefined
-    : decodeReasoning(source.reasoning, label)
+  const reasoning = usableReasoning(source.reasoning, label)
   const contextLength = positive(source.context_length, `${label} context_length`)
   const decoded: OpenRouterModel = {
     id: nonEmpty(source.id, `${label} id`),
@@ -161,6 +159,17 @@ function decodeModel(value: unknown, index: number): OpenRouterModel {
   return decoded
 }
 
+function usableReasoning(value: unknown, label: string): OpenRouterReasoning | undefined {
+  if (value === undefined || value === null) return undefined
+  try {
+    const reasoning = decodeReasoning(value, label)
+    return reasoning.supported_efforts.length > 0 ? reasoning : undefined
+  } catch (error) {
+    // Optional capability metadata cannot make independently valid models unavailable.
+    return undefined
+  }
+}
+
 function decodeReasoning(value: unknown, label: string): OpenRouterReasoning {
   const source = record(value, `${label} reasoning`)
   const reportedEfforts = source.supported_efforts === undefined || source.supported_efforts === null
@@ -190,18 +199,18 @@ function normalizeEffort(effort: string): string {
   return normalized
 }
 
-function toPiModel(source: OpenRouterModel, apiBaseURL: string): Model<'openai-completions'> {
+function toPiModel(source: OpenRouterModel, provider: string, apiBaseURL: string): Model<'openai-completions'> {
   const efforts = source.reasoning?.supported_efforts
-  const thinkingLevelMap = efforts === undefined
+  const thinkingLevelMap = efforts === undefined || efforts.length === 0
     ? undefined
     : Object.fromEntries([...THINKING_LEVELS].map(level => [level, efforts.includes(level) ? level : null]))
   return {
     id: source.id,
     name: source.name,
     api: 'openai-completions',
-    provider: OPENROUTER_PROVIDER,
+    provider,
     baseUrl: apiBaseURL,
-    reasoning: source.reasoning !== undefined || source.supported_parameters.includes('reasoning'),
+    reasoning: thinkingLevelMap !== undefined,
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
     input: inputModalities(source.architecture.input_modalities),
     cost: {
@@ -225,7 +234,7 @@ function projectModel(source: OpenRouterModel): CompanionProviderModel {
     hidden: false,
     inputModalities: source.architecture.input_modalities,
     context: { default: source.context_length, maximum: source.top_provider.context_length },
-    ...reasoning === undefined ? {} : {
+    ...reasoning === undefined || reasoning.supported_efforts.length === 0 ? {} : {
       reasoning: {
         efforts: reasoning.supported_efforts,
         ...reasoning.default_effort === undefined ? {} : { defaultEffort: reasoning.default_effort },

@@ -290,7 +290,7 @@ class OpenRouterInstanceRuntime {
       catalog = this.catalogRegistration?.current()
     }
     if (catalog === undefined) throw new LlmError('OpenRouter catalog refresh produced no generation', 'INVALID_CATALOG')
-    return new OpenRouterCatalogGeneration(catalog.payload, this.config.baseURL)
+    return new OpenRouterCatalogGeneration(catalog.payload, this.config.provider, this.config.baseURL)
   }
 
   private ensureSources(identity: string, client: OpenRouterClient): void {
