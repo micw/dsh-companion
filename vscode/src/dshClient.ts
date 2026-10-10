@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
-import { eventWindowTrace, restoreTrace } from './restoreDiagnostics';
+import { eventWindowTrace, permissionProjectionTrace, restoreTrace } from './restoreDiagnostics';
 import type { UserImageUpload } from './queueMessages';
 
 /** Fixed source-development DSH Web origin. */
@@ -19,6 +19,13 @@ export class DshHttpError extends Error {
 
 export type DshProcessEvent =
   | { readonly type: 'turn-start'; readonly turn: number; readonly time: number }
+  | { readonly type: 'approval-asked'; readonly turn: number; readonly id: string;
+    readonly toolName: string; readonly callId?: string; readonly reason?: string }
+  | { readonly type: 'approval-decided'; readonly turn: number; readonly id: string;
+    readonly outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable' }
+  | { readonly type: 'approval-pending'; readonly turn: number; readonly token: string;
+    readonly toolName: string; readonly callId?: string; readonly reason?: string;
+    readonly state: 'answerable' | 'settling' | 'closed' }
   | {
     readonly type: 'turn-end'; readonly turn: number; readonly time: number;
     readonly reason: string; readonly replay: boolean;
@@ -395,8 +402,11 @@ interface CanonicalClientGraph {
     subagentAddress(sessionId: string): unknown;
     refresh(): Promise<void>;
     search(query: string, signal: AbortSignal): Promise<unknown>;
+    scopeOf(context: unknown): string | undefined;
   };
-  readonly remote: Record<string, unknown>;
+  readonly remote: Record<string, unknown> & {
+    $on(event: string, listener: (this: unknown, request: unknown, next: () => Promise<unknown>) => Promise<unknown>): () => void;
+  };
   readonly connection: { readonly state: ObservableValue };
   dispose(): Promise<void>;
 }
@@ -1133,6 +1143,7 @@ export class DshClient {
   private contextPressureState: DshContextPressureState = { watermark: -1 };
   private readonly activeCompactions = new Set<string>();
   private readonly activeCompactionCommands = new Set<string>();
+  private readonly permissionOptions: DshPermissionSelection['options'];
   private permissionSelectionValue: DshPermissionSelection | undefined;
   private providerAccountsRequest = 0;
   private connectionInterrupted = false;
@@ -1141,6 +1152,15 @@ export class DshClient {
   private pendingModelSelection: DshModelSelection | undefined;
   private pendingPermissionPreset: string | undefined;
   private canonical: CanonicalState | undefined;
+  private readonly approvalLifetime = new AbortController();
+  private readonly pendingApprovals = new Map<string, {
+    turn: number; toolName: string; callId?: string; reason?: string;
+    resolve: (outcome: 'allowed-once' | 'rejected') => void;
+    reject: (reason: Error) => void;
+    signal: AbortSignal;
+    onAbort: () => void;
+    state: 'answerable' | 'settling' | 'closed';
+  }>();
 
   private constructor(
     private readonly cwd: string | undefined,
@@ -1152,6 +1172,7 @@ export class DshClient {
     this.modelCatalogValue = modelCatalogValue;
     this.modelLabels = modelLabelMap(modelCatalogValue);
     this.modelSelectionState = { watermark: -1, current: { ...modelCatalogValue.default } };
+    this.permissionOptions = permissionSelectionValue?.options ?? [];
     this.permissionSelectionValue = permissionSelectionValue;
     this.canonical = canonical;
   }
@@ -1227,6 +1248,11 @@ export class DshClient {
         ));
       };
       client.canonical?.disposers.push(graph.sessions.list.subscribe(publishSummary));
+      client.canonical?.disposers.push(graph.remote.$on('approval/request', function (request, next) {
+        const sessionId = graph.sessions.scopeOf(this);
+        if (sessionId === undefined || sessionId !== client.sessionIdValue) return next();
+        return client.receiveApprovalRequest(request, next);
+      }));
       if (restoredSessionId !== undefined) {
         if (!canonicalSessionIds(graph.sessions.list.getSnapshot()).has(restoredSessionId)) {
           throw new Error(`DSH Session ${restoredSessionId} is not available`);
@@ -1673,9 +1699,140 @@ export class DshClient {
     return this.requireBinding().session.loadOlder();
   }
 
+  /** Accept one still-live, session-scoped approval decision. */
+  answerApproval(token: string, outcome: 'allowed-once' | 'rejected'): boolean {
+    const pending = this.pendingApprovals.get(token);
+    if (pending === undefined || pending.state !== 'answerable' || pending.signal.aborted
+      || this.canonical === undefined) return false;
+    pending.state = 'settling';
+    this.publishPendingApproval(token, pending);
+    pending.resolve(outcome);
+    return true;
+  }
+
+  private publishPendingApproval(token: string, pending: {
+    turn: number; toolName: string; callId?: string; reason?: string;
+    state: 'answerable' | 'settling' | 'closed';
+  }): void {
+    this.sink.process({ type: 'approval-pending', token, turn: pending.turn,
+      toolName: pending.toolName, state: pending.state,
+      ...(pending.callId === undefined ? {} : { callId: pending.callId }),
+      ...(pending.reason === undefined ? {} : { reason: pending.reason }) });
+  }
+
+  private async receiveApprovalRequest(request: unknown, next: () => Promise<unknown>): Promise<unknown> {
+    if (!isRecord(request) || typeof request.toolName !== 'string' || request.toolName.length === 0
+      || (request.callId !== undefined && typeof request.callId !== 'string')
+      || (request.reason !== undefined && typeof request.reason !== 'string')
+      || !(request.signal instanceof AbortSignal)) return 'unavailable';
+    const displayReason = request.displayReason;
+    if (displayReason !== undefined && (!isRecord(displayReason)
+      || typeof displayReason.en !== 'string'
+      || Object.values(displayReason).some(value => typeof value !== 'string'))) return 'unavailable';
+    const signal = request.signal;
+    if (signal.aborted) return 'cancelled';
+    const identity = {
+      toolName: request.toolName,
+      ...(request.callId === undefined ? {} : { callId: request.callId }),
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+    };
+    const turn = this.findApprovalTurn(identity) ?? await this.waitForApprovalTurn(identity, signal);
+    if (turn === undefined) {
+      if (this.approvalLifetime.signal.aborted) return next();
+      return signal.aborted ? 'cancelled' : 'unavailable';
+    }
+    const token = randomUUID();
+    let resolve!: (outcome: 'allowed-once' | 'rejected') => void;
+    let reject!: (reason: Error) => void;
+    const result = new Promise<'allowed-once' | 'rejected'>((yes, no) => { resolve = yes; reject = no; });
+    const pending = {
+      turn, toolName: request.toolName, callId: request.callId,
+      reason: isRecord(displayReason) && typeof displayReason.en === 'string'
+        ? displayReason.en : request.reason,
+      signal, resolve, reject,
+      onAbort: () => {}, state: 'answerable' as 'answerable' | 'settling' | 'closed',
+    };
+    pending.onAbort = () => {
+      pending.state = 'closed';
+      this.publishPendingApproval(token, pending);
+      reject(new Error('Approval request withdrawn'));
+    };
+    this.pendingApprovals.set(token, pending);
+    signal.addEventListener('abort', pending.onAbort, { once: true });
+    if (signal.aborted) pending.onAbort();
+    else this.publishPendingApproval(token, pending);
+    try {
+      return await result;
+    } catch (_error) {
+      // A withdrawn transport cannot deliver an answer; closing this tab delegates to other clients.
+      return signal.aborted ? 'cancelled' : next();
+    } finally {
+      signal.removeEventListener('abort', pending.onAbort);
+      this.pendingApprovals.delete(token);
+      pending.state = 'closed';
+      this.publishPendingApproval(token, pending);
+    }
+  }
+
+  private findApprovalTurn(request: { toolName: string; callId?: string; reason?: string }): number | undefined {
+    const snapshot = this.canonical?.binding?.eventSource.getSnapshot();
+    if (!isRecord(snapshot) || !Array.isArray(snapshot.entries)) return undefined;
+    const decided = new Set<string>();
+    for (let index = snapshot.entries.length - 1; index >= 0; index -= 1) {
+      const entry = snapshot.entries[index];
+      if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) continue;
+      const event = entry.event;
+      if (event.type === 'turn/end') break;
+      if (event.type === 'approval/decided' && isRecord(event.data)
+        && typeof event.data.id === 'string') decided.add(event.data.id);
+      if (event.type !== 'approval/asked' || !isRecord(event.data)
+        || typeof event.data.id !== 'string' || decided.has(event.data.id)
+        || event.data.toolName !== request.toolName || event.data.callId !== request.callId
+        || event.data.reason !== request.reason) continue;
+      for (let start = index; start >= 0; start -= 1) {
+        const prior = snapshot.entries[start];
+        if (!isRecord(prior) || prior.type !== 'event' || !isRecord(prior.event)) continue;
+        if (prior.event.type === 'turn/end') return undefined;
+        if (prior.event.type === 'turn/start' && isRecord(prior.event.data)
+          && Number.isSafeInteger(prior.event.data.turn) && Number(prior.event.data.turn) > 0) {
+          return Number(prior.event.data.turn);
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private waitForApprovalTurn(
+    request: { toolName: string; callId?: string; reason?: string }, signal: AbortSignal,
+  ): Promise<number | undefined> {
+    const source = this.canonical?.binding?.eventSource;
+    if (source === undefined) return Promise.resolve(undefined);
+    const lifetime = AbortSignal.any([signal, this.approvalLifetime.signal]);
+    if (lifetime.aborted) return Promise.resolve(undefined);
+    return new Promise(resolve => {
+      let unsubscribe = () => {};
+      const finish = (turn: number | undefined): void => {
+        unsubscribe();
+        lifetime.removeEventListener('abort', onAbort);
+        resolve(turn);
+      };
+      const onAbort = (): void => { finish(undefined); };
+      const onChange = (): void => {
+        const turn = this.findApprovalTurn(request);
+        if (turn !== undefined) finish(turn);
+      };
+      unsubscribe = source.subscribe(onChange);
+      lifetime.addEventListener('abort', onAbort, { once: true });
+      if (lifetime.aborted) onAbort();
+      else onChange();
+    });
+  }
+
   dispose(): void {
     const canonical = this.canonical;
     if (canonical === undefined) return;
+    this.approvalLifetime.abort();
+    for (const pending of this.pendingApprovals.values()) pending.reject(new Error('Approval view closed'));
     for (const dispose of canonical.disposers.splice(0)) dispose();
     void (async () => {
       try {
@@ -1884,17 +2041,7 @@ export class DshClient {
       this.sink.sessionCost(snapshot === undefined ? undefined : parseCostSummary(snapshot));
     };
     const projectPermission = (): void => {
-      const snapshot = permissionProjection.getSnapshot();
-      try {
-        this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection({
-          ...snapshot,
-          options: this.permissionSelectionValue?.options ?? [],
-        });
-      } catch (error) {
-        restoreTrace(this.sessionIdValue, 'permission-projection-failed', { present: snapshot !== undefined });
-        throw error;
-      }
-      this.sink.permissionSelection(this.permissionSelectionValue);
+      this.acceptPermissionProjection(permissionProjection.getSnapshot(), canonical.graph.connection.state.getSnapshot());
     };
     let lastConnectionTrace: string | undefined;
     const projectConnection = (): void => {
@@ -1940,6 +2087,25 @@ export class DshClient {
     projectConnection();
     await waitForCanonicalSession(session);
     restoreTrace(this.sessionIdValue, 'ready', {});
+  }
+
+  private acceptPermissionProjection(snapshot: unknown, connection: unknown): void {
+    restoreTrace(this.sessionIdValue, 'permission-projection', permissionProjectionTrace(
+      snapshot, this.permissionOptions, connection,
+    ));
+    try {
+      const options = isRecord(snapshot) && snapshot.currentValue === 'custom'
+        ? [...this.permissionOptions, { value: 'custom', name: 'Custom' }]
+        : this.permissionOptions;
+      this.permissionSelectionValue = snapshot === undefined ? undefined : parsePermissionSelection({
+        ...snapshot,
+        options,
+      });
+    } catch (error) {
+      restoreTrace(this.sessionIdValue, 'permission-projection-failed', { present: snapshot !== undefined });
+      throw error;
+    }
+    this.sink.permissionSelection(this.permissionSelectionValue);
   }
 
   private receiveCanonicalWindow(value: unknown, initial = false): void {
@@ -2005,6 +2171,7 @@ export class DshClient {
     for (const [index, entry] of entries.entries()) {
       this.receiveCanonicalEntry(entry, true, false, hints[index]);
     }
+    for (const [token, pending] of this.pendingApprovals) this.publishPendingApproval(token, pending);
     if (this.openTurn !== undefined && !this.sessionRunning) {
       this.sink.process({ type: 'turn-incomplete', turn: this.openTurn });
     }
@@ -2196,6 +2363,24 @@ export class DshClient {
 
     if (event.type === 'step/start' && typeof event.data.step === 'number') {
       if (typeof event.time === 'number') this.turnStats?.startStep(this.currentStep, event.time);
+      return;
+    }
+
+    if (event.type === 'approval/asked' && typeof event.data.id === 'string'
+      && typeof event.data.toolName === 'string'
+      && (event.data.callId === undefined || typeof event.data.callId === 'string')
+      && (event.data.reason === undefined || typeof event.data.reason === 'string')) {
+      this.sink.process({ type: 'approval-asked', turn: this.currentTurn, id: event.data.id,
+        toolName: event.data.toolName,
+        ...(event.data.callId === undefined ? {} : { callId: event.data.callId }),
+        ...(event.data.reason === undefined ? {} : { reason: event.data.reason }) });
+      return;
+    }
+    if (event.type === 'approval/decided' && typeof event.data.id === 'string'
+      && typeof event.data.outcome === 'string'
+      && ['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(event.data.outcome)) {
+      this.sink.process({ type: 'approval-decided', turn: this.currentTurn, id: event.data.id,
+        outcome: event.data.outcome as 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable' });
       return;
     }
 
@@ -2521,7 +2706,9 @@ function isCanonicalClientGraph(value: unknown): value is CanonicalClientGraph {
     && typeof value.sessions.create === 'function' && typeof value.sessions.retain === 'function'
     && typeof value.sessions.binding === 'function' && typeof value.sessions.subagentAddress === 'function'
     && typeof value.sessions.refresh === 'function' && typeof value.sessions.search === 'function'
+    && typeof value.sessions.scopeOf === 'function'
     && isRecord(value.remote) && typeof value.remote.$mount === 'function'
+    && typeof value.remote.$on === 'function'
     && isRecord(value.connection) && isObservable(value.connection.state)
     && typeof value.dispose === 'function';
 }

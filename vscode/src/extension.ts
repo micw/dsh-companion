@@ -9,6 +9,8 @@ import type { OpenFileMessage } from './fileLinks';
 import { isCopyTextMessage } from './clipboardMessages';
 import { isLoadImageMessage, isQueueActionMessage, isStopMessage, isSubmitMessage } from './queueMessages';
 import type { LoadImageMessage, QueueActionMessage, SubmitMessage } from './queueMessages';
+import { isAnswerApprovalMessage } from './approvalMessages';
+import type { AnswerApprovalMessage } from './approvalMessages';
 import { RuntimeControl } from './runtimeControl';
 import { RuntimeProgress, runtimePhaseText } from './runtimeProgress';
 import { connectRuntime } from './runtimeInstaller';
@@ -490,6 +492,7 @@ function configureChatEditor(
     if (isLoadOlderMessage(message)) void loadOlder(panel, ready);
     if (isSelectModelMessage(message)) void selectModel(panel, ready, message);
     if (isSelectPermissionMessage(message)) void selectPermission(panel, ready, message.preset);
+    if (isAnswerApprovalMessage(message)) void answerApproval(panel, ready, message);
     if (isCompactMessage(message)) void compact(panel, ready);
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
     if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready, message.requestId);
@@ -801,6 +804,17 @@ async function stop(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Prom
     });
   } finally {
     post(panel, { type: 'stopping', value: false });
+  }
+}
+
+async function answerApproval(
+  panel: vscode.WebviewPanel, ready: Promise<DshClient>, message: AnswerApprovalMessage,
+): Promise<void> {
+  try {
+    const accepted = (await ready).answerApproval(message.token, message.outcome);
+    if (!accepted) post(panel, { type: 'approvalAnswerUnavailable', token: message.token });
+  } catch (_error) {
+    post(panel, { type: 'approvalAnswerUnavailable', token: message.token });
   }
 }
 

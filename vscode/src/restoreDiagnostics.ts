@@ -106,6 +106,20 @@ export function eventWindowTrace(entries: readonly unknown[], change: Record<str
   };
 }
 
+/** Summarize permission availability across reconnect without logging preset names or Session contents. */
+export function permissionProjectionTrace(
+  snapshot: unknown, options: readonly { readonly value: string }[], connection: unknown,
+): object {
+  const current = record(snapshot) && typeof snapshot.currentValue === 'string' ? snapshot.currentValue : undefined;
+  return {
+    present: snapshot !== undefined,
+    optionCount: options.length,
+    currentInCatalog: current !== undefined && options.some(option => option.value === current),
+    connection: connection === 'connected' || connection === 'connecting' || connection === 'disconnected'
+      ? connection : 'other',
+  };
+}
+
 let traceSink: ((line: string) => void) | undefined;
 
 /** Route diagnostic lines into a persistent VS Code log channel owned by activation. */
