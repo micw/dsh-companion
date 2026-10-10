@@ -1,0 +1,5 @@
+# Optional provider adapter for an independently operated Claude Wrapper Advanced service.
+- insert:
+    - id: dsh-companion-provider-claude-wrapper-advanced
+      name: '@dsh-companion/provider-claude-wrapper-advanced'
+      config: {}
