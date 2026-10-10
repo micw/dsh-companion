@@ -33,6 +33,66 @@ function createProjection() {
   return { client, output, sink };
 }
 
+test('durable retry waiting and started identities match live and restored history', () => {
+  const retry = { retryId: 'stable-retry', turn: 1, step: 1, provider: 'test',
+    policyKey: 'transport', mode: 'normal', retry: 2, maxRetries: 4, delayMs: 1500,
+    failure: { code: 'transport', message: 'Connection lost' } };
+  const entries = [event(1, 'turn/start', { turn: 1 }), event(2, 'llm/retry', retry),
+    event(3, 'llm/retry-started', { retryId: retry.retryId, turn: 1, step: 1, retry: 2 })];
+  const live = createProjection();
+  const restored = createProjection();
+  for (const entry of entries) Reflect.get(live.client, 'receiveHistoryRecord').call(live.client, entry, false);
+  applyWindow(restored.client, entries, { kind: 'replace' }, true);
+  const retries = output => output.filter(item => item.type === 'retry');
+  assert.deepEqual(retries(live.output), retries(restored.output));
+  assert.equal(retries(live.output)[0].id, retries(live.output)[1].id);
+  assert.deepEqual(retries(live.output).map(item => item.state), ['waiting', 'started']);
+  assert.equal(retries(live.output)[0].failure, 'Connection lost');
+  for (const invalid of [{ ...retry, retry: -1 }, { ...retry, delayMs: NaN },
+    { ...retry, retryId: '' }, { ...retry, maxRetries: 1 }, { ...retry, failure: { message: 42 } },
+    { ...retry, mode: 'unknown' }, { ...retry, failure: { code: '', message: 'Lost' } }]) {
+    Reflect.get(live.client, 'receiveHistoryRecord').call(live.client, event(4, 'llm/retry', invalid), false);
+  }
+  assert.equal(retries(live.output).length, 2);
+  for (const delayMs of [0, 1876.423]) {
+    Reflect.get(live.client, 'receiveHistoryRecord').call(live.client, event(5, 'llm/retry', { ...retry, delayMs }), false);
+    assert.equal(retries(live.output).at(-1).delayMs, delayMs);
+  }
+});
+
+test('restoring a running retry wait keeps the turn open and does not publish a terminal failure', () => {
+  const { client, output } = createProjection();
+  Reflect.set(client, 'sessionRunning', true);
+  const entries = [event(1, 'turn/start', { turn: 1 }), event(2, 'llm/retry', {
+    retryId: 'pending', turn: 1, step: 1, provider: 'test', policyKey: 'transport',
+    mode: 'always', retry: 5, delayMs: 3000, failure: { code: 'transport', message: 'Disconnected' },
+  })];
+  applyWindow(client, entries, { kind: 'replace' }, true);
+  assert.equal(output.find(item => item.type === 'retry').state, 'waiting');
+  assert.equal(output.some(item => item.type === 'turn-incomplete' || item.type === 'turn-end'), false);
+  assert.equal(output.some(item => item.kind === 'history' && item.role === 'error'), false);
+});
+
+test('failed live partial is abandoned before retry while earlier completed step remains', () => {
+  const { client, output, sink } = createProjection();
+  const receive = (entry, snapshot = false) => Reflect.get(client, 'receiveHistoryRecord').call(client, entry, snapshot);
+  receive(event(1, 'assistant/message', { turn: 1, step: 1,
+    message: { content: [{ type: 'text', text: 'Earlier completed answer' }] } }), true);
+  sink.assistantDelta = text => output.push({ kind: 'delta', text });
+  Reflect.get(client, 'receiveAssistantChunk').call(client, { type: 'text-delta', text: 'Failed partial' }, 2);
+  receive(event(3, 'assistant/attempt', { turn: 1, step: 2, stream: [] }));
+  assert.equal(Reflect.get(client, 'hasLiveAssistantText'), false);
+  receive(event(4, 'assistant/message', { turn: 1, step: 2,
+    message: { content: [{ type: 'text', text: 'Retry answer' }] } }));
+  assert.equal(output.filter(item => item.kind === 'assistant-abandoned').length, 1);
+  assert.deepEqual(output.filter(item => item.kind === 'history').map(item => item.text),
+    ['Earlier completed answer', 'Retry answer']);
+  const restored = createProjection();
+  Reflect.get(restored.client, 'receiveHistoryRecord').call(restored.client,
+    event(3, 'assistant/attempt', { turn: 1, step: 2, stream: [] }), true);
+  assert.equal(restored.output.some(item => item.kind === 'assistant-abandoned'), false);
+});
+
 function applyWindow(client, entries, change, initial = false) {
   Reflect.get(client, 'receiveCanonicalWindow').call(client, { entries, hasMore: false, change }, initial);
 }

@@ -91,6 +91,22 @@ test('maps a clean wrapper abort to max-tokens and a normal completion to stop',
   }])
 })
 
+test('recognizes the observed legacy transport failure without retrying arbitrary provider errors', async () => {
+  for (const [message, code] of [
+    ['stream error: Transport error: network error: error decoding response body', 'TRANSPORT'],
+    ['invalid model', 'PROVIDER_ERROR'],
+    ['error decoding response body', 'PROVIDER_ERROR'],
+  ]) {
+    const chunks = await Array.fromAsync(translateCodexWireStream(events([
+      { type: 'tool_call', callId: 'discarded-call', name: 'write', arguments: '{}' },
+      { type: 'text_delta', text: 'discarded partial' },
+      { type: 'failed', message, retryable: false },
+    ])))
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'error', failure: { message, code } } })
+    assert.equal(chunks.some(chunk => chunk.replayState !== undefined), false)
+  }
+})
+
 test('settles in-band failures after closing partial output', async () => {
   const chunks = await Array.fromAsync(translateCodexWireStream(events([
     { type: 'text_delta', text: 'partial' },

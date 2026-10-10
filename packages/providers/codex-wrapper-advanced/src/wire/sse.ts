@@ -53,6 +53,10 @@ export async function* parseCodexWireSse(
         yield event
       }
     }
+  } catch (error: unknown) {
+    if (signal?.aborted) throw abortedStreamError(signal.reason)
+    if (error instanceof LlmError) throw error
+    throw new LlmError('Codex Wrapper Advanced response body transport failed', 'TRANSPORT', { cause: error })
   } finally {
     if (!exhausted) {
       await reader.cancel().catch(() => {

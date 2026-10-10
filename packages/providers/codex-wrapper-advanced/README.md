@@ -21,6 +21,14 @@ This package is part of the root pnpm workspace; internal Companion dependencies
 
 The provider is disabled by default. Enabling it requires an explicit service URL; credentials remain in DSH's credential store.
 
+## Model-step recovery
+
+The provider uses DSH's shipped `llm-retry` plugin, not a second HTTP retry loop. The retry budget belongs to one provider and resolved policy within the current step; changing either can select a different budget. Its configurable `retryPolicy` defaults to three retries with exponential delays starting at two seconds, ten-percent jitter, and a ten-second maximum delay. Eligible failures are provider unavailability, transport failure, premature stream closure, timeout, rate limiting, and an empty response. DSH honors supported `Retry-After` delays within that maximum. Set normal-mode `maxRetries` to zero to disable automatic recovery.
+
+Recovery repeats only the failed model step from committed history. Completed earlier tool calls and their results remain in history and are not executed again. Failed partial text and tool-call blocks remain diagnostic attempts; they do not become model context or executable tool calls. This is a new model generation, not resumption of a partial stream, and may incur additional provider usage. Stop cancels the backoff. Existing DSH retry events drive live and restored retry presentation.
+
+HTTP 507 upstream retry-buffer limits, authentication failures, invalid requests, and protocol-validation errors remain terminal. For legacy wrapper failure events without structured transport information, only the exact observed response-body decoding error is additionally classified as transport; arbitrary `PROVIDER_ERROR` messages are not retried. The wrapper remains responsible for its own upstream retries.
+
 ## Model Experience
 
 The adapter maps DSH messages and tools to the wrapper's complete `/wire/v1/responses` request, sends that JSON body with Zstandard request compression when Node provides it, then maps text, reasoning summaries, tool calls, usage, finish state, and opaque reasoning replay data back to DSH. Older Node 22 builds without native Zstandard send ordinary JSON. DSH tool schemas are explicitly non-strict so the Responses endpoint preserves their optional parameters. Reasoning and tool-call blocks embedded by DSH in synthetic User input are retained as labeled inert text because the Responses User-content vocabulary cannot represent their original channels. The adapter does not add instructions or tools of its own. The Codex backend cannot enforce DSH's compaction or auxiliary session-title output cap; the adapter admits those requests without forwarding the cap so a Codex-routed Session remains compactable and receives DSH-generated titles, while rejecting unsupported output caps on ordinary model calls.

@@ -62,6 +62,11 @@ export type DshProcessEvent =
     readonly kind: 'reasoning-token-progress'; readonly basis: 'reported' | 'estimated';
     readonly deltaTokens?: number; readonly totalTokens?: number;
   }
+  | {
+    readonly type: 'retry'; readonly id: string; readonly turn: number; readonly step: number;
+    readonly retry: number; readonly state: 'waiting' | 'started';
+    readonly maxRetries?: number; readonly delayMs?: number; readonly failure?: string;
+  }
   | { readonly type: 'turn-incomplete'; readonly turn: number }
   | { readonly type: 'turn-summary'; readonly summary: DshTurnSummary; readonly turn: number };
 
@@ -2433,6 +2438,33 @@ export class DshClient {
       }
     }
 
+    if (event.type === 'llm/retry' || event.type === 'llm/retry-started') {
+      const data = event.data;
+      if (typeof data.retryId !== 'string' || data.retryId.trim() === '' || data.retryId.length > 512
+        || !Number.isSafeInteger(data.turn) || Number(data.turn) <= 0
+        || !Number.isSafeInteger(data.step) || Number(data.step) < 0
+        || !Number.isSafeInteger(data.retry) || Number(data.retry) <= 0) return;
+      const waiting = event.type === 'llm/retry';
+      if (waiting && (typeof data.provider !== 'string' || data.provider.trim() === ''
+        || typeof data.policyKey !== 'string' || data.policyKey.trim() === ''
+        || !['normal', 'always'].includes(String(data.mode))
+        || typeof data.delayMs !== 'number' || !Number.isFinite(data.delayMs)
+        || data.delayMs < 0 || data.delayMs > 2147483647
+        || !isRecord(data.failure) || typeof data.failure.message !== 'string'
+        || typeof data.failure.code !== 'string' || data.failure.code.trim() === ''
+        || (data.mode === 'normal' && (!Number.isSafeInteger(data.maxRetries)
+          || Number(data.maxRetries) < Number(data.retry)))
+        || (data.mode === 'always' && data.maxRetries !== undefined))) return;
+      this.sink.process({
+        type: 'retry', id: `turn:${String(data.turn)}:step:${String(data.step)}:retry:${data.retryId}:${String(data.retry)}`,
+        turn: Number(data.turn), step: Number(data.step), retry: Number(data.retry),
+        state: waiting ? 'waiting' : 'started',
+        ...(waiting ? { delayMs: Number(data.delayMs), failure: String((data.failure as Record<string, unknown>).message).slice(0, 16384),
+          ...(data.mode === 'normal' ? { maxRetries: Number(data.maxRetries) } : {}) } : {}),
+      });
+      return;
+    }
+
     const branchTitle = branchTitleRevision(event);
     if (branchTitle !== undefined) {
       this.sink.branchTitle?.(branchTitle.seq, branchTitle.title);
@@ -2672,7 +2704,13 @@ export class DshClient {
       return;
     }
 
-    if (event.type === 'assistant/attempt' && Array.isArray(event.data.stream)) {
+    if (event.type === 'assistant/attempt') {
+      // Failed attempts never become completed answers. Remove only the active live partial.
+      if (!fromSnapshot && this.hasLiveAssistantText) {
+        this.hasLiveAssistantText = false;
+        this.sink.assistantAbandoned();
+      }
+      if (!Array.isArray(event.data.stream)) return;
       const step = typeof event.data.step === 'number' ? event.data.step : this.currentStep;
       const usage = usageFromStream(event.data.stream);
       this.turnStats?.firstToken(step, firstVisibleStreamTime(event.data.stream));

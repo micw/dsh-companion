@@ -26,6 +26,12 @@ const model = {
 
 test('defaults the installed provider to disabled', () => {
   assert.equal(Config({}).enabled.get(), false)
+  const policy = Config({}).retryPolicy.get()
+  assert.equal(policy.mode, 'normal')
+  assert.equal(policy.maxRetries, 3)
+  assert.deepEqual([...policy.retryableCodes], ['PROVIDER_UNAVAILABLE', 'TRANSPORT', 'STREAM_CLOSED', 'TIMEOUT', 'RATE_LIMIT', 'EMPTY_RESPONSE'])
+  assert.deepEqual({ ...policy.backoff }, { initialDelayMs: 2000, maxDelayMs: 10000, jitterRatio: 0.1 })
+  assert.equal(Config({ retryPolicy: { mode: 'normal', maxRetries: 0 } }).retryPolicy.get().maxRetries, 0)
 })
 
 test('registers a configurable native route and loads its catalog through the generic LKG owner', async () => {
@@ -73,6 +79,11 @@ test('registers a configurable native route and loads its catalog through the ge
       settingsNs: CODEX_WRAPPER_ADVANCED_SETTINGS_NAMESPACE,
       settingsPath: [],
     }])
+    const prepared = await ctx.llm.prepareCall({ provider: CODEX_WRAPPER_ADVANCED_PROVIDER, model: 'model' })
+    assert.equal(prepared.retryPolicy.maxRetries, 3)
+    assert.equal(prepared.retryPolicy.retryableCodes.includes('PROVIDER_UNAVAILABLE'), true)
+    assert.equal(prepared.retryPolicy.retryableCodes.includes('PROVIDER_ERROR'), false)
+    assert.equal(prepared.retryPolicy.retryableCodes.includes('UPSTREAM_BUFFER_LIMIT'), false)
     await waitFor(() => catalog.snapshot(CODEX_WRAPPER_ADVANCED_PROVIDER)?.status === 'ready')
     assert.deepEqual((await ctx.llm.listModels(CODEX_WRAPPER_ADVANCED_PROVIDER)).map(item => item.id), ['model'])
     await waitFor(() => ctx.companionProviderAccounts.snapshot(CODEX_WRAPPER_ADVANCED_PROVIDER)?.status === 'ready')
