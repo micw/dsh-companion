@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import {
   DshSessionBrowser, type DshSessionListEntry, type DshSessionSearchResult,
 } from './dshClient';
+import { basename } from 'node:path';
+import { sessionWorkspaceKind } from './sessionWorkspace';
 
 interface SidebarMessage {
   readonly type: 'ready' | 'newChat' | 'refresh' | 'openSession' | 'search';
@@ -21,6 +23,10 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
   private searchController: AbortController | undefined;
   private refreshQueued = false;
   private disposed = false;
+  private readonly workspaceChange = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    this.post({ type: 'workspaceChanged' });
+    void this.publish();
+  });
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -104,6 +110,7 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
     this.disposed = true;
     this.searchController?.abort();
     this.receive?.dispose();
+    this.workspaceChange.dispose();
     const browser = this.browser;
     if (browser !== undefined) void browser.dispose();
     else void this.browserPromise?.then(value => value.dispose(), () => {});
@@ -121,7 +128,7 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
         type: 'sessions',
         phase: snapshot.phase,
         activeSessionId: this.activeSessionId,
-        sessions: snapshot.sessions,
+        sessions: snapshot.sessions.map(session => this.withWorkspace(session)),
       });
     } catch (error) {
       this.postError(error);
@@ -144,10 +151,11 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
       const browser = await this.ensureBrowser();
       if (request !== this.searchRequest || controller.signal.aborted) return;
       titleMatches = mergeTitleMatches(browser.snapshot().sessions, { items: [], hasMore: false }, query);
-      this.post({ type: 'searchResults', query, ...titleMatches });
+      this.post({ type: 'searchResults', query, ...titleMatches, items: titleMatches.items.map(item => this.withWorkspace(item)) });
       const result = await this.withViewProgress(() => browser.search(query, controller.signal));
       if (request !== this.searchRequest || controller.signal.aborted) return;
-      this.post({ type: 'searchResults', query, ...mergeTitleMatches(browser.snapshot().sessions, result, query) });
+      const merged = mergeTitleMatches(browser.snapshot().sessions, result, query);
+      this.post({ type: 'searchResults', query, ...merged, items: merged.items.map(item => this.withWorkspace(item)) });
     } catch (error) {
       if (request !== this.searchRequest || controller.signal.aborted) return;
       if (titleMatches !== undefined && titleMatches.items.length > 0) return;
@@ -156,6 +164,15 @@ export class SessionSidebarProvider implements vscode.WebviewViewProvider, vscod
         text: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private withWorkspace<T extends DshSessionListEntry>(session: T): T & { workspaceKind: 'local' | 'foreign' | 'unknown'; workspaceLabel?: string } {
+    const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+    return {
+      ...session,
+      workspaceKind: sessionWorkspaceKind(session.cwd, roots),
+      ...(session.cwd === undefined ? {} : { workspaceLabel: basename(session.cwd) || session.cwd }),
+    };
   }
 
   private async ensureBrowser(): Promise<DshSessionBrowser> {
@@ -246,7 +263,7 @@ function sidebarHtml(webview: vscode.Webview, script: vscode.Uri, style: vscode.
   <title>DSH Sessions</title>
 </head>
 <body>
-  <div id="search-wrap"><input id="search" type="search" aria-label="Search session questions and answers" placeholder="Search questions and answers…"></div>
+  <div id="search-wrap"><input id="search" type="search" aria-label="Search session questions and answers" placeholder="Search questions and answers…"><label id="all-workspaces-label"><input id="all-workspaces" type="checkbox"> Search all workspaces</label></div>
   <div id="status" role="status">Connecting to DSH…</div>
   <main id="sessions" aria-label="DSH Sessions"></main>
   <script nonce="${nonce}" src="${webview.asWebviewUri(script)}"></script>

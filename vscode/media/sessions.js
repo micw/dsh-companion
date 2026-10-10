@@ -1,5 +1,6 @@
 const vscode = acquireVsCodeApi();
 const search = document.getElementById('search');
+const allWorkspaces = document.getElementById('all-workspaces');
 const status = document.getElementById('status');
 const sessions = document.getElementById('sessions');
 
@@ -38,8 +39,15 @@ window.addEventListener('message', ({ data }) => {
     renderStatus('error', data.text);
     return;
   }
+  if (data.type === 'workspaceChanged') {
+    searchResults = undefined;
+    if (search.value.trim() !== '') vscode.postMessage({ type: 'search', query: search.value.trim() });
+    render();
+  }
   if (data.type === 'focusSearch') search.focus();
 });
+
+allWorkspaces.addEventListener('change', render);
 
 search.addEventListener('input', () => {
   if (searchTimer !== undefined) clearTimeout(searchTimer);
@@ -64,8 +72,9 @@ function render() {
       renderStatus('searching', 'Searching questions and answers…');
       return;
     }
-    renderRows(searchResults.items, true);
-    if (searchResults.items.length === 0) renderEmpty('No matching questions or answers.');
+    const matches = visibleSessions(searchResults.items);
+    renderRows(matches, true);
+    if (matches.length === 0) renderEmpty('No matching questions or answers.');
     if (searchResults.hasMore) {
       const more = document.createElement('p');
       more.className = 'more';
@@ -78,8 +87,13 @@ function render() {
     renderStatus('connecting', 'Connecting to DSH…');
     return;
   }
-  renderRows(snapshot.sessions, false);
-  if (snapshot.sessions.length === 0) renderEmpty('No sessions yet.', true);
+  const visible = visibleSessions(snapshot.sessions);
+  renderRows(visible, false);
+  if (visible.length === 0) renderEmpty(allWorkspaces.checked ? 'No sessions yet.' : 'No sessions in this workspace.', true);
+}
+
+function visibleSessions(items) {
+  return allWorkspaces.checked ? items : items.filter(item => item.workspaceKind === 'local');
 }
 
 function renderRows(items, searching) {
@@ -101,6 +115,12 @@ function renderRows(items, searching) {
     meta.title = new Date(item.updatedAt).toLocaleString();
     head.append(title, meta);
     row.append(head);
+    if (item.workspaceKind !== 'local') {
+      const location = document.createElement('span');
+      location.className = 'session-location';
+      location.textContent = item.workspaceKind === 'unknown' ? 'Workspace path unknown' : `▱ ${item.workspaceLabel}`;
+      row.append(location);
+    }
     if (searching) {
       const snippet = document.createElement('span');
       snippet.className = 'session-snippet';
@@ -178,7 +198,9 @@ function isSession(value) {
   return isRecord(value) && typeof value.sessionId === 'string' && typeof value.title === 'string'
     && typeof value.running === 'boolean' && typeof value.completed === 'boolean'
     && typeof value.blank === 'boolean' && Number.isSafeInteger(value.updatedAt)
-    && (value.cwd === undefined || typeof value.cwd === 'string');
+    && (value.cwd === undefined || typeof value.cwd === 'string')
+    && ['local', 'foreign', 'unknown'].includes(value.workspaceKind)
+    && (value.workspaceLabel === undefined || typeof value.workspaceLabel === 'string');
 }
 
 function isRecord(value) {
