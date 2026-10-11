@@ -2,10 +2,10 @@
   "formatVersion": 1,
   "upstream": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
-    "version": "0.1.7-rc.2",
-    "tag": "dsh-v0.1.7-rc.2",
-    "commit": "477b4f420553e8a52c2fbccc464d7561b239c443",
-    "tree": "e3e63253d1d35ad07f785273235c40813cb6c8bd"
+    "version": "0.2.0-rc.2",
+    "tag": "dsh-v0.2.0-rc.2",
+    "commit": "639ed015397290b3745d163aafe02ffee4aa3f84",
+    "tree": "ac66a6a3e77f6fa396509ddfecc7beacf0cf642a"
   },
   "patches": [
     {
@@ -22,7 +22,7 @@
     {
       "id": "companion-model-runtime-semantics",
       "file": "patches/0002-add-companion-model-runtime-semantics.patch",
-      "sha256": "930ce7a073ee0b098a0deecf57fde4c588b5e14998638e25dfc711bae2d03866",
+      "sha256": "86d32f1050a0284e9938cac2a66d7d388bc5054b971432cc095f6c962d870bbc",
       "assessment": "patches/companion-model-runtime-semantics.md",
       "upstreamDiscussion": null,
       "affectedModules": [
@@ -71,7 +71,7 @@
     {
       "id": "agent-session-title-proposal",
       "file": "patches/0006-add-agent-session-title-proposal.patch",
-      "sha256": "2d15d28e4af0f308137185ba59ee5bf050865752a59261a052182169d327ee33",
+      "sha256": "2fadc2f8e8f1e936ee907d09a39e378805d82992d7bb08279a2dd9e512778980",
       "assessment": "patches/agent-session-title-proposal.md",
       "upstreamDiscussion": null,
       "affectedModules": [
@@ -82,7 +82,7 @@
     {
       "id": "label-configured-user-global-instructions",
       "file": "patches/0007-label-configured-user-global-instructions.patch",
-      "sha256": "1115952dc330299d16fa34febba3f4f2fa719a18e217f8254b8d15681d28ccaf",
+      "sha256": "8d0b0da94515a2bc7b2da2dd8fdd6dadde509f06a66c6c2d8798fdfdc76186f3",
       "assessment": "patches/label-configured-user-global-instructions.md",
       "upstreamDiscussion": null,
       "affectedModules": [

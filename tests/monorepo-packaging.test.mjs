@@ -7,8 +7,28 @@ import test from 'node:test';
 import { PRODUCT_PROVIDERS, productProviderRoots } from '../scripts/product-packages.mjs';
 import { stageCompanionPackages } from '../runtime/dsh/scripts/stage-companion.mjs';
 import { runtimeTreeFingerprint } from '../runtime/dsh/scripts/fingerprint.mjs';
+import { loadUpstreamManifest } from '../runtime/dsh/scripts/manifest.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+
+test('all product DSH peers match the exact managed runtime pin', async () => {
+  const upstream = await loadUpstreamManifest();
+  const packages = join(root, 'packages');
+  const roots = (await readdir(packages, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory() && entry.name !== 'providers')
+    .map(entry => join(packages, entry.name));
+  for (const directory of [...roots, ...productProviderRoots(root)]) {
+    const manifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
+    assert.equal(manifest.version, '0.0.0');
+    for (const [name, version] of Object.entries(manifest.peerDependencies ?? {})) {
+      if (name.startsWith('@deepseek-ai/dsh')) {
+        assert.equal(version, upstream.upstream.version, `${manifest.name}: ${name}`);
+      }
+    }
+  }
+  const openrouter = JSON.parse(await readFile(join(packages, 'providers', 'openrouter', 'package.json'), 'utf8'));
+  assert.equal(openrouter.dependencies['@earendil-works/pi-ai'], '^0.87.1');
+});
 
 test('provider packages are optional workspace plugins at the same product revision', async () => {
   const workspace = await readFile(join(root, 'pnpm-workspace.yaml'), 'utf8');

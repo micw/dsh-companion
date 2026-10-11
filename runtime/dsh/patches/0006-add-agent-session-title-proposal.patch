@@ -1,5 +1,5 @@
 diff --git a/docs/subsystems/session-title.md b/docs/subsystems/session-title.md
-index 75e17f06d7..858cebc21d 100644
+index 75e17f06d7..d5a454cfdf 100644
 --- a/docs/subsystems/session-title.md
 +++ b/docs/subsystems/session-title.md
 @@ -16,7 +16,7 @@ type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
@@ -25,13 +25,13 @@ index 75e17f06d7..858cebc21d 100644
 + * @returns accepted snapshot, or undefined when pinned or without eligible human input.
 + * @throws {SessionTitleInvalidError} when proposed text normalizes to empty.
 + */
-+proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined
++proposeFromAgent( session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal, ): SessionTitleSnapshot | undefined
 +
  /**
   * Explicitly retry the registered provider, or materialize the built-in
   * fallback when no provider is registered.
 diff --git a/docs/subsystems/session-title.zh.md b/docs/subsystems/session-title.zh.md
-index 187dad8f3a..6907860296 100644
+index 187dad8f3a..d7ce98ab6b 100644
 --- a/docs/subsystems/session-title.zh.md
 +++ b/docs/subsystems/session-title.zh.md
 @@ -16,7 +16,7 @@ type SessionTitleProviderId = Branded<'SessionTitleProviderId'>
@@ -57,21 +57,33 @@ index 187dad8f3a..6907860296 100644
 + * @returns accepted snapshot, or undefined when pinned or without eligible human input.
 + * @throws {SessionTitleInvalidError} when proposed text normalizes to empty.
 + */
-+proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined
++proposeFromAgent( session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal, ): SessionTitleSnapshot | undefined
 +
  /**
   * Explicitly retry the registered provider, or materialize the built-in
   * fallback when no provider is registered.
 diff --git a/packages/extensions/tool-cordis/src/api-catalog.ts b/packages/extensions/tool-cordis/src/api-catalog.ts
-index f417fcc6c9..0f6bdf6960 100644
+index e480d7bde6..e887ba2626 100644
 --- a/packages/extensions/tool-cordis/src/api-catalog.ts
 +++ b/packages/extensions/tool-cordis/src/api-catalog.ts
-@@ -2455,6 +2455,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+@@ -653,9 +653,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
+         returns: 'the compaction result, or `null` if no compaction was needed.',
+       },
+       {
+-        signature: 'abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, ): Promise<CompactionResult | null>',
++        signature: 'abstract compactNow( agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId, target?: ManualCompactionTarget, ): Promise<CompactionResult | null>',
+         description: 'Explicitly compact useful history even below automatic pressure thresholds. Implementations synchronously start an idle task before any asynchronous work, select a useful range without writing on a no-op, then append a standalone `compaction/start` before summarization. That durable marker is the compaction lock until one `compaction/end` attempt. Later waking prompts remain accepted in FIFO order and start only after the optional durability checkpoint and idle-task settlement. Context injected while the summary runs may sit between the marker pair; only the selected span must remain stable.',
+-        parameters: [{ name: 'agent', description: 'idle agent whose durable history should be compacted.' }, { name: 'signal', description: 'cancellation scoped to this compaction request.' }, { name: 'sourceCommandId', description: 'initiating command identity for a manual compaction.' }],
++        parameters: [{ name: 'agent', description: 'idle agent whose durable history should be compacted.' }, { name: 'signal', description: 'cancellation scoped to this compaction request.' }, { name: 'sourceCommandId', description: 'initiating command identity for a manual compaction.' }, { name: 'target', description: 'optional exact route for this manual summary only.' }],
+         returns: 'the compaction result, or `null` when no safe useful range exists.',
+         throws: ['{@link ManualCompactionError} for expected busy, agent-cancellation, changed-span, summarization/shrink, commit-stage, or persistence failures; an aborted request preserves its exact abort reason. Failed attempts remain visible in the log.'],
+       },
+@@ -2505,6 +2505,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
          returns: 'the accepted title snapshot.',
          throws: ['{SessionTitleInvalidError} when the title normalizes to empty.', '{Error} when the session is not live or the service is disposed.'],
        },
 +      {
-+        signature: 'proposeFromAgent(session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal): SessionTitleSnapshot | undefined',
++        signature: 'proposeFromAgent( session: Session, title: string, providerId: SessionTitleProviderId, signal?: AbortSignal, ): SessionTitleSnapshot | undefined',
 +        description: 'Accept a title proposed by the session\'s main model agent without another model call. Only committed human text messages are cited; a manual user title remains pinned.',
 +        parameters: [{ name: 'session', description: 'exact live session whose agent proposed the title.' }, { name: 'title', description: 'untrusted proposed text, normalized to the configured byte limit.' }, { name: 'providerId', description: 'stable trusted plugin identity distinguishing this agent tool from auxiliary title providers.' }, { name: 'signal', description: 'optional cancellation checked at the commit point.' }],
 +        returns: 'accepted snapshot, or undefined when pinned or without eligible human input.',
@@ -80,6 +92,17 @@ index f417fcc6c9..0f6bdf6960 100644
        {
          signature: 'async refresh(session: Session, signal?: AbortSignal): Promise<SessionTitleSnapshot | undefined>',
          description: 'Explicitly retry the registered provider, or materialize the built-in fallback when no provider is registered.',
+@@ -5766,6 +5773,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
+     name: 'ManualCompactAgentContext',
+     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
+   },
++  {
++    name: 'ManualCompactionTarget',
++    declaration: 'export interface ManualCompactionTarget {\n    readonly provider: string;\n    readonly model: string;\n}',
++  },
+   {
+     name: 'McpResourceProvider',
+     declaration: 'export interface McpResourceProvider {\n    request(request: McpResourceRequest, exec: ToolExecution): Promise<JsonValue>;\n}',
 diff --git a/packages/session/session-title/README.md b/packages/session/session-title/README.md
 index 09778e4e2b..f7227b857c 100644
 --- a/packages/session/session-title/README.md
@@ -328,10 +351,10 @@ index ef164362d7..6db7e0d282 100644
      const root = await mkdtemp(join(tmpdir(), 'dsh-title-jsonl-'))
      roots.push(root)
 diff --git a/scripts/gen-cordis-catalog.ts b/scripts/gen-cordis-catalog.ts
-index 98e46537f4..99c8d3143e 100644
+index 8c21f702e4..83cf4f932a 100644
 --- a/scripts/gen-cordis-catalog.ts
 +++ b/scripts/gen-cordis-catalog.ts
-@@ -583,6 +583,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
+@@ -593,6 +593,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
    SessionTitleObservation: 'session-query.md',
    SessionTitleObservationResult: 'session-query.md',
    SessionTitleProvider: 'session-title.md',

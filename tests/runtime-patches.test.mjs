@@ -21,10 +21,10 @@ test('the exact DSH runtime pin and ordered patch series are integrity checked',
   await verifyPatchFiles(manifest);
   assert.deepEqual(manifest.upstream, {
     repository: 'https://github.com/deepseek-ai/deepseek-harness.git',
-    version: '0.1.7-rc.2',
-    tag: 'dsh-v0.1.7-rc.2',
-    commit: '477b4f420553e8a52c2fbccc464d7561b239c443',
-    tree: 'e3e63253d1d35ad07f785273235c40813cb6c8bd',
+    version: '0.2.0-rc.2',
+    tag: 'dsh-v0.2.0-rc.2',
+    commit: '639ed015397290b3745d163aafe02ffee4aa3f84',
+    tree: 'ac66a6a3e77f6fa396509ddfecc7beacf0cf642a',
   });
   assert.match(patchSetSha256(manifest), /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.patches.map((patch) => patch.id), [
