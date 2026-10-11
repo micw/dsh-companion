@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runtimeFingerprint } from '../runtime/dsh/scripts/fingerprint.mjs';
 import { createVsix } from './create-vsix.mjs';
 import { reuseOrBuildRuntime } from './runtime-cache.mjs';
+import { assertRuntimeCacheIdentity } from './runtime-cache-identity.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = join(root, 'vscode');
@@ -43,7 +44,8 @@ if (dshSource === undefined || dshSource.length === 0) {
   throw new Error('DSH_COMPANION_DSH_SOURCE must name an exact DSH Git checkout');
 }
 run('pnpm', ['run', 'build']);
-const runtimeId = await runtimeFingerprint(resolve(root, dshSource));
+const runtimeId = assertRuntimeCacheIdentity(await runtimeFingerprint(resolve(root, dshSource)),
+  process.env.DSH_COMPANION_EXPECTED_RUNTIME_ID);
 const { verifyPayload } = await import('../vscode/out/runtimeInstaller.js');
 const verifiedRuntime = async (payload, expectedId) => {
   const manifest = await verifyPayload(payload);
@@ -58,6 +60,7 @@ const { payload: runtimePayload, reused } = await reuseOrBuildRuntime(runtimeCac
     '--output', output,
     '--runtime-id', id,
   ]));
+if (!existsSync(join(runtimePayload, 'runtime-manifest.json'))) throw new Error('Verified Runtime cache payload is missing');
 if (reused) console.log(`Reusing verified DSH Companion runtime ${runtimeId}`);
 run(process.execPath, [
   join(root, 'scripts', 'smoke-managed-runtime.mjs'),

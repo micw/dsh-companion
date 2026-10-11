@@ -23,6 +23,8 @@ Checked-in manifests keep the neutral version `0.0.0`. Packaging derives the pro
 - An untagged descendant produces `<major>.<minor>.<UTC timestamp>`.
 - Before the first release tag, an untagged build produces `0.0.<UTC timestamp>`.
 
+GitHub Actions publishes timestamped master builds to one rolling `master-build` prerelease and supported version tags to durable releases. Master builds use a timestamp even on a tagged commit. See [automated builds and releases](docs/releases.md) for channels, caching, permissions, and release commands.
+
 Build the VSIX with:
 
 ```bash
