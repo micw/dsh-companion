@@ -1,10 +1,19 @@
 /* Standalone settings presentation. Runtime values are read-only snapshots; drafts remain ephemeral. */
 (() => {
   const vscode = acquireVsCodeApi();
-  const { modelsValid, searchValid, restoredView, searchSummary } = globalThis.dshCompanionSettingsState;
+  const { modelsValid, searchValid, versionValid, restoredView, searchSummary } = globalThis.dshCompanionSettingsState;
   const content = document.getElementById('content');
   const connection = document.getElementById('connection');
   let view = restoredView(vscode.getState());
+  let version; let versionChannel = 'master'; let versionPending; let versionChannelPending = false; let versionNeedsCheck = false;
+  const versionBusy = () => !!versionPending || ['checking', 'downloading', 'installing'].includes(version?.phase);
+  function versionRequest(action) {
+    if (versionBusy() || (action === 'install' && (versionNeedsCheck || !version?.canInstall || version.phase !== 'available' || version.channel !== versionChannel))) return;
+    if (action === 'check') versionNeedsCheck = false;
+    versionPending = action;
+    vscode.postMessage({ type: 'versionRequest', requestId: ++nextRequest, action, channel: versionChannel });
+    if (view.category === 'version') render();
+  }
   let models; let search; let phase = 'connecting'; let generation = 0; let loaded = false;
   let dirty = false; let nextRequest = 0; let saveDraft; let form; let formBusy = false;
   let notice; let rows = new Map(); let modelRows = new Map();
@@ -42,6 +51,7 @@
     setDirty(false); view = target; render();
     content.scrollTop = scrolls.get(view.category + ':' + (view.id ?? '')) ?? target.scroll ?? 0;
     persist();
+    if (view.category === 'version') versionRequest('load');
   }
   for (const tab of document.querySelectorAll('[data-category]')) tab.addEventListener('click', () => navigate({ category: tab.dataset.category }));
   content.addEventListener('scroll', persist);
@@ -49,16 +59,44 @@
     rows = new Map(); modelRows = new Map(); form = undefined; saveDraft = undefined; filterInput = undefined; filterSelect = undefined;
     content.replaceChildren();
     for (const tab of document.querySelectorAll('[data-category]')) tab.setAttribute('aria-current', tab.dataset.category === view.category ? 'page' : 'false');
-    const head = element('div', undefined, 'section-heading'); head.append(element('h2', view.category === 'models' ? 'Models' : 'Web Search'));
+    const head = element('div', undefined, 'section-heading'); head.append(element('h2', view.category === 'models' ? 'Models' : view.category === 'version' ? 'Version' : 'Web Search'));
     if (view.category === 'models') head.append(button('Refresh', () => {
       if (phase !== 'connected') { vscode.postMessage({ type: 'settingsReconnect' }); return; }
       if (dirty) { navigate({ ...view }); return; }
       load();
     })); content.append(head);
     notice = element('p', '', 'notice'); notice.setAttribute('role', 'status'); content.append(notice);
+    if (view.category === 'version') { renderVersion(); return; }
     if (!loaded) { notice.textContent = phase === 'connected' ? 'Loading settings…' : 'Connecting to DSH…'; return; }
     if (view.category === 'models') renderModels(); else renderSearch();
     controls();
+  }
+  function renderVersion() {
+    const tools = element('div', undefined, 'toolbar');
+    const channel = element('select'); channel.setAttribute('aria-label', 'Update channel');
+    for (const name of ['master', 'stable']) { const option = element('option', name === 'master' ? 'Master' : 'Stable'); option.value = name; channel.append(option); }
+    channel.value = versionChannel; channel.disabled = versionBusy();
+    channel.addEventListener('change', () => {
+      if (versionBusy() || !['master', 'stable'].includes(channel.value) || channel.value === versionChannel) return;
+      versionChannel = channel.value; version = undefined; versionChannelPending = true; versionNeedsCheck = true; versionRequest('load');
+    });
+    const check = button('Check for Updates', () => versionRequest('check')); check.disabled = versionBusy() || !version;
+    const install = button('Install update and restart', () => versionRequest('install'));
+    install.disabled = versionBusy() || versionNeedsCheck || !version?.canInstall || version.phase !== 'available' || version.channel !== versionChannel;
+    tools.append(channel, check, install); content.append(tools);
+    notice.textContent = version?.message || (versionPending === 'load' || !version ? 'Loading version information…' : '');
+    if (version?.phase === 'error') notice.setAttribute('role', 'alert');
+    const details = element('dl', undefined, 'version-details');
+    for (const [label, value] of [['Installed version', version?.installedVersion], ['Target', version?.target], ['Available version', version?.available?.version], ['Size', version?.available ? `${version.available.size} bytes` : undefined], ['Published', version?.available?.publishedAt]]) {
+      details.append(element('dt', label), element('dd', value ?? '—'));
+    }
+    content.append(details);
+    if (version?.blockedReason) content.append(element('p', version.blockedReason, 'notice'));
+    // Release URLs are intentionally not actionable in this editor.
+    if (version?.progress !== null && version?.progress !== undefined) {
+      const progress = element('progress'); progress.max = 100; progress.value = version.progress; progress.setAttribute('aria-label', 'Update progress');
+      content.append(progress, element('p', `${version.progress}%`));
+    }
   }
   function controls() {
     content.querySelectorAll('[data-mutate]').forEach(e => { e.disabled = !online() || e.dataset.readonly === 'true' || rowBusy.has(e.dataset.row); });
@@ -80,10 +118,10 @@
   }
   function load() {
     if (loadingRequest !== undefined || phase !== 'connected') return;
-    if (!loaded) render();
+    if (!loaded && view.category !== 'version') render();
     loadingRequest = request({ kind: 'load' }, () => {
       loadingRequest = undefined;
-      if (!loaded && models && search) { loaded = true; render(); content.scrollTop = view.scroll ?? 0; }
+      if (!loaded && models && search) { loaded = true; if (view.category !== 'version') { render(); content.scrollTop = view.scroll ?? 0; } }
       else patch();
     }, () => { loadingRequest = undefined; });
   }
@@ -281,9 +319,15 @@
     if (!search.entries.length) notice.textContent = 'No search access configured. Add a Brave or Exa access.';
     controls();
   }
-  function patch() { if (!loaded) return; if (view.category === 'models') patchModels(); else patchSearch(); controls(); }
+  function patch() { if (view.category === 'version' || !loaded) return; if (view.category === 'models') patchModels(); else patchSearch(); controls(); }
   window.addEventListener('message', ({ data: message }) => {
     if (!message || typeof message !== 'object') return;
+    if (message.type === 'versionState') {
+      if (!versionValid(message.snapshot) || (versionChannelPending && message.snapshot.channel !== versionChannel)) return;
+      version = message.snapshot; versionChannel = version.channel; versionPending = undefined;
+      if (view.category === 'version') { const scroll = content.scrollTop; render(); content.scrollTop = scroll; }
+      return;
+    }
     if (message.type === 'settingsConnection') {
       if (!['connected', 'connecting', 'disconnected'].includes(message.phase) || !Number.isSafeInteger(message.generation) || typeof message.authority !== 'string' || message.authority.length > 200) return;
       const changed = generation !== message.generation; phase = message.phase; generation = message.generation;
@@ -291,7 +335,7 @@
       if (phase !== 'connected' || changed) {
         for (const r of requests.values()) { clearTimeout(r.timer); r.failure?.(); } requests.clear(); loadingRequest = undefined; statusPending = false;
       }
-      controls(); if (phase === 'connected' && (changed || !loaded)) load(); else if (!loaded) render(); return;
+      controls(); if (phase === 'connected' && (changed || !loaded)) load(); else if (!loaded && view.category !== 'version') render(); return;
     }
     if (message.type === 'settingsDiscardResult') {
       if (typeof message.accepted !== 'boolean' || !discardTarget || message.requestId !== discardTarget.requestId) return;
@@ -313,5 +357,5 @@
     if (!online() || document.visibilityState === 'hidden' || view.category !== 'search' || statusPending) return;
     statusPending = true; request({ kind: 'status' }, () => { statusPending = false; }, () => { statusPending = false; }, true);
   }, 5000);
-  render(); vscode.postMessage({ type: 'settingsReady' });
+  render(); content.scrollTop = view.scroll ?? 0; vscode.postMessage({ type: 'settingsReady' });
 })();

@@ -24,6 +24,10 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .summary-row > div:first-child { flex: 1; min-width: 0; }
 .summary-row p { color: var(--vscode-descriptionForeground); }
 .summary-row strong { overflow-wrap: anywhere; }
+.version-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 24px; max-width: 700px; }
+.version-details dt { color: var(--vscode-descriptionForeground); }
+.version-details dd { margin: 0; overflow-wrap: anywhere; }
+progress { width: min(100%, 420px); }
 .edit-form { max-width: 650px; }
 .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 18px; }
 .field input[type="checkbox"] { align-self: flex-start; }

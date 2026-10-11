@@ -8,6 +8,8 @@ import type { RuntimeControl } from './runtimeControl';
 import { connectRuntime } from './runtimeInstaller';
 import { parseSettingsRequest } from './settingsProtocol';
 import { executeSettingsOperation } from './settingsOperations';
+import { parseVersionRequest } from './versionProtocol';
+import { createVersionController } from './versionHost';
 
 const VIEW_TYPE = 'dshCompanion.settingsEditor';
 const RESOURCE = vscode.Uri.parse('dsh-companion-settings:/dsh-companion-settings');
@@ -76,6 +78,7 @@ export class SettingsEditor implements vscode.CustomEditorProvider<SettingsDocum
     let busy = false;
     let savePending: { resolve: () => void; reject: (error: Error) => void } | undefined;
     const post = (message: object) => { if (!disposed) void panel.webview.postMessage(message); };
+    const version = createVersionController(this.context, snapshot => post({ type: 'versionState', snapshot }), () => document.dirty);
     const announce = () => post({ type: 'settingsConnection', phase, generation,
       authority: `${vscode.env.remoteName ? 'SSH / Remote' : 'Local'} · ${hostname()}` });
     document.reset = () => post({ type: 'settingsDiscarded' });
@@ -104,6 +107,7 @@ export class SettingsEditor implements vscode.CustomEditorProvider<SettingsDocum
     panel.webview.onDidReceiveMessage(async (value: unknown) => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
       if (Reflect.get(value, 'type') === 'settingsReady' && Object.keys(value).length === 1) {
+        post({ type: 'versionState', snapshot: version.snapshot() });
         announce(); await connect(); return;
       }
       if (Reflect.get(value, 'type') === 'settingsDirty' && Object.keys(value).length === 2 && typeof Reflect.get(value, 'dirty') === 'boolean') {
@@ -125,6 +129,18 @@ export class SettingsEditor implements vscode.CustomEditorProvider<SettingsDocum
         post({ type: 'settingsDiscardResult', requestId: Reflect.get(value, 'requestId'), accepted: accepted === 'Discard' }); return;
       }
       if (Reflect.get(value, 'type') === 'settingsReconnect' && Object.keys(value).length === 1) { await connect(); return; }
+      const update = parseVersionRequest(value);
+      if (update) {
+        try {
+          if (update.action === 'load') await version.load(update.channel);
+          else if (update.action === 'check') await version.check(update.channel);
+          else await version.install(update.channel);
+        } catch {
+          post({ type: 'versionState', snapshot: { ...version.snapshot(), phase: 'error', canInstall: false,
+            message: 'Version settings could not be updated. Close and reopen Settings, then try again.' } });
+        }
+        return;
+      }
       const request = parseSettingsRequest(value);
       if (!request || !client || phase !== 'connected') return;
       const currentGeneration = generation;
@@ -141,7 +157,7 @@ export class SettingsEditor implements vscode.CustomEditorProvider<SettingsDocum
       }
     }, undefined, this.context.subscriptions);
     panel.onDidDispose(() => {
-      disposed = true; stopConnection?.();
+      disposed = true; version.dispose(); stopConnection?.();
       try { client?.dispose(); } catch { /* The panel is closed; contain transport teardown failure. */ }
       savePending?.reject(new Error('Settings editor closed')); savePending = undefined;
       document.save = undefined; document.reset = undefined;
@@ -171,7 +187,7 @@ function settingsHtml(webview: vscode.Webview, root: vscode.Uri): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="${uri('settings-editor.css')}">
 <title>DSH Companion Settings</title></head><body>
 <header><h1>DSH Companion Settings</h1><span id="connection" role="status">Connecting to DSH…</span></header>
-<div id="layout"><nav aria-label="Settings categories"><button data-category="models" aria-current="page">Models</button><button data-category="search">Web Search</button></nav>
+<div id="layout"><nav aria-label="Settings categories"><button data-category="models" aria-current="page">Models</button><button data-category="search">Web Search</button><button data-category="version">Version</button></nav>
 <main id="content"><p>Connecting to DSH…</p></main></div>
 <script nonce="${nonce}" src="${uri('settings-state.js')}"></script><script nonce="${nonce}" src="${uri('settings-editor.js')}"></script></body></html>`;
 }

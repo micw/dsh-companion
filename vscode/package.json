@@ -45,7 +45,11 @@
       {
         "viewType": "dshCompanion.settingsEditor",
         "displayName": "DSH Companion Settings",
-        "selector": [{ "filenamePattern": "**/dsh-companion-settings" }],
+        "selector": [
+          {
+            "filenamePattern": "**/dsh-companion-settings"
+          }
+        ],
         "priority": "option"
       }
     ],
@@ -170,6 +174,7 @@
     "watch": "tsc --watch -p ./"
   },
   "dependencies": {
+    "fast-xml-parser": "5.11.2",
     "markdown-it": "^14.1.0"
   },
   "devDependencies": {

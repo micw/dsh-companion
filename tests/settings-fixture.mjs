@@ -13,7 +13,7 @@ export const sampleSearch = { revision: 0, cooldownMs: 14400000, entries: [
 export function fixture(saved = undefined) {
   const posts = []; const intervals = []; const timers = new Map(); let stateValue = saved; let receive;
   const root = new Element('body'); const nav = new Element('nav');
-  for (const [category, text] of [['models', 'Models'], ['search', 'Web Search']]) { const button = new Element('button'); button.dataset.category = category; button.textContent = text; nav.append(button); }
+  for (const [category, text] of [['models', 'Models'], ['search', 'Web Search'], ['version', 'Version']]) { const button = new Element('button'); button.dataset.category = category; button.textContent = text; nav.append(button); }
   const content = new Element('main'); content.id = 'content'; const connection = new Element('span'); connection.id = 'connection'; root.append(connection, nav, content);
   const doc = { visibilityState: 'visible', createElement: tag => new Element(tag), getElementById: id => [root, ...root.descendants()].find(e => e.id === id), querySelectorAll: selector => root.querySelectorAll(selector) };
   const context = vm.createContext({ document: doc, Date, console,

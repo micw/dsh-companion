@@ -37,9 +37,20 @@
           && text(e.failure.message, 200) && integer(e.failure.failedAt) && (e.failure.blockedUntil === null || integer(e.failure.blockedUntil))
           && ['provider', 'default', 'manual'].includes(e.failure.retrySource))));
   }
+  function versionValid(value) {
+    return record(value) && keys(value, ['installedVersion', 'target', 'channel', 'phase', 'available', 'canInstall', 'blockedReason', 'progress', 'message'])
+      && text(value.installedVersion) && text(value.target) && ['master', 'stable'].includes(value.channel)
+      && ['idle', 'checking', 'available', 'current', 'no-release', 'downloading', 'installing', 'error'].includes(value.phase)
+      && typeof value.canInstall === 'boolean' && (value.blockedReason === null || text(value.blockedReason, 2000))
+      && (value.progress === null || (integer(value.progress) && value.progress <= 100))
+      && typeof value.message === 'string' && value.message.length <= 2000
+      && (value.available === null || (record(value.available) && keys(value.available, ['version', 'size', 'publishedAt', 'releaseUrl'])
+        && text(value.available.version) && integer(value.available.size) && text(value.available.publishedAt, 100)
+        && text(value.available.releaseUrl, 2048)));
+  }
   function restoredView(value) {
-    if (!record(value) || !['models', 'search'].includes(value.category)) return { category: 'models' };
-    return { category: value.category, ...(text(value.id) ? { id: value.id } : {}),
+    if (!record(value) || !['models', 'search', 'version'].includes(value.category)) return { category: 'models' };
+    return { category: value.category, ...(value.category !== 'version' && text(value.id) ? { id: value.id } : {}),
       ...(Number.isFinite(value.scroll) && value.scroll >= 0 ? { scroll: Math.min(value.scroll, 1000000) } : {}) };
   }
   function searchSummary(entry, now = Date.now()) {
@@ -50,5 +61,5 @@
     const until = entry.failure.blockedUntil;
     return `${reason} · ${until === null ? 'manual retry required' : until <= now ? 'eligible for retry' : `retry in ${Math.ceil((until - now) / 60000)} min`}`;
   }
-  globalThis.dshCompanionSettingsState = { modelsValid, searchValid, restoredView, searchSummary };
+  globalThis.dshCompanionSettingsState = { modelsValid, searchValid, versionValid, restoredView, searchSummary };
 })();
