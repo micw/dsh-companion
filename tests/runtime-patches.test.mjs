@@ -36,6 +36,7 @@ test('the exact DSH runtime pin and ordered patch series are integrity checked',
     'agent-session-title-proposal',
     'label-configured-user-global-instructions',
     'fix-empty-sea-assets',
+    'reproducible-sea-bootstrap',
   ]);
 });
 
@@ -111,6 +112,18 @@ test('the executable patch compresses the existing enhanced SEA closure', async 
   assert.match(text, /pkg --sea --compress Zstd/u);
   assert.doesNotMatch(text, /node2[5-9]/u);
   assert.deepEqual(patch.affectedModules, ['scripts/build-exe-for-python-sdk']);
+});
+
+test('SEA bootstrap uses a canonical embedded filename and permits exact target Node versions', async () => {
+  const manifest = await loadUpstreamManifest();
+  const { text } = await patchText(manifest, 'reproducible-sea-bootstrap');
+  assert.match(text, /\+\s+main: 'sea-main\.js'/);
+  assert.match(text, /node24\.21\.0-linux-x64/);
+  assert.match(text, /filename: relative\(REPOSITORY_ROOT, fileId\)/);
+  assert.match(text, /await rm\(join\(this\.staging, 'node_modules', '\.modules\.yaml'\), \{ force: true \}\)/);
+  const builder = await readFile(new URL('../runtime/dsh/scripts/build-linux.mjs', import.meta.url), 'utf8');
+  assert.match(builder, /absWorkingDir: prepared/);
+  assert.match(builder, /const NODE_TARGET = 'node24\.21\.0-linux-x64'/);
 });
 
 test('compressed SEA assets admit empty files without dropping the decoded-size check', async () => {

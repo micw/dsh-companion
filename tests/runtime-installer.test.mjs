@@ -209,6 +209,18 @@ test('a reused runtime refuses a different installed manifest for the same ident
   await assert.rejects(installPayload(payload, storage, version), /differs from the packaged payload/);
 });
 
+test('identical input IDs never permit silently replacing different artifact hashes', async () => {
+  const id = 'a'.repeat(64);
+  const first = await fixturePayload('0.0.20260914103045', id);
+  const second = await fixturePayload('0.0.20260914103045', id);
+  const storage = await mkdtemp(join(tmpdir(), 'dsh-companion-artifact-collision-')); roots.push(storage);
+  await installPayload(first, storage, '0.0.20260914103045');
+  const path = join(second, 'runtime-manifest.json'); const manifest = JSON.parse(await readFile(path, 'utf8'));
+  manifest.artifacts[0].sha256 = 'b'.repeat(64);
+  await writeFile(path, `${JSON.stringify(manifest)}\n`);
+  await assert.rejects(installPayload(second, storage, '0.0.20260915103045'), /differs from the packaged payload/);
+});
+
 test('content-addressed runtime survives a frontend-only Extension version change', async () => {
   const runtimeId = 'a'.repeat(64);
   const payload = await fixturePayload('0.0.20260914103045', runtimeId);

@@ -98,6 +98,18 @@
       "affectedModules": [
         "patches/@yao-pkg__pkg@6.21.0.patch"
       ]
+    },
+    {
+      "id": "reproducible-sea-bootstrap",
+      "file": "patches/0009-reproducible-sea-bootstrap.patch",
+      "sha256": "e2c5defd00651b5b39313c4ce4ed48574efdccb3a16c62185af0672caa947343",
+      "assessment": "patches/reproducible-sea-bootstrap.md",
+      "upstreamDiscussion": null,
+      "affectedModules": [
+        "patches/@yao-pkg__pkg@6.21.0.patch",
+        "scripts/build-exe-for-python-sdk.ts",
+        "packages/client/tsdown.client.ts"
+      ]
     }
   ]
 }

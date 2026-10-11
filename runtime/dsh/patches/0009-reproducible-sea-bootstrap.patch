@@ -1,0 +1,185 @@
+diff --git a/packages/client/tsdown.client.ts b/packages/client/tsdown.client.ts
+index 215001dbb9..88e81a08aa 100644
+--- a/packages/client/tsdown.client.ts
++++ b/packages/client/tsdown.client.ts
+@@ -549,16 +549,16 @@ function clientConfig(id: string, entry: string, clientBanner?: (fileName: strin
+       resolveId(source: string, importer: string | undefined) {
+         if (!source.endsWith('.module.css')) return null
+         const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
+-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
++        return CSS_VIRTUAL_PREFIX + relative(REPOSITORY_ROOT, abs).split(sep).join('/') + CSS_VIRTUAL_SUFFIX
+       },
+       async load(virtualId: string) {
+         if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
+-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
++        const fileId = resolvePath(REPOSITORY_ROOT, virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length))
+         // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
+         this.addWatchFile(fileId)
+         const source = await readFile(fileId)
+         const { code, exports: cssExports } = transform({
+-          filename: fileId,
++          filename: relative(REPOSITORY_ROOT, fileId).split(sep).join('/'),
+           code: source,
+           cssModules: { pattern: '[hash]_[local]' },
+           minify: true,
+@@ -575,14 +575,14 @@ function clientConfig(id: string, entry: string, clientBanner?: (fileName: strin
+         if (!source.endsWith(`.css${INLINE_CSS_QUERY}`)) return null
+         const stylesheet = source.slice(0, -INLINE_CSS_QUERY.length)
+         const abs = importer !== undefined ? sourceAssetPath(stylesheet, importer) : stylesheet
+-        return INLINE_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
++        return INLINE_CSS_VIRTUAL_PREFIX + relative(REPOSITORY_ROOT, abs).split(sep).join('/') + CSS_VIRTUAL_SUFFIX
+       },
+       async load(virtualId: string) {
+         if (!virtualId.startsWith(INLINE_CSS_VIRTUAL_PREFIX)) return null
+-        const fileId = virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
++        const fileId = resolvePath(REPOSITORY_ROOT, virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length))
+         this.addWatchFile(fileId)
+         const source = await readFile(fileId)
+-        const { code } = transform({ filename: fileId, code: source, minify: true })
++        const { code } = transform({ filename: relative(REPOSITORY_ROOT, fileId).split(sep).join('/'), code: source, minify: true })
+         return `export default ${JSON.stringify(code.toString())};`
+       },
+     }, {
+@@ -590,14 +590,14 @@ function clientConfig(id: string, entry: string, clientBanner?: (fileName: strin
+       resolveId(source: string, importer: string | undefined) {
+         if (!source.endsWith('.css') || source.endsWith('.module.css')) return null
+         const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
+-        return GLOBAL_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
++        return GLOBAL_CSS_VIRTUAL_PREFIX + relative(REPOSITORY_ROOT, abs).split(sep).join('/') + CSS_VIRTUAL_SUFFIX
+       },
+       async load(virtualId: string) {
+         if (!virtualId.startsWith(GLOBAL_CSS_VIRTUAL_PREFIX)) return null
+-        const fileId = virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
++        const fileId = resolvePath(REPOSITORY_ROOT, virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length))
+         this.addWatchFile(fileId)
+         const source = await readFile(fileId)
+-        const { code } = transform({ filename: fileId, code: source, minify: true })
++        const { code } = transform({ filename: relative(REPOSITORY_ROOT, fileId).split(sep).join('/'), code: source, minify: true })
+         return styleInjectionModule(id, fileId, code.toString())
+       },
+     }],
+@@ -677,7 +677,7 @@ function clientInputIsolation(id: string): {
+ function clientInputFile(id: string): string {
+   const prefix = [CSS_VIRTUAL_PREFIX, GLOBAL_CSS_VIRTUAL_PREFIX, INLINE_CSS_VIRTUAL_PREFIX]
+     .find(prefix => id.startsWith(prefix))
+-  return prefix === undefined ? id : id.slice(prefix.length, -CSS_VIRTUAL_SUFFIX.length)
++  return prefix === undefined ? id : resolvePath(REPOSITORY_ROOT, id.slice(prefix.length, -CSS_VIRTUAL_SUFFIX.length))
+ }
+ 
+ /** Chain tsc's emitted maps into any Client bundle that consumes `lib/types`. */
+diff --git a/patches/@yao-pkg__pkg@6.21.0.patch b/patches/@yao-pkg__pkg@6.21.0.patch
+index 21b1867716..a2ed31f1d4 100644
+--- a/patches/@yao-pkg__pkg@6.21.0.patch
++++ b/patches/@yao-pkg__pkg@6.21.0.patch
+@@ -149,3 +149,15 @@ index 94a34ea58dc14d7e39ebbd5aaf6351612ffd6891..3dd25141bd01cc1fecb9d715b30950e1
+          this._fileCache.set(p, buf);
+        } else {
+          buf = slice;
++diff --git a/lib-es5/sea.js b/lib-es5/sea.js
++--- a/lib-es5/sea.js
+++++ b/lib-es5/sea.js
++@@ -639,7 +639,7 @@ async function seaEnhanced(entryPoint, opts) {
++         // already throws earlier — this is just a defensive default.
++         const blobPath = (0, path_1.join)(tmpDir, 'sea-prep.blob');
++         const seaConfig = {
++-            main: bootstrapPath,
+++            main: 'sea-main.js',
++             output: blobPath,
++             disableExperimentalSEAWarning: true,
++             useCodeCache: opts.seaConfig?.useCodeCache ?? false,
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index bc5ca4501f..0a04ba025b 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -14,7 +14,7 @@ patchedDependencies:
+   '@electron/osx-sign@1.3.3': 280e7b2816caf01423097d24e79107a66afeb563a348630ce9928ae8499a5861
+   '@fortune-sheet/core@1.0.4': 8791a230763dbf853fd65d627c68c31de37209992851377855e16cf08ea70532
+   '@fortune-sheet/react@1.0.4': 2932e52e79afcd4ced08cfa123b5eded786c85043da32f622f3e80af6fc96c37
+-  '@yao-pkg/pkg@6.21.0': b17b42ea05a70fb60f238f3aecc0a1fa3c5c584aa429282dcd72e8c3d78ccc63
++  '@yao-pkg/pkg@6.21.0': 51cbd2d05daea397abf543657df1627d76b8e7c81e22061c66ad59a7240b7331
+   exceljs@4.4.0: c1bf8ac8f319dab382f08e3a669b715e691d46c703ac5a4163eb383fbedd1d48
+   node-pty@1.2.0-beta.15: b40ae545608897914bd25fb009c97eeac478c34e8a910298ddcb01b746534bb0
+ 
+@@ -96,7 +96,7 @@ importers:
+         version: 4.1.8(vitest@4.1.8)
+       '@yao-pkg/pkg':
+         specifier: 6.21.0
+-        version: 6.21.0(patch_hash=b17b42ea05a70fb60f238f3aecc0a1fa3c5c584aa429282dcd72e8c3d78ccc63)(supports-color@9.4.0)
++        version: 6.21.0(patch_hash=51cbd2d05daea397abf543657df1627d76b8e7c81e22061c66ad59a7240b7331)(supports-color@9.4.0)
+       '@yarnpkg/cli-dist':
+         specifier: 4.17.1
+         version: 4.17.1
+@@ -25024,7 +25024,7 @@ snapshots:
+       - bare-buffer
+       - react-native-b4a
+ 
+-  '@yao-pkg/pkg@6.21.0(patch_hash=b17b42ea05a70fb60f238f3aecc0a1fa3c5c584aa429282dcd72e8c3d78ccc63)(supports-color@9.4.0)':
++  '@yao-pkg/pkg@6.21.0(patch_hash=51cbd2d05daea397abf543657df1627d76b8e7c81e22061c66ad59a7240b7331)(supports-color@9.4.0)':
+     dependencies:
+       '@babel/generator': 7.29.7
+       '@babel/parser': 7.29.7
+diff --git a/scripts/build-exe-for-python-sdk.spec.ts b/scripts/build-exe-for-python-sdk.spec.ts
+index 44968f9c45..ee65217546 100644
+--- a/scripts/build-exe-for-python-sdk.spec.ts
++++ b/scripts/build-exe-for-python-sdk.spec.ts
+@@ -105,6 +105,18 @@ describe('Python runtime executable builder CLI', () => {
+     expect(result.stdout).toContain(join(root, 'dist-exe', 'macos-x64'))
+   })
+ 
++  it('accepts an exact Node target without floating its patch version', () => {
++    const result = run({ npm_execpath: 'C:\\tools\\pnpm.cjs' }, '--skip-build', '--dry-run', '--targets=node24.21.0-linux-x64')
++    expect(result.status).toBe(0)
++    expect(result.stdout).toContain('--targets node24.21.0-linux-x64')
++  })
++
++  it('rejects an incomplete Node version before any build step', () => {
++    const result = run({ npm_execpath: 'C:\\tools\\pnpm.cjs' }, '--skip-build', '--dry-run', '--targets=node24.21-linux-x64')
++    expect(result.status).not.toBe(0)
++    expect(result.stderr).toContain('node range must be a major or exact version')
++  })
++
+   it('rejects a Windows arm64 product before any build step', () => {
+     const result = run(
+       { npm_execpath: 'C:\\tools\\pnpm.cjs' },
+diff --git a/scripts/build-exe-for-python-sdk.ts b/scripts/build-exe-for-python-sdk.ts
+index 782500ef58..66c006bc4a 100644
+--- a/scripts/build-exe-for-python-sdk.ts
++++ b/scripts/build-exe-for-python-sdk.ts
+@@ -84,7 +84,7 @@ function isArch(value: string): value is Arch {
+  */
+ class Target {
+   private constructor(
+-    /** pkg Node range (`node<major>`). */
++    /** pkg Node range (`node<major>`) or an exact three-component version. */
+     readonly nodeRange: string,
+     /** pkg platform tag. */
+     readonly platform: Platform,
+@@ -108,8 +108,8 @@ class Target {
+     if (parts.length !== 3 || nodeRange === undefined || platform === undefined || arch === undefined) {
+       throw new Error(`build-exe-for-python-sdk: target ${JSON.stringify(spec)} must be <nodeRange>-<platform>-<arch>, e.g. node24-linux-x64.`)
+     }
+-    if (!/^node\d+$/.test(nodeRange)) {
+-      throw new Error(`build-exe-for-python-sdk: target ${JSON.stringify(spec)}: node range must look like node24, got ${JSON.stringify(nodeRange)}.`)
++    if (!/^node\d+(?:\.\d+\.\d+)?$/.test(nodeRange)) {
++      throw new Error(`build-exe-for-python-sdk: target ${JSON.stringify(spec)}: node range must be a major or exact version such as node24.21.0, got ${JSON.stringify(nodeRange)}.`)
+     }
+     if (!isPlatform(platform)) {
+       throw new Error(`build-exe-for-python-sdk: target ${JSON.stringify(spec)}: platform must be one of ${PLATFORMS.join(', ')}, got ${JSON.stringify(platform)}.`)
+@@ -403,7 +403,7 @@ class SingleExeBuild {
+ 
+   /** Add the executable entry and pkg assets to the staged manifest. */
+   async injectPkgConfig(): Promise<void> {
+-    const patch = { bin: ENTRY_BIN, pkg: { assets: ASSET_GLOBS, ignore: OFFICE_ASSET_IGNORES } }
++    const patch = { bin: ENTRY_BIN, pkg: { assets: ASSET_GLOBS, ignore: [...OFFICE_ASSET_IGNORES, '**/node_modules/.modules.yaml'] } }
+     const manifestPath = join(this.staging, 'package.json')
+     if (this.cli.dryRun) {
+       console.log(`build-exe-for-python-sdk: [dry-run] patch ${manifestPath} with ${JSON.stringify(patch)}`)
+@@ -415,6 +415,8 @@ class SingleExeBuild {
+     if (!existsSync(join(this.staging, ENTRY_BIN))) {
+       throw new Error(`build-exe-for-python-sdk: staged bootstrap ${join(this.staging, ENTRY_BIN)} is missing.`)
+     }
++    // Deployment bookkeeping contains machine paths and wall-clock pruning times, not runtime assets.
++    await rm(join(this.staging, 'node_modules', '.modules.yaml'), { force: true })
+     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+     await writeFile(manifestPath, `${JSON.stringify({ ...manifest, ...patch }, null, 2)}\n`)
+     console.log(`build-exe-for-python-sdk: injected pkg config into ${manifestPath}`)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -12,6 +12,7 @@ import { stageCompanionPackages } from './stage-companion.mjs';
 import { loadUpstreamManifest, patchSetSha256 } from './manifest.mjs';
 
 const TARGET = 'linux-x64';
+const NODE_TARGET = 'node24.21.0-linux-x64';
 const { values } = parseArgs({
   options: {
     source: { type: 'string' },
@@ -32,12 +33,13 @@ if (!/^[0-9a-f]{64}$/u.test(runtimeId)) {
 }
 const source = resolve(values.source);
 const output = resolve(values.output);
-const buildEnvironment = { ...process.env, CI: '1' };
+const manifest = await loadUpstreamManifest();
+const buildEpoch = execFileSync('git', ['-C', source, 'show', '-s', '--format=%ct', manifest.upstream.commit], { encoding: 'utf8' }).trim();
+const buildEnvironment = { ...process.env, CI: '1', TZ: 'UTC', SOURCE_DATE_EPOCH: buildEpoch };
 await requireAbsent(output, 'Runtime payload output');
 await mkdir(dirname(output), { recursive: true, mode: 0o700 });
 const prepared = join(dirname(output), '.dsh-companion-dsh-source-linux-x64');
 await requireAbsent(prepared, 'Prepared DSH build directory');
-const manifest = await loadUpstreamManifest();
 try {
   await run(process.execPath, [
     resolve(import.meta.dirname, 'prepare.mjs'),
@@ -52,7 +54,7 @@ try {
   await bundleClientRuntime(prepared, clientBundle);
   await run('pnpm', [
     'exec', 'tsx', 'scripts/build-exe-for-python-sdk.ts',
-    '--targets', 'node24-linux-x64',
+    '--targets', NODE_TARGET,
     '--skip-build',
   ], { cwd: prepared, env: buildEnvironment });
 
@@ -199,6 +201,7 @@ async function bundleClientRuntime(prepared, outfile) {
     '../../../vscode/node_modules/esbuild/lib/main.js',
   )).href);
   await esbuild.build({
+    absWorkingDir: prepared,
     entryPoints: [join(prepared, 'packages/api/client-runtime/lib/index.js')],
     outfile,
     bundle: true,
