@@ -1,0 +1,180 @@
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux x64 VSIX
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    concurrency:
+      group: companion-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref == 'refs/heads/master' }}
+    outputs:
+      channel: ${{ steps.meta.outputs.channel }}
+    env:
+      CI: '1'
+      DSH_COMPANION_DSH_SOURCE: ${{ github.workspace }}/../deepseek-harness
+    steps:
+      - name: Check out exact product revision and version tags
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.7.0
+          run_install: false
+      - name: Install pinned Node toolchain
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.21.0
+      - name: Validate channel, upstream and cache inputs
+        id: meta
+        run: node scripts/ci/build-metadata.mjs
+      - name: Resolve pnpm store
+        id: store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore dependency downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: pnpm-${{ runner.os }}-11.7.0-${{ steps.meta.outputs.upstreamCommit }}-${{ hashFiles('pnpm-lock.yaml', 'runtime/dsh/upstream.json') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-11.7.0-
+      - name: Clone and verify the exact upstream pin
+        env:
+          UPSTREAM_REPOSITORY: ${{ steps.meta.outputs.upstreamRepository }}
+          UPSTREAM_COMMIT: ${{ steps.meta.outputs.upstreamCommit }}
+          UPSTREAM_TAG: ${{ steps.meta.outputs.upstreamTag }}
+        run: |
+          git init "$RUNNER_TEMP/dsh-upstream"
+          git -C "$RUNNER_TEMP/dsh-upstream" remote add origin "$UPSTREAM_REPOSITORY"
+          git -C "$RUNNER_TEMP/dsh-upstream" fetch --depth=1 origin "$UPSTREAM_COMMIT" "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+          git -C "$RUNNER_TEMP/dsh-upstream" checkout --detach "$UPSTREAM_COMMIT"
+          node runtime/dsh/scripts/prepare.mjs --source "$RUNNER_TEMP/dsh-upstream" --output "$DSH_COMPANION_DSH_SOURCE"
+      - name: Install pinned DSH dependencies
+        run: pnpm --dir "$DSH_COMPANION_DSH_SOURCE" install --frozen-lockfile
+      - name: Capture prepared-source baseline
+        run: node scripts/ci/dsh-build-cache.mjs baseline "$DSH_COMPANION_DSH_SOURCE" build/ci/dsh-baseline.json
+      - name: Restore exact DSH build outputs
+        id: dsh-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: build/ci/dsh-artifacts
+          key: ${{ steps.meta.outputs.dshCacheKey }}
+      - name: Verify and restore cached DSH outputs
+        if: steps.dsh-cache.outputs.cache-hit == 'true'
+        env:
+          CACHE_KEY: ${{ steps.meta.outputs.dshCacheKey }}
+        run: node scripts/ci/dsh-build-cache.mjs restore "$DSH_COMPANION_DSH_SOURCE" build/ci/dsh-artifacts "$CACHE_KEY"
+      - name: Build DSH and collect validated outputs
+        if: steps.dsh-cache.outputs.cache-hit != 'true'
+        env:
+          CACHE_KEY: ${{ steps.meta.outputs.dshCacheKey }}
+        run: |
+          pnpm --dir "$DSH_COMPANION_DSH_SOURCE" run build
+          node scripts/ci/dsh-build-cache.mjs collect "$DSH_COMPANION_DSH_SOURCE" build/ci/dsh-baseline.json build/ci/dsh-artifacts "$CACHE_KEY"
+      - name: Save exact DSH build outputs
+        if: steps.dsh-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: build/ci/dsh-artifacts
+          key: ${{ steps.meta.outputs.dshCacheKey }}
+      - name: Install and test all product packages
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm run test:runtime-inputs
+      - name: Resolve one build version
+        id: version
+        env:
+          DSH_COMPANION_BUILD_CHANNEL: ${{ steps.meta.outputs.channel }}
+          DSH_COMPANION_BUILD_ID: ${{ steps.meta.outputs.buildId }}
+          RELEASE_TAG: ${{ steps.meta.outputs.releaseTag }}
+        run: |
+          if [[ "$DSH_COMPANION_BUILD_CHANNEL" == release ]]; then
+            export DSH_COMPANION_RELEASE_TAG="$RELEASE_TAG"
+          fi
+          echo "version=$(node scripts/version.mjs)" >> "$GITHUB_OUTPUT"
+      - name: Compute content-addressed Runtime identity
+        id: runtime
+        run: node scripts/ci/runtime-cache-key.mjs
+      - name: Restore verified Runtime payload candidate
+        id: runtime-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: build/runtime-cache/${{ steps.runtime.outputs.runtimeId }}/linux-x64
+          key: managed-runtime-${{ runner.os }}-${{ steps.runtime.outputs.runtimeId }}
+      - name: Package VSIX and smoke-test the Managed Runtime
+        env:
+          DSH_COMPANION_EXPECTED_RUNTIME_ID: ${{ steps.runtime.outputs.runtimeId }}
+          DSH_COMPANION_BUILD_CHANNEL: ${{ steps.meta.outputs.channel }}
+          DSH_COMPANION_BUILD_ID: ${{ steps.meta.outputs.buildId }}
+          RELEASE_TAG: ${{ steps.meta.outputs.releaseTag }}
+        run: |
+          if [[ "$DSH_COMPANION_BUILD_CHANNEL" == release ]]; then
+            export DSH_COMPANION_RELEASE_TAG="$RELEASE_TAG"
+          fi
+          pnpm run vscode:package
+      - name: Require the exact packaged cache payload before saving
+        env:
+          DSH_COMPANION_EXPECTED_RUNTIME_ID: ${{ steps.runtime.outputs.runtimeId }}
+        run: node scripts/ci/verify-runtime-cache.mjs
+      - name: Save successfully verified Runtime payload
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: build/runtime-cache/${{ steps.runtime.outputs.runtimeId }}/linux-x64
+          key: managed-runtime-${{ runner.os }}-${{ steps.runtime.outputs.runtimeId }}
+      - name: Prepare checksummed release assets
+        env:
+          DSH_COMPANION_VERSION: ${{ steps.version.outputs.version }}
+          DSH_COMPANION_RUNTIME_ID: ${{ steps.runtime.outputs.runtimeId }}
+          DSH_COMPANION_BUILD_CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: node scripts/ci/release-assets.mjs
+      - name: Upload verified assets for the publishing job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish successful build
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: companion-publish-${{ needs.build.outputs.channel == 'master' && 'master-build' || github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out the publishing implementation at the built revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Node toolchain
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.21.0
+      - name: Download verified build assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Validate assets and publish the appropriate Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/publish-release.mjs release-assets

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +8,16 @@ import test from 'node:test';
 
 import { runtimeHostFingerprint, runtimeTreeFingerprint } from '../runtime/dsh/scripts/fingerprint.mjs';
 import { reuseOrBuildRuntime } from '../scripts/runtime-cache.mjs';
+import { assertRuntimeCacheIdentity } from '../scripts/runtime-cache-identity.mjs';
+
+test('packaging must keep the exact Runtime identity selected for CI cache restore and save', () => {
+  const selected = 'a'.repeat(64);
+  assert.equal(assertRuntimeCacheIdentity(selected), selected);
+  assert.equal(assertRuntimeCacheIdentity(selected, selected), selected);
+  assert.throws(() => assertRuntimeCacheIdentity('b'.repeat(64), selected), /inputs changed after cache lookup/);
+  assert.throws(() => assertRuntimeCacheIdentity(selected, ''), /inputs changed after cache lookup/);
+  assert.throws(() => assertRuntimeCacheIdentity('invalid'), /Invalid calculated/);
+});
 
 const roots = [];
 test.afterEach(async () => {
@@ -77,6 +89,20 @@ test('a verified runtime cache survives frontend versions and fails closed on ta
   const changed = await reuseOrBuildRuntime(root, 'b'.repeat(64), verify, build);
   assert.equal(changed.reused, false);
   assert.equal(builds, 2);
+});
+
+test('CI cache-save check rejects a missing or differently identified packaged payload', async () => {
+  const root = await temporaryRoot(); const id = 'a'.repeat(64);
+  const script = fileURLToPath(new URL('../scripts/ci/verify-runtime-cache.mjs', import.meta.url));
+  const run = () => execFileSync(process.execPath, [script], { cwd: root,
+    env: { ...process.env, DSH_COMPANION_EXPECTED_RUNTIME_ID: id }, stdio: 'pipe' });
+  assert.throws(run);
+  const directory = join(root, 'build', 'runtime-cache', id, 'linux-x64'); await mkdir(directory, { recursive: true });
+  const path = join(directory, 'runtime-manifest.json');
+  await writeFile(path, JSON.stringify({ formatVersion: 2, target: 'linux-x64', runtimeId: 'b'.repeat(64) }));
+  assert.throws(run, /Command failed/);
+  await writeFile(path, JSON.stringify({ formatVersion: 2, target: 'linux-x64', runtimeId: id }));
+  assert.match(run().toString(), /Verified CI Runtime cache payload/);
 });
 
 test('a failed runtime build leaves no reusable partial cache entry', async () => {
