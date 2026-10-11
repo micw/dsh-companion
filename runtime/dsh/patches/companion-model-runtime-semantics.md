@@ -18,7 +18,7 @@ Accounting validation rejects malformed amounts and never invents unknown values
 
 ## Compatibility and maintenance
 
-Every Session addition is optional and recorded as same-version V4 evolution. Older V4 readers ignore it. The migration removes old raw accounting/status chunks while retaining settlement snapshots. Focused LLM, pi-ai, token-meter, Agent Loop, Session Controller, migration, persistence, Gateway, and provider tests cover the affected paths. Reassess each sub-capability on every DSH upgrade.
+Every Session addition is optional and recorded as same-version V4 evolution. Older V4 readers ignore it. The migration removes old raw accounting/status chunks while retaining settlement snapshots. Focused LLM, pi-ai, token-meter, Agent Loop, Session Controller, migration, persistence, Gateway, and provider tests cover the affected paths. The 0.2.0-rc.2 rebase regenerates the compact reachable-type persistence snapshot and API catalogs with the target generators, retains upstream tool-scheduler recovery, and verifies exact accounting/status settlement through failure, persistence, resume, and fork. Reassess each sub-capability on every DSH upgrade.
 
 ## Upstream discussion
 
