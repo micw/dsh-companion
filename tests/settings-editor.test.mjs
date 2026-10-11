@@ -38,6 +38,12 @@ function fixture(connectOverride) {
   const module = { exports: {} };
   vm.runInNewContext(source, { module, exports: module.exports, require: name => {
     if (name === 'vscode') return vscode;
+    if (name === './versionHost') return { createVersionController: (_context, publish) => ({
+      snapshot: () => ({ installedVersion: '0.0.0', target: 'Fixture', channel: 'master', phase: 'idle', available: null,
+        canInstall: false, blockedReason: 'Development Host', progress: null, message: 'Check for updates.' }),
+      load: async channel => publish({ channel }), check: async channel => publish({ channel, phase: 'checking' }),
+      install: async () => { commands.push('fixture-install'); }, dispose() {},
+    }) };
     if (name === './runtimeInstaller') return { connectRuntime: async () => { throw Error('Unexpected Runtime restart'); } };
     if (name === './dshClient') return { DSH_ORIGIN: 'http://127.0.0.1:3081', PACKAGED_DSH_ORIGIN: 'http://127.0.0.1:3082',
       DshClient: { connect: async (...args) => { connected.push(args); return connectOverride ? await connectOverride(client) : client; } }, DshHttpError: class extends Error {} };
