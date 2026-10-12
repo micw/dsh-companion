@@ -175,15 +175,146 @@ export async function reconcileRollingJournal(api, draft) {
   return committed;
 }
 
+const REPLACEMENT_MARKER = '<!-- dsh-companion-release-replacement:1 -->';
+const bodyCommit = body => typeof body === 'string' && body.startsWith(`${BUILD_MARKER}\n`)
+  ? /^Commit: ([a-f0-9]{40})$/m.exec(body)?.[1] : undefined;
+
+/** A separate draft journals the replacement; neither release's assets are renamed. */
+export async function reconcileReplacement(api, draft) {
+  const j = JSON.parse(draft.body.slice(REPLACEMENT_MARKER.length).trim());
+  const invalid = () => { throw new Error('Invalid replacement journal ownership'); };
+  const keys = ['format', 'oldID', 'newID', 'oldSHA', 'newSHA', 'oldBody', 'newBody', 'runId', 'attempt', 'phase', 'oldAssets', 'newAssets'];
+  const staging = `build-staging-${j.runId}-${j.attempt}`;
+  const previous = `build-previous-${j.runId}-${j.attempt}`;
+  const version = typeof j.newBody === 'string' ? /^Version: (\d+\.\d+\.\d+)$/m.exec(j.newBody)?.[1] : undefined;
+  if (!version || Object.keys(j).sort().join() !== keys.sort().join() || j.format !== 1
+    || !/^\d+$/.test(j.runId) || !/^\d+$/.test(j.attempt)
+    || !draft.draft || !draft.prerelease || draft.tag_name !== `build-journal-${j.runId}-${j.attempt}`
+    || draft.target_commitish !== j.newSHA || !/^[a-f0-9]{40}$/.test(j.newSHA)
+    || bodyCommit(j.newBody) !== j.newSHA || !['upload', 'swap', 'discard'].includes(j.phase)
+    || !Number.isSafeInteger(j.newID) || j.newID <= 0 || j.newID === draft.id
+    || (j.oldID !== null && (!Number.isSafeInteger(j.oldID) || j.oldID <= 0 || j.oldID === j.newID || j.oldID === draft.id
+      || bodyCommit(j.oldBody) !== j.oldSHA))
+    || !Array.isArray(j.oldAssets) || !Array.isArray(j.newAssets) || !j.newAssets.length) invalid();
+  const associated = await allReleases(api);
+  const expectedIDs = new Set([draft.id, j.newID, j.oldID]);
+  const relevantTags = new Set(['master-build', staging, previous, draft.tag_name]);
+  const relevant = associated.filter(release => relevantTags.has(release.tag_name));
+  if (relevant.some(release => !expectedIDs.has(release.id))
+    || new Set(relevant.map(release => release.tag_name)).size !== relevant.length) invalid();
+  const fresh = await api('GET', `releases/${j.newID}`, undefined, true);
+  const old = j.oldID === null ? null : await api('GET', `releases/${j.oldID}`, undefined, true);
+  if ((!fresh && j.phase !== 'discard') || (fresh && (!fresh.prerelease || fresh.name !== version || fresh.body !== j.newBody || fresh.target_commitish !== j.newSHA
+    || ![staging, 'master-build'].includes(fresh.tag_name)))
+    || (old && (old.draft || !old.prerelease || old.body !== j.oldBody || !['master-build', previous].includes(old.tag_name)))) invalid();
+  const validateAssets = async (release, expected, complete) => {
+    const live = await releaseAssets(api, release.id);
+    const names = new Set(); const ids = new Set();
+    for (const asset of expected) {
+      if (!Number.isSafeInteger(asset.id) || asset.id <= 0 || typeof asset.name !== 'string'
+        || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset.name) || names.has(asset.name) || ids.has(asset.id)) invalid();
+      names.add(asset.name); ids.add(asset.id);
+    }
+    if (live.some(a => !expected.some(e => e.id === a.id && e.name === a.name))
+      || (complete && live.length !== expected.length)) invalid();
+  };
+  if (old) await validateAssets(old, j.oldAssets, true);
+  if (j.phase === 'discard') {
+    if ((j.oldID !== null && !old) || (old && old.tag_name !== 'master-build')
+      || await tagCommit(api, 'master-build') !== j.oldSHA
+      || (fresh && (fresh.tag_name !== staging || fresh.body !== j.newBody))) invalid();
+    for (const tag of [staging, previous]) {
+      const sha = await tagCommit(api, tag);
+      if (sha !== null && sha !== j.newSHA) invalid();
+    }
+    if (fresh) await api('DELETE', `releases/${fresh.id}`);
+    await deleteTagIfExists(api, staging);
+    await deleteTagIfExists(api, previous);
+    await api('DELETE', `releases/${draft.id}`);
+    return false;
+  }
+  const discard = async () => {
+    j.phase = 'discard';
+    draft.body = `${REPLACEMENT_MARKER}\n${JSON.stringify(j)}`;
+    await api('PATCH', `releases/${draft.id}`, { body: draft.body });
+    return reconcileReplacement(api, draft);
+  };
+  // Uploads may have succeeded before their IDs were journaled. Only the draft is discarded in upload phase.
+  if (j.phase === 'swap') await validateAssets(fresh, j.newAssets, true);
+  else {
+    const live = await releaseAssets(api, fresh.id);
+    if (!fresh.draft || fresh.tag_name !== staging || live.some(a => !j.newAssets.some(e => e.name === a.name))) invalid();
+  }
+  const rolling = await tagCommit(api, 'master-build');
+  if (![j.oldSHA, j.newSHA, null].includes(rolling)) invalid();
+  if (!old && j.oldID !== null && (fresh.draft || fresh.tag_name !== 'master-build' || rolling !== j.newSHA)) invalid();
+  for (const tag of [staging, previous]) {
+    const sha = await tagCommit(api, tag);
+    if (sha !== null && sha !== j.newSHA) invalid();
+  }
+  if (j.phase === 'upload') return discard();
+  const head = (await api('GET', 'git/ref/heads/master')).object.sha;
+  const associationSwitchBegun = fresh.tag_name === 'master-build' || old?.tag_name === previous;
+  if (head !== j.newSHA && (rolling !== j.newSHA
+    || (j.oldSHA === j.newSHA && !associationSwitchBegun))) {
+    if (old && !['master-build', previous].includes(old.tag_name)) invalid();
+    if (old && old.tag_name !== 'master-build') await api('PATCH', `releases/${old.id}`, { tag_name: 'master-build', make_latest: 'false' });
+    return discard();
+  }
+  const writeRef = async tag => {
+    const existing = await tagCommit(api, tag);
+    if (existing === j.newSHA) return;
+    if ((await api('GET', 'git/ref/heads/master')).object.sha !== j.newSHA) {
+      throw new Error('Master advanced; refusing to write a ref to the journal commit');
+    }
+    await api(existing ? 'PATCH' : 'POST', existing ? `git/refs/tags/${tag}` : 'git/refs',
+      existing ? { sha: j.newSHA, force: true } : { ref: `refs/tags/${tag}`, sha: j.newSHA });
+  };
+  // Publishing on staging renews published_at while the previous master remains fully usable.
+  if (fresh.tag_name === staging) await writeRef(staging);
+  if (fresh.draft) await api('PATCH', `releases/${fresh.id}`, { draft: false, prerelease: true, make_latest: 'false' });
+  const publicStage = await api('GET', `releases/${fresh.id}`);
+  if (publicStage.draft || publicStage.body !== j.newBody) throw new Error('Staged publication was not verified');
+  if (old && old.tag_name === 'master-build') {
+    await writeRef(previous); // Always CURRENT commit, never the previous commit.
+    await api('PATCH', `releases/${old.id}`, { tag_name: previous, target_commitish: j.newSHA, make_latest: 'false' });
+  }
+  await writeRef('master-build');
+  await api('PATCH', `releases/${fresh.id}`, { tag_name: 'master-build', target_commitish: j.newSHA,
+    draft: false, prerelease: true, make_latest: 'false' });
+  const canonical = await api('GET', 'releases/tags/master-build');
+  if (canonical.id !== fresh.id || canonical.draft || !canonical.prerelease || canonical.name !== version || canonical.body !== j.newBody
+    || await tagCommit(api, 'master-build') !== j.newSHA) throw new Error('Canonical publication was not verified');
+  if (old) await api('DELETE', `releases/${old.id}`);
+  await deleteTagIfExists(api, previous);
+  await deleteTagIfExists(api, staging);
+  await api('DELETE', `releases/${draft.id}`);
+  return true;
+}
+
 /** Serialized recovery never creates or moves a ref to an earlier commit. */
 export async function reconcileRollingRelease(api) {
-  const releases = await allReleases(api);
+  let releases = await allReleases(api);
+  const managed = releases.filter(release => release.tag_name === 'master-build'
+    || /^build-(?:staging|previous|journal)-\d+-\d+$/.test(release.tag_name));
+  if (new Set(managed.map(release => release.tag_name)).size !== managed.length) {
+    throw new Error('Ambiguous rolling release ownership; duplicate release associations');
+  }
+  const legacyBackups = releases.filter(release => /^build-previous-\d+-\d+$/.test(release.tag_name));
+  const hasReplacementJournal = releases.some(release => release.draft && release.body?.startsWith(REPLACEMENT_MARKER));
+  if (!hasReplacementJournal && legacyBackups.some(release => release.draft || !release.prerelease || !bodyCommit(release.body))) {
+    throw new Error('Legacy recovery requires manual intervention; unowned backup release');
+  }
+  for (const draft of releases.filter(release => release.draft && release.body?.startsWith(REPLACEMENT_MARKER))) {
+    await reconcileReplacement(api, draft);
+  }
+  releases = await allReleases(api);
   for (const draft of releases.filter(release => release.draft && release.body?.startsWith(JOURNAL_MARKER))) {
     await reconcileRollingJournal(api, draft);
   }
   let current = await api('GET', 'releases/tags/master-build', undefined, true);
   const backups = releases.filter(release => /^build-previous-\d+-\d+$/.test(release.tag_name)
-    && release.prerelease && release.body?.includes(BUILD_MARKER));
+    && !release.draft && release.prerelease && bodyCommit(release.body));
   if (!current && backups.length) {
     if (backups.length !== 1) throw new Error('Ambiguous legacy recovery releases');
     const backup = backups[0];
@@ -193,8 +324,11 @@ export async function reconcileRollingRelease(api) {
     }
     current = await api('PATCH', `releases/${backup.id}`, { tag_name: 'master-build', make_latest: 'false' });
   }
+  if (current && backups.some(backup => backup.id !== current.id)) {
+    // Only a replacement journal authorizes deletion of a public backup and its assets.
+    throw new Error('Legacy recovery requires manual intervention; refusing unjournaled backup deletion');
+  }
   if (current) for (const backup of backups) {
-    if (backup.id !== current.id) await api('DELETE', `releases/${backup.id}`);
     await deleteTagIfExists(api, backup.tag_name);
   }
   for (const draft of releases.filter(release => release.draft
@@ -209,7 +343,7 @@ export async function reconcileRollingRelease(api) {
   }
 }
 
-/** Rolling updates retain the release ID; the only ref write is the final current-commit switch. */
+/** Every successful publication creates a new release object with a pure version title. */
 export async function publishRelease({ info, names, releaseTag }, { api, upload, runId, attempt }) {
   if (!/^\d+$/.test(String(runId)) || !/^\d+$/.test(String(attempt))) throw new Error('Invalid publication run identity');
   const rolling = info.channel === 'master';
@@ -235,55 +369,49 @@ export async function publishRelease({ info, names, releaseTag }, { api, upload,
   }
   const body = `${BUILD_MARKER}\nVersion: ${info.version}\nCommit: ${info.commit}\nRuntime: ${info.runtimeId}\nDSH: ${info.dsh.version} (${info.dsh.commit})\nPatch set: ${info.dsh.patchSetSha256}\n\n[Build log](${info.runUrl})\n`;
   const stagingTag = `build-staging-${runId}-${attempt}`;
-  if (rolling && old) {
+  if (rolling) {
     const oldSHA = await tagCommit(api, tag);
-    if (!oldSHA) throw new Error('Rolling release is missing its tag');
-    if (old.draft || !old.prerelease || !old.body?.startsWith(`${BUILD_MARKER}\n`)
-      || /^Commit: ([a-f0-9]{40})$/m.exec(old.body)?.[1] !== oldSHA) {
+    if (old && (old.draft || !old.prerelease || bodyCommit(old.body) !== oldSHA)) {
       throw new Error('Rolling release ownership or provenance mismatch');
     }
-    // Distinct old/new SHAs make the live tag an unambiguous durable commit marker.
-    if (oldSHA === info.commit) return { skipped: true, reason: 'master commit already published' };
-    const prefix = `dsh-stage-${runId}-${attempt}-`;
-    const journal = { format: 1, releaseId: old.id, oldBody: old.body ?? '', oldSHA,
-      newSHA: info.commit, newBody: body, prefix, phase: 'upload',
-      oldAssets: (await releaseAssets(api, old.id)).map(({ id, name }) => ({ id, name })),
-      newAssets: names.map((name, index) => ({ name, stagedName: `${prefix}new-${index}-${name}` })) };
-    const draft = await api('POST', 'releases', { tag_name: stagingTag, target_commitish: info.commit,
-      name: 'Rolling publication journal', body: `${JOURNAL_MARKER}\n${JSON.stringify(journal)}`,
-      draft: true, prerelease: true, make_latest: 'false' });
+    const fresh = await api('POST', 'releases', { tag_name: stagingTag, target_commitish: info.commit,
+      name: info.version, body, draft: true, prerelease: true, make_latest: 'false' });
+    const journal = { format: 1, oldID: old?.id ?? null, newID: fresh.id, oldSHA,
+      newSHA: info.commit, oldBody: old?.body ?? '', newBody: body, runId: String(runId), attempt: String(attempt),
+      phase: 'upload', oldAssets: old ? (await releaseAssets(api, old.id)).map(({ id, name }) => ({ id, name })) : [],
+      newAssets: names.map(name => ({ name })) };
+    const draft = await api('POST', 'releases', { tag_name: `build-journal-${runId}-${attempt}`,
+      target_commitish: info.commit, name: 'Release replacement journal',
+      body: `${REPLACEMENT_MARKER}\n${JSON.stringify(journal)}`, draft: true, prerelease: true, make_latest: 'false' });
     const save = async () => {
-      draft.body = `${JOURNAL_MARKER}\n${JSON.stringify(journal)}`;
+      draft.body = `${REPLACEMENT_MARKER}\n${JSON.stringify(journal)}`;
       await api('PATCH', `releases/${draft.id}`, { body: draft.body });
     };
     try {
       for (const asset of journal.newAssets) {
-        const uploaded = await upload(old.upload_url, asset.name, asset.stagedName);
-        if (!Number.isInteger(uploaded?.id)) throw new Error('Asset upload did not return an ID');
+        const uploaded = await upload(fresh.upload_url, asset.name);
+        if (!Number.isSafeInteger(uploaded?.id)) throw new Error('Asset upload did not return an ID');
         asset.id = uploaded.id;
         await save();
       }
       if ((await api('GET', 'git/ref/heads/master')).object.sha !== info.commit) {
-        await reconcileRollingJournal(api, draft);
+        await reconcileReplacement(api, draft);
         return { skipped: true, reason: 'master advanced while assets were uploading' };
       }
-      journal.phase = 'switch';
-      await save(); // Durable intent precedes every rename.
-      for (const asset of journal.oldAssets) await api('PATCH', `releases/assets/${asset.id}`, { name: `${prefix}old-${asset.id}` });
-      for (const asset of journal.newAssets) await api('PATCH', `releases/assets/${asset.id}`, { name: asset.name });
-      await api('PATCH', `releases/${old.id}`, { body });
-      await api('PATCH', 'git/refs/tags/master-build', { sha: info.commit, force: true });
     } catch (error) {
-      // An ambiguous ref response is resolved by reading the live tag, never by rolling it back.
-      try { await reconcileRollingJournal(api, draft); }
+      try { await reconcileReplacement(api, draft); }
       catch (recovery) { throw new AggregateError([error, recovery], 'Publication failed; journal retained for recovery'); }
       throw error;
     }
-    await reconcileRollingJournal(api, draft);
-    return { skipped: false, tag, releaseId: old.id };
+    journal.phase = 'swap';
+    await save();
+    if (!await reconcileReplacement(api, draft)) {
+      return { skipped: true, reason: 'master advanced before replacement publication' };
+    }
+    return { skipped: false, tag, releaseId: fresh.id };
   }
   const draft = await api('POST', 'releases', { tag_name: rolling ? stagingTag : tag,
-    target_commitish: info.commit, name: rolling ? 'Master build' : tag,
+    target_commitish: info.commit, name: info.version,
     body, draft: true, prerelease: rolling, make_latest: 'false' });
   let published = false;
   try {

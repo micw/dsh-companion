@@ -54,6 +54,7 @@ function fakeGithub({ old = true, head = commit, uploadFailure = false, renameFa
       return release ? { ...release } : null;
     }
     if (method === 'POST' && path === 'releases') {
+      if ([...releases.values()].some(r => r.tag_name === body.tag_name)) throw Object.assign(new Error('Duplicate release tag'), { status: 422 });
       const release = { ...body, id: next++, upload_url: `upload/${next - 1}` };
       releases.set(release.id, release); inventory.set(release.id, []); return { ...release };
     }
@@ -74,7 +75,12 @@ function fakeGithub({ old = true, head = commit, uploadFailure = false, renameFa
       }
     }
     if (method === 'PATCH' && path.startsWith('releases/')) {
-      const release = releases.get(Number(path.slice(9))); Object.assign(release, body);
+      if (renameFailure && body.tag_name?.startsWith('build-previous-')) { renameFailure = false; failure('rename failed'); }
+      const release = releases.get(Number(path.slice(9)));
+      if (body.tag_name && [...releases.values()].some(r => r.id !== release.id && r.tag_name === body.tag_name)) throw Object.assign(new Error('Duplicate release tag'), { status: 422 });
+      if (!release.draft && body.tag_name && !refs.has(`tags/${body.tag_name}`)) throw Object.assign(new Error('Missing association tag'), { status: 422 });
+      if (body.draft === false && release.draft) release.published_at = `2026-10-10T12:00:${String(release.id).padStart(2, '0')}Z`;
+      Object.assign(release, body);
       if (body.draft === false && !refs.has(`tags/${release.tag_name}`)) refs.set(`tags/${release.tag_name}`, body.target_commitish);
       return { ...release };
     }
@@ -129,7 +135,7 @@ test('first master publication succeeds when its draft never created a staging t
   assert.equal(result.tag, 'master-build');
   assert.equal(github.releases.size, 1);
   assert.equal(github.refs.get('tags/master-build'), commit);
-  assert.equal(github.calls.some(call => call.method === 'DELETE' && call.path === 'git/refs/tags/build-staging-12-1'), false);
+  assert.equal(github.refs.has('tags/build-staging-12-1'), false);
 });
 
 test('tag cleanup confirms absence instead of swallowing protected-reference errors', async () => {
@@ -149,109 +155,227 @@ test('tag cleanup confirms absence instead of swallowing protected-reference err
   }
 });
 
-test('rolling publication updates assets in place and never creates an old-commit ref', async () => {
+test('rolling replacement creates a new public object with a version-only title and preserves old assets until canonical publication', async () => {
   const github = fakeGithub();
+  const upload = github.upload;
+  github.upload = async (...args) => {
+    assert.equal(github.releases.get(1).tag_name, 'master-build');
+    assert.equal(github.inventory.get(1).length, 3);
+    return upload(...args);
+  };
   const result = await publishRelease(assets, github);
-  assert.equal(result.releaseId, 1);
+  assert.notEqual(result.releaseId, 1);
+  assert.equal(github.releases.get(result.releaseId).name, info.version);
+  assert.ok(github.releases.get(result.releaseId).published_at);
   assert.equal(github.refs.get('tags/master-build'), commit);
   assert.equal(github.releases.size, 1);
-  assert.deepEqual(github.inventory.get(1).map(a => a.name).sort(), [...assets.names].sort());
-  const lastUpload = github.calls.findLastIndex(call => call.upload);
-  const firstRename = github.calls.findIndex(call => call.method === 'PATCH' && call.path.startsWith('releases/assets/'));
-  assert.ok(lastUpload < firstRename);
-  assert.equal(github.calls.some(c => c.method === 'POST' && c.path === 'git/refs'), false);
-  const commitPoint = github.calls.findIndex(c => c.method === 'PATCH' && c.path === 'git/refs/tags/master-build');
-  assert.ok(github.calls.findIndex(c => c.method === 'DELETE' && c.path.startsWith('releases/assets/')) > commitPoint);
+  assert.deepEqual(github.inventory.get(result.releaseId).map(a => a.name).sort(), [...assets.names].sort());
+  const stagePublication = github.calls.findIndex(c => c.method === 'PATCH' && c.path === 'releases/2' && c.body.draft === false && !c.body.tag_name);
+  const oldRename = github.calls.findIndex(c => c.method === 'PATCH' && c.path === 'releases/1');
+  const canonicalPublication = github.calls.findIndex(c => c.method === 'PATCH' && c.path === 'releases/2' && c.body.tag_name === 'master-build');
+  assert.ok(stagePublication > github.calls.findLastIndex(c => c.upload));
+  assert.ok(stagePublication < oldRename);
+  assert.ok(github.calls.findIndex(c => c.method === 'DELETE' && c.path === 'releases/1') > canonicalPublication);
+  assert.equal(github.calls.some(c => c.path?.startsWith('releases/assets/') && c.method !== 'GET'), false);
+  for (const c of github.calls.filter(c => c.path?.startsWith('git/refs') && c.method !== 'DELETE')) assert.equal(c.body.sha, commit);
 });
 
-for (const options of [{ uploadFailure: true }, { renameFailure: true }, { tagFailure: true }]) {
-  test(`precommit failure preserves previous release: ${JSON.stringify(options)}`, async () => {
+test('upload failure leaves the old release physically untouched', async () => {
+  const github = fakeGithub({ uploadFailure: true });
+  await assert.rejects(publishRelease(assets, github), /upload failed/);
+  assert.equal(github.refs.get('tags/master-build'), previous);
+  assert.equal(github.releases.get(1).body, github.originalBody);
+  assert.equal(github.releases.size, 1);
+  assert.equal(github.inventory.get(1).length, 3);
+});
+
+for (const options of [{ renameFailure: true }, { tagFailure: true }, { tagResponseFailure: true }, { cleanupFailure: true }]) {
+  test(`swap failure retains assets and journal for serialized retry: ${JSON.stringify(options)}`, async () => {
     const github = fakeGithub(options);
-    await assert.rejects(publishRelease(assets, github), /failed/);
-    assert.equal(github.refs.get('tags/master-build'), previous);
-    assert.equal(github.releases.get(1).body, github.originalBody);
-    assert.deepEqual(github.inventory.get(1).map(a => a.name), ['previous.vsix', 'build-info.json', 'SHA256SUMS']);
+    await assert.rejects(publishRelease(assets, github));
+    assert.equal(github.inventory.get(1).length, 3);
+    assert.ok([...github.releases.values()].some(r => r.body?.startsWith('<!-- dsh-companion-release-replacement:1 -->')));
+    // The fixture's persistent ref failures are removed through a nonfailing API wrapper.
+    github.resume();
+    if (options.tagFailure || options.tagResponseFailure) {
+      const api = github.api;
+      github.api = async (method, path, body, missing) => {
+        if (method === 'PATCH' && path.startsWith('git/refs/')) {
+          assert.equal(body.sha, commit); github.refs.set(path.slice(9), body.sha); return {};
+        }
+        return api(method, path, body, missing);
+      };
+    }
+    await reconcileRollingRelease(github.api);
     assert.equal(github.releases.size, 1);
+    assert.equal(github.releases.has(1), false);
+    assert.equal(github.refs.get('tags/master-build'), commit);
   });
 }
 
-test('lost tag update response finishes committed publication instead of rewinding', async () => {
-  const github = fakeGithub({ tagResponseFailure: true });
-  await assert.rejects(publishRelease(assets, github), /tag response failed/);
-  assert.equal(github.refs.get('tags/master-build'), commit);
-  assert.deepEqual(github.inventory.get(1).map(a => a.name).sort(), [...assets.names].sort());
-  assert.equal(github.releases.size, 1);
-});
-
-test('same-commit rolling retries do not create an ambiguous recovery journal', async () => {
-  const github = fakeGithub();
-  await publishRelease(assets, github);
-  const before = github.calls.length;
-  assert.equal((await publishRelease(assets, github)).skipped, true);
-  assert.equal(github.calls.slice(before).some(call => call.method === 'POST'), false);
-});
-
-for (const stage of ['pending-upload', 'rename', 'body-switch', 'after-commit', 'partial-cleanup']) {
-  test(`serialized recovery after process interruption: ${stage}`, async () => {
-    let journalWrites = 0;
-    let renames = 0;
-    let deletions = 0;
-    const github = fakeGithub({ interrupt(method, path) {
-      if (stage === 'pending-upload' && method === 'PATCH' && path === 'releases/2') return ++journalWrites === 1;
-      if (stage === 'rename' && method === 'PATCH' && path.startsWith('releases/assets/')) return ++renames === 5;
-      if (stage === 'body-switch') return method === 'PATCH' && path === 'git/refs/tags/master-build';
-      if (stage === 'partial-cleanup' && method === 'DELETE' && path.startsWith('releases/assets/')) return ++deletions === 2;
-      if (stage === 'after-commit') return method === 'DELETE' && path.startsWith('releases/assets/');
+for (const stage of ['upload', 'stage-publish', 'old-rename', 'master-ref', 'canonical-publish', 'cleanup', 'tag-cleanup', 'journal-delete']) {
+  test(`phase interruption recovers safely: ${stage}`, async () => {
+    const github = fakeGithub({ interrupt(method, path, body) {
+      if (stage === 'upload') return method === 'PATCH' && path === 'releases/3' && JSON.parse(body.body.split('\n')[1]).phase === 'upload';
+      if (stage === 'stage-publish') return method === 'PATCH' && path === 'releases/2' && body.draft === false && !body.tag_name;
+      if (stage === 'old-rename') return method === 'PATCH' && path === 'releases/1';
+      if (stage === 'master-ref') return method === 'PATCH' && path === 'git/refs/tags/master-build';
+      if (stage === 'canonical-publish') return method === 'PATCH' && path === 'releases/2' && body.tag_name === 'master-build';
+      if (stage === 'cleanup') return method === 'DELETE' && path === 'releases/1';
+      if (stage === 'tag-cleanup') return method === 'DELETE' && path.startsWith('git/refs/');
+      if (stage === 'journal-delete') return method === 'DELETE' && path === 'releases/3';
       return false;
     } });
     await assert.rejects(publishRelease(assets, github));
-    assert.equal(github.releases.size, 2, 'durable draft journal retained');
     github.resume();
     await reconcileRollingRelease(github.api);
+    await reconcileRollingRelease(github.api);
     assert.equal(github.releases.size, 1);
-    const committed = ['after-commit', 'partial-cleanup'].includes(stage);
-    assert.equal(github.refs.get('tags/master-build'), committed ? commit : previous);
-    assert.deepEqual(github.inventory.get(1).map(a => a.name).sort(),
-      committed ? [...assets.names].sort() : ['previous.vsix', 'build-info.json', 'SHA256SUMS'].sort());
+    const live = [...github.releases.values()][0];
+    assert.equal(live.id === 1, stage === 'upload');
+    assert.equal(github.refs.get('tags/master-build'), stage === 'upload' ? previous : commit);
   });
 }
 
-test('cleanup errors retain committed journal for retry', async () => {
-  const github = fakeGithub({ cleanupFailure: true });
-  await assert.rejects(publishRelease(assets, github), /cleanup failed/);
-  assert.equal(github.refs.get('tags/master-build'), commit);
-  assert.equal(github.releases.size, 2);
-  github.resume();
-  await reconcileRollingRelease(github.api);
-  await reconcileRollingRelease(github.api);
+test('master advancement after upload reports a skipped replacement rather than a deleted release as success', async () => {
+  const github = fakeGithub(); const api = github.api;
+  github.api = async (method, path, body, missing) => {
+    const result = await api(method, path, body, missing);
+    if (method === 'PATCH' && path === 'releases/3' && body?.body?.includes('"phase":"swap"')) {
+      github.refs.set('heads/master', 'e'.repeat(40));
+    }
+    return result;
+  };
+  const result = await publishRelease(assets, github);
+  assert.equal(result.skipped, true);
   assert.equal(github.releases.size, 1);
-  assert.deepEqual(github.inventory.get(1).map(a => a.name).sort(), [...assets.names].sort());
+  assert.equal(github.releases.get(1).tag_name, 'master-build');
 });
 
-for (const forgery of ['stable-release', 'prefix', 'body', 'foreign-asset', 'extra-key', 'draft-target', 'unexpected-live-name']) {
-  test(`journal ownership refuses ${forgery} before any mutation`, async () => {
-    const github = fakeGithub({ interrupt: (method, path) => method === 'PATCH' && path.startsWith('releases/assets/') });
+test('same-commit new-version builds still create a new release and renew publication time', async () => {
+  const github = fakeGithub();
+  const first = await publishRelease(assets, github);
+  const firstPublishedAt = github.releases.get(first.releaseId).published_at;
+  const second = await publishRelease({ ...assets, info: { ...info, version: '0.2.20261010120001' } }, { ...github, runId: '13' });
+  assert.notEqual(first.releaseId, second.releaseId);
+  assert.notEqual(firstPublishedAt, github.releases.get(second.releaseId).published_at);
+  assert.equal(github.releases.size, 1);
+  assert.equal(github.releases.get(second.releaseId).name, '0.2.20261010120001');
+});
+
+for (const stage of ['master-ref', 'canonical-publish']) {
+  test(`newer master recovery never writes the older journal commit: ${stage}`, async () => {
+    const github = fakeGithub({ interrupt: (method, path, body) => stage === 'master-ref'
+      ? method === 'PATCH' && path === 'git/refs/tags/master-build'
+      : method === 'PATCH' && path === 'releases/2' && body.tag_name === 'master-build' });
     await assert.rejects(publishRelease(assets, github));
     github.resume();
-    const draft = github.releases.get(2);
-    const marker = '<!-- dsh-companion-rolling-journal:1 -->';
+    github.refs.set('heads/master', 'e'.repeat(40));
+    const before = github.calls.length;
+    await reconcileRollingRelease(github.api);
+    assert.equal(github.calls.slice(before).some(c => ['POST', 'PATCH'].includes(c.method) && c.path.startsWith('git/refs')), false);
+    assert.equal(github.releases.size, 1);
+    assert.equal([...github.releases.values()][0].id, stage === 'master-ref' ? 1 : 2);
+  });
+}
+
+for (const stage of ['stage-publish', 'old-rename', 'canonical-publish']) {
+  test(`same-SHA interrupted rerun with advanced master uses associations, never old ref writes: ${stage}`, async () => {
+    const github = fakeGithub({ interrupt(method, path, body) {
+      if (stage === 'stage-publish') return method === 'PATCH' && path === 'releases/2' && body.draft === false && !body.tag_name;
+      if (stage === 'old-rename') return method === 'PATCH' && path === 'releases/1';
+      return method === 'PATCH' && path === 'releases/2' && body.tag_name === 'master-build';
+    } });
+    github.refs.set('tags/master-build', commit);
+    github.releases.get(1).body = `<!-- dsh-companion-build:1 -->\nCommit: ${commit}\n`;
+    await assert.rejects(publishRelease(assets, github));
+    github.resume();
+    github.refs.set('heads/master', 'e'.repeat(40));
+    const before = github.calls.length;
+    await reconcileRollingRelease(github.api);
+    assert.equal(github.calls.slice(before).some(c => ['POST', 'PATCH'].includes(c.method) && c.path.startsWith('git/refs')), false);
+    assert.equal(github.releases.size, 1);
+    assert.equal([...github.releases.values()][0].id, stage === 'canonical-publish' ? 2 : 1);
+  });
+}
+
+for (const forgery of ['oldID', 'newBody', 'extra-key', 'draft-target', 'foreign-asset', 'release-title']) {
+  test(`replacement ownership refuses ${forgery} before mutation`, async () => {
+    const github = fakeGithub({ interrupt: (method, path) => method === 'PATCH' && path === 'releases/1' });
+    await assert.rejects(publishRelease(assets, github));
+    github.resume();
+    const draft = github.releases.get(3);
+    const marker = '<!-- dsh-companion-release-replacement:1 -->';
     const journal = JSON.parse(draft.body.slice(marker.length).trim());
-    github.releases.set(8, { id: 8, tag_name: 'v0.2.0', prerelease: false, draft: false, body: github.originalBody });
-    github.inventory.set(8, [{ id: 80, name: 'stable.vsix' }]);
-    if (forgery === 'stable-release') journal.releaseId = 8;
-    if (forgery === 'prefix') journal.prefix = 'dsh-stage-12-1-unowned-';
-    if (forgery === 'body') journal.newBody = `Commit: ${commit}\n`;
-    if (forgery === 'foreign-asset') journal.newAssets[0].id = 80;
+    if (forgery === 'oldID') journal.oldID = 2;
+    if (forgery === 'newBody') journal.newBody = `Commit: ${commit}\n`;
     if (forgery === 'extra-key') journal.unexpected = true;
     if (forgery === 'draft-target') draft.target_commitish = previous;
-    if (forgery === 'unexpected-live-name') github.inventory.get(1)[0].name = 'unowned.vsix';
+    if (forgery === 'foreign-asset') journal.newAssets[0].id = 10;
+    if (forgery === 'release-title') github.releases.get(2).name = 'Master build';
     draft.body = `${marker}\n${JSON.stringify(journal)}`;
     const before = github.calls.length;
     await assert.rejects(reconcileRollingRelease(github.api), /journal ownership/);
-    assert.equal(github.calls.slice(before).some(call => call.method !== 'GET'), false);
-    assert.equal(github.inventory.get(8)[0].name, 'stable.vsix');
+    assert.equal(github.calls.slice(before).some(c => c.method !== 'GET'), false);
   });
 }
+
+test('duplicate canonical associations are rejected before mutations', async () => {
+  const github = fakeGithub();
+  github.releases.set(8, { ...github.releases.get(1), id: 8 });
+  await assert.rejects(publishRelease(assets, github), /duplicate release associations/);
+  assert.equal(github.calls.some(c => c.method !== 'GET'), false);
+});
+
+test('incidental build markers never authorize legacy public backup deletion', async () => {
+  const github = fakeGithub();
+  github.releases.set(8, { id: 8, tag_name: 'build-previous-11-1', draft: false, prerelease: true,
+    body: `Manual release\n<!-- dsh-companion-build:1 -->\nCommit: ${previous}\n` });
+  github.inventory.set(8, [{ id: 80, name: 'manual.vsix' }]);
+  await assert.rejects(reconcileRollingRelease(github.api), /manual intervention/);
+  assert.equal(github.releases.has(8), true);
+  assert.equal(github.calls.some(c => c.method !== 'GET'), false);
+});
+
+for (const old of [true, false]) {
+  test(`stale first/replacement publication discard survives accepted DELETE response loss: old=${old}`, async () => {
+    const github = fakeGithub({ old, interrupt: (method, path, body) => method === 'PATCH' && path === (old ? 'releases/1' : 'releases/2')
+      && (old ? body.tag_name?.startsWith('build-previous-') : body.draft === false) });
+    if (!old) github.refs.delete('tags/master-build');
+    await assert.rejects(publishRelease(assets, github));
+    github.resume();
+    github.refs.set('heads/master', 'e'.repeat(40));
+    const api = github.api;
+    let lost = false;
+    const unreliable = async (method, path, body, missing) => {
+      const result = await api(method, path, body, missing);
+      if (!lost && method === 'DELETE' && path === 'releases/2') { lost = true; throw new Error('lost delete response'); }
+      return result;
+    };
+    await assert.rejects(reconcileRollingRelease(unreliable), /lost delete response/);
+    await reconcileRollingRelease(api);
+    assert.equal(github.releases.size, old ? 1 : 0);
+    assert.equal([...github.releases.values()].some(r => r.body?.startsWith('<!-- dsh-companion-release-replacement:1 -->')), false);
+    assert.equal(github.refs.get('tags/master-build'), old ? previous : undefined);
+  });
+}
+
+test('legacy in-place upload journals still recover without ref writes', async () => {
+  const github = fakeGithub();
+  const marker = '<!-- dsh-companion-rolling-journal:1 -->';
+  const journal = { format: 1, releaseId: 1, oldBody: github.originalBody, oldSHA: previous,
+    newSHA: commit, newBody: `<!-- dsh-companion-build:1 -->\nCommit: ${commit}\n`,
+    prefix: 'dsh-stage-11-1-', phase: 'upload', oldAssets: github.inventory.get(1).map(a => ({ ...a })),
+    newAssets: [{ name: 'new.vsix', stagedName: 'dsh-stage-11-1-new-0-new.vsix' }] };
+  github.releases.set(8, { id: 8, tag_name: 'build-staging-11-1', target_commitish: commit,
+    draft: true, prerelease: true, body: `${marker}\n${JSON.stringify(journal)}` });
+  github.inventory.set(8, []);
+  await reconcileRollingRelease(github.api);
+  assert.equal(github.releases.size, 1);
+  assert.equal(github.inventory.get(1).length, 3);
+  assert.equal(github.refs.get('tags/master-build'), previous);
+  assert.equal(github.calls.some(c => ['POST', 'PATCH'].includes(c.method) && c.path.startsWith('git/refs')), false);
+});
 
 test('legacy recovery refuses ref rewinds but can restore a release on an unchanged tag', async () => {
   const github = fakeGithub();
@@ -277,7 +401,9 @@ test('stale master builds never replace a newer head, including advancement duri
 test('tag releases are durable and cannot overwrite an existing successful release', async () => {
   const github = fakeGithub();
   const stable = { ...assets, info: { ...info, channel: 'release', version: '0.2.0' }, releaseTag: 'v0.2.0' };
-  assert.equal((await publishRelease(stable, github)).tag, 'v0.2.0');
+  const stableResult = await publishRelease(stable, github);
+  assert.equal(stableResult.tag, 'v0.2.0');
+  assert.equal(github.releases.get(stableResult.releaseId).name, '0.2.0');
   const before = github.calls.length;
   await assert.rejects(publishRelease(stable, github), /already exists/);
   assert.equal(github.calls.slice(before).some(call => call.method === 'POST'), false);
