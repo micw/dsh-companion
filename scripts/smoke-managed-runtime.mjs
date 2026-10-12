@@ -128,6 +128,13 @@ try {
     || providerSettings.providers.some(provider => provider.instanceId !== undefined)) {
     throw new Error('Managed DSH Client did not project the empty provider-instance baseline');
   }
+  const braveBefore = await sessionClient.braveSearchCredential();
+  if (braveBefore.writable) {
+    const braveAfter = await sessionClient.setBraveSearchCredential('brave-smoke-key');
+    if (!braveAfter.configured || !braveAfter.writable) {
+      throw new Error('Managed DSH did not retain the write-only Brave credential');
+    }
+  }
 
   const first = await callRemote(control.origin, cookie, 'session/create', {
     request: { sessionId: randomUUID(), cwd: storage, agentPreset: 'dsh-companion' },

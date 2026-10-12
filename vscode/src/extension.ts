@@ -23,9 +23,11 @@ import { companionLifecycleRoot } from './runtimeInstaller';
 import { installRestoreTraceSink, isDiagnosticBatchMessage, isDiagnosticScrollMessage, restoreTrace } from './restoreDiagnostics';
 import { TabStatusProjection } from './tabStatus';
 import { WebviewMessenger } from './webviewMessenger';
+import { SettingsEditor } from './settingsEditor';
 
 const CHAT_EDITOR_VIEW_TYPE = 'dshCompanion.chatEditor';
 const COOKIE_SECRET_KEY = 'dshCompanion.developmentCookie';
+const settingsRefreshers = new Set<() => void>();
 
 interface CopySessionIdMessage {
   readonly type: 'copySessionId';
@@ -60,55 +62,6 @@ interface RefreshProviderUsageMessage {
   readonly provider: string;
 }
 
-interface LoadProviderSettingsMessage {
-  readonly type: 'loadProviderSettings';
-  readonly requestId: number;
-}
-
-interface SaveProviderSettingsMessage {
-  readonly type: 'saveProviderSettings';
-  readonly provider: string;
-  readonly displayName?: string;
-  readonly enabled: boolean;
-  readonly baseURL?: string;
-  readonly apiKey?: string;
-  readonly test?: boolean;
-  readonly revision: number;
-}
-
-interface CreateProviderInstanceMessage {
-  readonly type: 'createProviderInstance';
-  readonly family: string;
-  readonly displayName: string;
-  readonly enabled: boolean;
-  readonly baseURL?: string;
-  readonly apiKey?: string;
-}
-
-interface DeleteProviderInstanceMessage {
-  readonly type: 'deleteProviderInstance';
-  readonly family: string;
-  readonly instance: string;
-  readonly provider: string;
-  readonly displayName: string;
-}
-
-interface SetProviderModelEnabledMessage {
-  readonly type: 'setProviderModelEnabled';
-  readonly provider: string;
-  readonly model: string;
-  readonly enabled: boolean;
-  readonly revision: number;
-}
-
-interface SetProviderModelsEnabledMessage {
-  readonly type: 'setProviderModelsEnabled';
-  readonly provider: string;
-  readonly models: readonly string[];
-  readonly enabled: boolean;
-  readonly revision: number;
-}
-
 interface OpenLinkMessage {
   readonly type: 'openLink';
   readonly href: string;
@@ -136,6 +89,9 @@ export function activate(context: vscode.ExtensionContext): void {
   restoreTrace(undefined, 'diagnostics-started', { companionVersion: String(context.extension.packageJSON.version) });
   const runtimeProgress = new RuntimeProgress();
   const runtimeControl = connectRuntime(context, phase => runtimeProgress.report(phase));
+  const settingsEditor = new SettingsEditor(context, runtimeControl, () => {
+    for (const refresh of settingsRefreshers) refresh();
+  });
   const sessionTree = new SessionSidebarProvider(
     context.extensionUri,
     onDidChange => connectSessionBrowser(context, runtimeControl, onDidChange),
@@ -227,9 +183,7 @@ export function activate(context: vscode.ExtensionContext): void {
       sessionTree.focusSearch();
     }),
     vscode.commands.registerCommand('dshCompanion.openProviderSettings', () => {
-      const panel = activeCompanionPanel() ?? openChatEditor(context, runtimeControl, sessionTree, runtimeProgress);
-      panel.reveal(panel.viewColumn, false);
-      post(panel, { type: 'openProviderSettings' });
+      void settingsEditor.open();
     }),
     vscode.commands.registerCommand('dshCompanion.stopManagedRuntime', async () => {
       const selected = await vscode.window.showWarningMessage(
@@ -334,13 +288,6 @@ function openChatEditor(
   );
   configureChatEditor(context, runtimeControl, sessionTree, runtimeProgress, panel, sessionId, forkDraft);
   return panel;
-}
-
-function activeCompanionPanel(): vscode.WebviewPanel | undefined {
-  for (const panel of panelsBySessionId.values()) {
-    if (panel.active) return panel;
-  }
-  return panelsBySessionId.values().next().value;
 }
 
 function handleWebviewLink(value: unknown, action: 'open' | 'openBeside' | 'copyLink' | 'copyPath'): void {
@@ -522,6 +469,15 @@ function configureChatEditor(
     });
     return connected.client;
   });
+  const refreshSettings = () => {
+    void ready.then(async bound => {
+      await bound.refreshModelCatalog();
+      const snapshot = await bound.providerSettings();
+      if (!disposed) post(panel, { type: 'providerSettings', snapshot });
+    }).catch(() => {});
+  };
+  settingsRefreshers.add(refreshSettings);
+  panel.onDidDispose(() => settingsRefreshers.delete(refreshSettings));
   const submitCurrent = async (message: SubmitMessage): Promise<boolean> => {
     const key = restoredSessionId === undefined ? undefined : `forkTitlePending:${restoredSessionId}`;
     const pending = key !== undefined && context.workspaceState.get<boolean>(key) === true;
@@ -541,6 +497,10 @@ function configureChatEditor(
     });
   });
   const receive = panel.webview.onDidReceiveMessage((message: unknown) => {
+    if (typeof message === 'object' && message !== null && !Array.isArray(message)
+      && Object.keys(message).length === 1 && Reflect.get(message, 'type') === 'openSettings') {
+      void vscode.commands.executeCommand('dshCompanion.openProviderSettings');
+    }
     if (isReadyMessage(message)) {
       restoreTrace(traceSessionId, 'webview-ready', { panelTraceId });
       messenger.markReady();
@@ -586,12 +546,6 @@ function configureChatEditor(
     if (isAnswerApprovalMessage(message)) void answerApproval(panel, ready, message);
     if (isCompactMessage(message)) void compact(panel, ready);
     if (isRefreshProviderUsageMessage(message)) void refreshProviderUsage(panel, ready, message.provider);
-    if (isLoadProviderSettingsMessage(message)) void loadProviderSettings(panel, ready, message.requestId);
-    if (isSaveProviderSettingsMessage(message)) void saveProviderSettings(panel, ready, message);
-    if (isCreateProviderInstanceMessage(message)) void createProviderInstance(panel, ready, message);
-    if (isDeleteProviderInstanceMessage(message)) void deleteProviderInstance(panel, ready, message);
-    if (isSetProviderModelEnabledMessage(message)) void setProviderModelEnabled(panel, ready, message);
-    if (isSetProviderModelsEnabledMessage(message)) void setProviderModelsEnabled(panel, ready, message);
     if (isOpenLinkMessage(message)) void vscode.env.openExternal(vscode.Uri.parse(message.href));
     if (isOpenFileMessage(message)) void openSessionFile(ready, () => sessionCwd, message);
     if (isCopyTextMessage(message)) {
@@ -1073,139 +1027,6 @@ async function refreshProviderUsage(
   }
 }
 
-async function loadProviderSettings(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  requestId: number,
-): Promise<void> {
-  post(panel, { type: 'providerSettingsLoading', requestId, value: true });
-  try {
-    post(panel, { type: 'providerSettings', requestId, snapshot: await (await ready).providerSettings() });
-  } catch (error) {
-    post(panel, {
-      type: 'providerSettingsFailed', requestId,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerSettingsLoading', requestId, value: false });
-  }
-}
-
-async function saveProviderSettings(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  message: SaveProviderSettingsMessage,
-): Promise<void> {
-  post(panel, { type: 'providerSettingsSaving', provider: message.provider, value: true });
-  let snapshot: import('./dshClient').DshProviderSettingsSnapshot | undefined;
-  try {
-    const client = await ready;
-    snapshot = await client.updateProviderSettings(message);
-    if (message.test === true) {
-      const tested = await client.testProviderConnection(message.provider);
-      snapshot = tested.snapshot;
-      post(panel, { type: 'providerSettingsTested', provider: message.provider, modelCount: tested.modelCount });
-    }
-    post(panel, { type: 'providerSettings', snapshot });
-  } catch (error) {
-    if (snapshot !== undefined) post(panel, { type: 'providerSettings', snapshot });
-    post(panel, {
-      type: 'providerSettingsSaveFailed', provider: message.provider,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerSettingsSaving', provider: message.provider, value: false });
-  }
-}
-
-async function createProviderInstance(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  message: CreateProviderInstanceMessage,
-): Promise<void> {
-  post(panel, { type: 'providerInstanceCreating', family: message.family, value: true });
-  try {
-    const snapshot = await (await ready).createProviderInstance(message.family, message);
-    post(panel, { type: 'providerSettings', snapshot });
-  } catch (error) {
-    post(panel, {
-      type: 'providerInstanceCreateFailed', family: message.family,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerInstanceCreating', family: message.family, value: false });
-  }
-}
-
-async function deleteProviderInstance(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  message: DeleteProviderInstanceMessage,
-): Promise<void> {
-  const accepted = await vscode.window.showWarningMessage(
-    `Delete provider instance “${message.displayName}”? Existing Sessions retain its route reference, but the route becomes unavailable.`,
-    { modal: true },
-    'Delete',
-  );
-  if (accepted !== 'Delete') return;
-  post(panel, { type: 'providerInstanceDeleting', provider: message.provider, value: true });
-  try {
-    const snapshot = await (await ready).deleteProviderInstance(
-      message.family, message.instance, message.provider,
-    );
-    post(panel, { type: 'providerSettings', snapshot });
-  } catch (error) {
-    post(panel, {
-      type: 'providerSettingsSaveFailed', provider: message.provider,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerInstanceDeleting', provider: message.provider, value: false });
-  }
-}
-
-async function setProviderModelEnabled(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  message: SetProviderModelEnabledMessage,
-): Promise<void> {
-  post(panel, { type: 'providerModelSaving', provider: message.provider, model: message.model, value: true });
-  try {
-    const snapshot = await (await ready).setProviderModelEnabled(
-      message.provider, message.model, message.enabled, message.revision,
-    );
-    post(panel, { type: 'providerSettings', snapshot });
-  } catch (error) {
-    post(panel, {
-      type: 'providerSettingsSaveFailed', provider: message.provider,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerModelSaving', provider: message.provider, model: message.model, value: false });
-  }
-}
-
-async function setProviderModelsEnabled(
-  panel: vscode.WebviewPanel,
-  ready: Promise<DshClient>,
-  message: SetProviderModelsEnabledMessage,
-): Promise<void> {
-  post(panel, { type: 'providerModelsSaving', provider: message.provider, value: true });
-  try {
-    const snapshot = await (await ready).setProviderModelsEnabled(
-      message.provider, message.models, message.enabled, message.revision,
-    );
-    post(panel, { type: 'providerSettings', snapshot });
-  } catch (error) {
-    post(panel, {
-      type: 'providerSettingsSaveFailed', provider: message.provider,
-      text: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    post(panel, { type: 'providerModelsSaving', provider: message.provider, value: false });
-  }
-}
-
 async function compact(panel: vscode.WebviewPanel, ready: Promise<DshClient>): Promise<void> {
   post(panel, { type: 'compacting', value: true });
   try {
@@ -1273,71 +1094,6 @@ function isRefreshProviderUsageMessage(value: unknown): value is RefreshProvider
     && Reflect.get(value, 'type') === 'refreshProviderUsage'
     && typeof Reflect.get(value, 'provider') === 'string'
     && Reflect.get(value, 'provider').length > 0;
-}
-
-function isLoadProviderSettingsMessage(value: unknown): value is LoadProviderSettingsMessage {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).length === 2 && Reflect.get(value, 'type') === 'loadProviderSettings'
-    && Number.isSafeInteger(Reflect.get(value, 'requestId')) && Number(Reflect.get(value, 'requestId')) > 0;
-}
-
-function isSaveProviderSettingsMessage(value: unknown): value is SaveProviderSettingsMessage {
-  const provider = typeof value === 'object' && value !== null ? Reflect.get(value, 'provider') : undefined;
-  const test = typeof value === 'object' && value !== null ? Reflect.get(value, 'test') : undefined;
-  if (typeof value !== 'object' || value === null || Array.isArray(value)
-    || Reflect.get(value, 'type') !== 'saveProviderSettings'
-    || typeof provider !== 'string' || provider.length === 0
-    || (Reflect.get(value, 'displayName') !== undefined && typeof Reflect.get(value, 'displayName') !== 'string')
-    || typeof Reflect.get(value, 'enabled') !== 'boolean'
-    || !Number.isSafeInteger(Reflect.get(value, 'revision')) || Reflect.get(value, 'revision') < 0
-    || (Reflect.get(value, 'baseURL') !== undefined && typeof Reflect.get(value, 'baseURL') !== 'string')
-    || (Reflect.get(value, 'apiKey') !== undefined && typeof Reflect.get(value, 'apiKey') !== 'string')
-    || (test !== undefined && typeof test !== 'boolean')) return false;
-  return Object.keys(value).every(
-    key => ['type', 'provider', 'displayName', 'enabled', 'baseURL', 'apiKey', 'test', 'revision'].includes(key),
-  );
-}
-
-function isCreateProviderInstanceMessage(value: unknown): value is CreateProviderInstanceMessage {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).every(key => ['type', 'family', 'displayName', 'enabled', 'baseURL', 'apiKey'].includes(key))
-    && Reflect.get(value, 'type') === 'createProviderInstance'
-    && typeof Reflect.get(value, 'family') === 'string' && Reflect.get(value, 'family').length > 0
-    && typeof Reflect.get(value, 'displayName') === 'string' && Reflect.get(value, 'displayName').trim().length > 0
-    && typeof Reflect.get(value, 'enabled') === 'boolean'
-    && (Reflect.get(value, 'baseURL') === undefined || typeof Reflect.get(value, 'baseURL') === 'string')
-    && (Reflect.get(value, 'apiKey') === undefined || typeof Reflect.get(value, 'apiKey') === 'string');
-}
-
-function isDeleteProviderInstanceMessage(value: unknown): value is DeleteProviderInstanceMessage {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).length === 5 && Reflect.get(value, 'type') === 'deleteProviderInstance'
-    && ['family', 'instance', 'provider', 'displayName'].every(key => (
-      typeof Reflect.get(value, key) === 'string' && Reflect.get(value, key).length > 0
-    ));
-}
-
-function isSetProviderModelEnabledMessage(value: unknown): value is SetProviderModelEnabledMessage {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).every(key => ['type', 'provider', 'model', 'enabled', 'revision'].includes(key))
-    && Reflect.get(value, 'type') === 'setProviderModelEnabled'
-    && typeof Reflect.get(value, 'provider') === 'string' && Reflect.get(value, 'provider').length > 0
-    && typeof Reflect.get(value, 'model') === 'string' && Reflect.get(value, 'model').length > 0
-    && typeof Reflect.get(value, 'enabled') === 'boolean'
-    && Number.isSafeInteger(Reflect.get(value, 'revision')) && Reflect.get(value, 'revision') >= 0;
-}
-
-function isSetProviderModelsEnabledMessage(value: unknown): value is SetProviderModelsEnabledMessage {
-  const models = typeof value === 'object' && value !== null ? Reflect.get(value, 'models') : undefined;
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    && Object.keys(value).every(key => ['type', 'provider', 'models', 'enabled', 'revision'].includes(key))
-    && Reflect.get(value, 'type') === 'setProviderModelsEnabled'
-    && typeof Reflect.get(value, 'provider') === 'string' && Reflect.get(value, 'provider').length > 0
-    && Array.isArray(models) && models.length > 0 && models.length <= 1_000
-    && new Set(models).size === models.length
-    && models.every(model => typeof model === 'string' && model.length > 0)
-    && typeof Reflect.get(value, 'enabled') === 'boolean'
-    && Number.isSafeInteger(Reflect.get(value, 'revision')) && Reflect.get(value, 'revision') >= 0;
 }
 
 function isOpenLinkMessage(value: unknown): value is OpenLinkMessage {
@@ -1479,26 +1235,6 @@ function editorHtml(
       </div>
     </div>
   </form>
-  <div id="provider-settings-modal" role="dialog" aria-modal="true" aria-labelledby="provider-settings-title" hidden>
-    <div id="provider-settings-backdrop"></div>
-    <section id="provider-settings-surface">
-      <header id="provider-settings-header">
-        <div><h2 id="provider-settings-title">Providers &amp; Models</h2><p>Configure DSH routes and credentials.</p></div>
-        <button id="provider-settings-close" type="button" aria-label="Close provider settings" title="Close">×</button>
-      </header>
-      <div id="provider-settings-toolbar">
-        <input id="provider-settings-search" type="search" aria-label="Search providers and models" placeholder="Search providers and models…">
-        <select id="provider-settings-filter" aria-label="Filter models">
-          <option value="all">All models</option>
-          <option value="enabled">Enabled models</option>
-          <option value="disabled">Disabled models</option>
-        </select>
-      </div>
-      <div id="provider-family-actions"></div>
-      <div id="provider-settings-status" role="status"></div>
-      <div id="provider-settings-list"></div>
-    </section>
-  </div>
   <script nonce="${nonce}" src="${transcriptStateUri}"></script>
   <script nonce="${nonce}" src="${scrollDiagnosticsUri}"></script>
   <script nonce="${nonce}" src="${mermaidUri}"></script>

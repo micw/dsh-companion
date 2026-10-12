@@ -1,6 +1,6 @@
 # @dsh-companion/provider-client
 
-DSH Web Client infrastructure assembly for Companion provider state. Its Host entry carries only the `dsh.client` package declaration; the browser half mounts the generated provider-catalog, provider-account, and session-title Remote contributions into the canonical DSH Client Remote service.
+DSH Web Client infrastructure assembly for Companion provider state. Its Host entry carries only the `dsh.client` package declaration; the browser half and Node runtime assembly mount the generated provider-catalog, provider-account, session-title, and web-search Remote contributions into the canonical DSH Client Remote service.
 
 The browser bundle is loaded dynamically from the enabled DSH Loader entry. It contains the generated descriptors and validation codecs but no provider protocol, credentials, catalog cache, or account state.
 

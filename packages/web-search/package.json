@@ -1,0 +1,43 @@
+{
+  "name": "@dsh-companion/web-search",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    "./protocol": { "types": "./lib/protocol.d.ts", "default": "./lib/protocol.js" },
+    "./typert": { "types": "./lib/typert.host.d.ts", "default": "./lib/typert.host.js" },
+    "./remote": { "types": "./lib/typert.remote-client.d.ts", "default": "./lib/typert.remote-client.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/**/*.js", "lib/**/*.d.ts", "lib/typert.host.js", "lib/typert.host.d.ts", "lib/typert.remote-client.js", "lib/typert.remote-client.d.ts"],
+  "scripts": { "build": "tsc -p tsconfig.json && tsdown", "test": "pnpm run build && node --test tests/*.test.mjs", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.5",
+    "@deepseek-ai/dsh-web": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-credentials": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-config-editor": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2"
+  },
+  "dependencies": { "@deepseek-ai/schemastery": "link:../../../deepseek-harness/vendor/schemastery", "zod": "4.4.3" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis-plugin-loader": "link:../../../deepseek-harness/vendor/loader",
+    "@deepseek-ai/dsh-app-boot": "link:../../../deepseek-harness/packages/boot/app-boot",
+    "@deepseek-ai/dsh-web": "link:../../../deepseek-harness/packages/web/web",
+    "@deepseek-ai/dsh-credentials": "link:../../../deepseek-harness/packages/credentials/credentials",
+    "@deepseek-ai/dsh-config-editor": "link:../../../deepseek-harness/packages/boot/config-editor",
+    "@deepseek-ai/dsh-settings": "link:../../../deepseek-harness/packages/settings/settings",
+    "@deepseek-ai/dsh-storage-domain": "link:../../../deepseek-harness/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-typert-generator": "link:../../../deepseek-harness/packages/typert/generator",
+    "@deepseek-ai/dsh-typert-protocol": "link:../../../deepseek-harness/packages/typert/protocol",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.22.2", "typescript": "^5.9.2"
+  },
+  "engines": { "node": ">=22" }
+}

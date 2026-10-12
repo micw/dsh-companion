@@ -37,7 +37,7 @@ test('the extension contributes the Session sidebar, chat, Web UI, and managed-r
     },
     {
       command: 'dshCompanion.openProviderSettings',
-      title: 'DSH: Providers & Models',
+      title: 'DSH: Settings',
       icon: '$(settings-gear)',
     },
     {

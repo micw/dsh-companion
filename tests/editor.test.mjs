@@ -21,6 +21,7 @@ import {
   parseProviderAccountSnapshot,
   parseSessionListSnapshot,
   parseSettingsDescribe,
+  providerFamilyRows,
   reconcileSettlementAccounting,
 } from '../vscode/out/dshClient.js';
 
@@ -42,6 +43,17 @@ test('the first canonical event window replays its full snapshot before subscrib
   assert.match(client, /let eventWindowInitialized = false/);
   assert.match(client, /receiveCanonicalWindow\(binding\.eventSource\.getSnapshot\(\), !eventWindowInitialized\)/);
   assert.match(client, /if \(initial\) \{[\s\S]*?replaceCanonicalWindow\(value\.entries, value\.hasMore\)/);
+});
+
+test('high provider usage keeps readable text and uses a warning symbol instead of threshold colors', async () => {
+  const script = await readFile(new URL('../vscode/media/main.js', import.meta.url), 'utf8');
+  const style = await readFile(new URL('../vscode/media/style.css', import.meta.url), 'utf8');
+  assert.match(script, /window\.usedPercent >= 80 \|\| snapshot\.status === 'stale' \? 'warning'/);
+  assert.match(script, /providerUsageTrigger\.setAttribute\('aria-label', summary\.tone === 'normal' \? summary\.label : `Warning: \$\{summary\.label\}`\)/);
+  assert.match(style, /#provider-usage-trigger \{[^}]*color: var\(--vscode-foreground\)/);
+  assert.match(style, /#provider-usage-trigger\.warning::before,[\s\S]*content: '!'/);
+  assert.doesNotMatch(style, /#provider-usage-trigger\.(?:warning|danger) \{ color:/);
+  assert.doesNotMatch(style, /\.provider-usage-fill\.(?:warning|danger)/);
 });
 
 test('an orphan Tool result does not create a Webview Turn placeholder', async () => {
@@ -91,45 +103,10 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(script, /getElementById\('provider-settings-trigger'\)/);
   assert.match(script, /function openProviderSettings/);
   assert.match(script, /message\.type === 'openProviderSettings'[\s\S]*openProviderSettings\(\)/);
-  assert.match(script, /function renderProviderSettings/);
-  assert.match(script, /type: 'saveProviderSettings'/);
-  assert.match(script, /provider\.kind === 'dynamic' \? 'API URL' : 'Service URL'/);
-  assert.match(script, /\['native', 'catalog', 'dynamic', 'wrapper'\]\.includes\(provider\.kind\)/);
-  assert.doesNotMatch(script, /value\.providers\.length !== 5/);
-  assert.match(script, /providerSettingsStatus\.textContent === 'Loading providers…'/);
-  assert.match(script, /Provider settings request timed out before the Extension returned a result/);
-  assert.match(script, /Provider settings response rejected: \$\{validationError\}/);
-  assert.match(script, /type: 'loadProviderSettings', requestId/);
+  assert.match(script, /vscode\.postMessage\(\{ type: 'openSettings' \}\)/);
   assert.match(dshClient, /callCanonicalRemote\(graph, 'llm', 'listProviderFamilies'\)/);
   assert.match(dshClient, /'llm',\s*'saveProviderInstance'/);
-  assert.match(dshClient, /'llm', 'deleteProviderInstance', familyId, instanceId/);
-  assert.match(dshClient, /families: families\.map\(family =>/);
-  assert.match(script, /`Add \$\{family\.name\} instance`/);
-  assert.match(script, /type: 'createProviderInstance'/);
-  assert.match(script, /type: 'deleteProviderInstance'/);
-  assert.match(script, /provider\.instanceId === undefined \? \{\} : \{ displayName: draft\.displayName \}/);
-  assert.match(extension, /isCreateProviderInstanceMessage/);
-  assert.match(extension, /isDeleteProviderInstanceMessage/);
-  assert.match(dshClient, /current\.instanceId === undefined/);
-  assert.doesNotMatch(dshClient, /removeLegacyOpenRouterProfile|restoreLegacyOpenRouterProfile/);
-  assert.match(script, /testsConnection \? 'Save & Test' : 'Save'/);
-  assert.match(script, /Connection verified · \$\{String\(message\.modelCount\)\} models loaded/);
   assert.match(script, /`\$\{found\.group\.name\} \/ \$\{found\.model\.name\}`/);
-  assert.match(script, /type: 'setProviderModelEnabled'/);
-  assert.match(script, /type: 'setProviderModelsEnabled'/);
-  assert.match(script, /getElementById\('provider-settings-search'\)/);
-  assert.match(script, /getElementById\('provider-settings-filter'\)/);
-  assert.match(script, /\['Enable all', true\], \['Disable all', false\]/);
-  assert.match(script, /providerSettingsList\.append\(providerSettingsCard\(provider, models\)\)/);
-  assert.doesNotMatch(script, /if \(!providerMatches && models\.length === 0\) continue/);
-  assert.match(script, /const models = providerEnabled \? provider\.models\.filter/);
-  assert.match(script, /Models \(\$\{String\(provider\.models\.length\)\}\) · provider disabled/);
-  assert.match(script, /models\.open = draft\.enabled &&/);
-  assert.match(script, /const previousScrollTop = providerSettingsList\.scrollTop/);
-  assert.match(script, /providerSettingsList\.scrollTop = previousScrollTop/);
-  assert.match(script, /`provider-settings:\$\{provider\.id\}:models`/);
-  assert.match(script, /state\.disclosures\[disclosureId\] = models\.open/);
-  assert.match(script, /Credentials are stored by DSH and are never read back/);
   assert.match(script, /send\.disabled = [^;]+!selectedModelEnabled\(\)/);
   assert.match(script, /modelTrigger\.dataset\.configure = modelCatalog\?\.routableProviders\.length === 0/);
   assert.match(script, /if \(effort === undefined\) return 'Provider default'/);
@@ -272,11 +249,6 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(style, /\.stat-icon \{[\s\S]*width: 14px/);
   assert.match(style, /#prompt \{[\s\S]*max-height: 200px/);
   assert.match(style, /#model-picker \{/);
-  assert.match(style, /#provider-settings-modal \{/);
-  assert.match(style, /#provider-settings-surface \{/);
-  assert.match(style, /#provider-settings-toolbar \{/);
-  assert.match(style, /\.provider-settings-actions \{[^}]*grid-column: 1 \/ -1/);
-  assert.match(style, /\.provider-settings-model-actions \{/);
   assert.match(style, /#permission-select \{/);
   assert.match(style, /#permission-select \{[\s\S]*appearance: none;[\s\S]*background: transparent/);
   assert.match(style, /#permission-control::after \{/);
@@ -298,16 +270,9 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /id="scroll-bottom"[\s\S]*<svg[^>]+><path d="m3\.5 6/);
   assert.match(extension, /Ask DSH Companion… \(Enter sends, Ctrl\+Enter = steer, Shift\+Enter = newline\)/);
   assert.match(extension, /isSelectModelMessage/);
-  assert.match(extension, /isLoadProviderSettingsMessage/);
-  assert.match(extension, /isSaveProviderSettingsMessage/);
-  assert.match(extension, /client\.testProviderConnection\(message\.provider\)/);
-  assert.match(extension, /type: 'providerSettingsTested'/);
-  assert.match(extension, /isSetProviderModelEnabledMessage/);
-  assert.match(extension, /isSetProviderModelsEnabledMessage/);
-  assert.match(extension, /id="provider-settings-modal"/);
+  assert.match(extension, /new SettingsEditor/);
+  assert.match(extension, /void settingsEditor\.open\(\)/);
   assert.match(extension, /id="provider-settings-trigger"/);
-  assert.match(extension, /id="provider-settings-search"/);
-  assert.match(extension, /id="provider-settings-filter"/);
   assert.match(extension, /isSelectPermissionMessage/);
   assert.match(extension, /Full access disables filesystem sandboxing/);
   assert.match(extension, /id="permission-select" aria-label="Session permission"/);
@@ -330,7 +295,7 @@ test('the editor has output, process, persistent state, composer, send, and stop
   assert.match(extension, /runtime\.clientModule/);
   assert.match(extension, /registerWebviewViewProvider\('dshCompanion\.sessions'/);
   assert.match(extension, /registerCommand\('dshCompanion\.openProviderSettings'/);
-  assert.match(extension, /post\(panel, \{ type: 'openProviderSettings' \}\)/);
+  assert.match(extension, /settingsRefreshers\.add\(refreshSettings\)/);
   assert.match(extension, /panelsBySessionId\.get\(sessionId\)/);
   assert.match(extension, /DshSessionBrowser\.connect/);
   assert.match(sessionTree, /placeholder="Search questions and answers…"/);
@@ -459,6 +424,32 @@ test('provider settings descriptions retain only redacted values and their publi
     writable: true,
     namespaces: [{ ns: 'llm-deepseek', value: {}, revision: -1 }],
   }), /invalid settings namespace/u);
+});
+
+test('OpenRouter instance settings keep newly discovered models disabled after exact overrides', () => {
+  const route = 'openrouter-instance-1';
+  const policy = { defaultModelState: 'enabled', providers: {
+    openrouter: { defaultModelState: 'disabled' },
+    [route]: { models: { selected: 'enabled' } },
+  } };
+  const settings = { writable: true, namespaces: new Map([
+    ['dsh-companion-model-policy', { value: policy, revision: 2, schema: {} }],
+    ['provider-openrouter', { value: { instances: { 'instance-1': {} } }, revision: 1, schema: {} }],
+  ]) };
+  const catalogs = new Map([[route, { provider: route, models: [
+    { id: 'selected', name: 'Selected', hidden: false },
+    { id: 'new-model', name: 'New', hidden: false },
+  ] }]]);
+  const families = [{ id: 'openrouter', displayName: 'OpenRouter', maxInstances: null,
+    settingsNs: 'provider-openrouter', instancesPath: ['instances'] }];
+  const instances = [{ id: 'instance-1', familyId: 'openrouter', provider: route,
+    displayName: 'OpenRouter', enabled: true, active: true, settingsNs: 'provider-openrouter',
+    settingsPath: ['instances', 'instance-1'], credential: 'configured' }];
+  assert.deepEqual(providerFamilyRows(settings, catalogs, families, instances)[0].models.map(model => [model.id, model.enabled]), [
+    ['selected', true], ['new-model', false],
+  ]);
+  policy.providers[route].defaultModelState = 'enabled';
+  assert.equal(providerFamilyRows(settings, catalogs, families, instances)[0].models[1].enabled, true);
 });
 
 test('the development connection is fixed to the running DSH origin', () => {

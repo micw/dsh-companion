@@ -46,6 +46,18 @@ test('approval presentation names the exact requested write path without exposin
   assert.doesNotMatch(JSON.stringify(expected), /private file body|private explanation/u);
 });
 
+test('committed subagent messages reuse the pending Turn row and suppress stale Inbox echoes', () => {
+  const row = { root: { id: 'same-dom-row' } };
+  const pending = new Map([['message-1', { row, turnNumber: 3 }]]);
+  const committed = new Set();
+  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), row);
+  assert.equal(pending.size, 0);
+  assert.equal(committed.has('message-1'), true);
+  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), undefined);
+  assert.equal(takePendingAgentRow(pending, committed, undefined), undefined);
+  assert.equal(committed.size, 1);
+});
+
 test('approval presentation shows a shell command literally without claiming inferred file effects', () => {
   const command = 'rm -- /home/user/Downloads/test.txt';
   assert.deepEqual(approvalOperation('bash', JSON.stringify({ command,
@@ -65,18 +77,6 @@ test('malformed or unrelated Tool arguments cannot invent an approval target', (
   assert.deepEqual(approvalOperation('unknown-tool', JSON.stringify({ file_path: '/secret' })), { action: 'unknown-tool' });
   assert.deepEqual(approvalOperation('__proto__', JSON.stringify({ sandbox_permissions: '__proto__' })),
     { action: '__proto__' });
-});
-
-test('committed subagent messages reuse the pending Turn row and suppress stale Inbox echoes', () => {
-  const row = { root: { id: 'same-dom-row' } };
-  const pending = new Map([['message-1', { row, turnNumber: 3 }]]);
-  const committed = new Set();
-  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), row);
-  assert.equal(pending.size, 0);
-  assert.equal(committed.has('message-1'), true);
-  assert.equal(takePendingAgentRow(pending, committed, 'message-1'), undefined);
-  assert.equal(takePendingAgentRow(pending, committed, undefined), undefined);
-  assert.equal(committed.size, 1);
 });
 
 test('file-link clicks and context actions preserve a line range without treating it as a path', () => {

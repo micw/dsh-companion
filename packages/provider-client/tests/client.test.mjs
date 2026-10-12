@@ -20,9 +20,11 @@ test('mounts all generated Remote contributions and disposes them in reverse ord
     '@dsh-companion/provider-catalog',
     '@dsh-companion/provider-account',
     '@dsh-companion/session-title',
+    '@dsh-companion/web-search',
   ])
   await dispose()
   assert.deepEqual(disposed, [
+    '@dsh-companion/web-search',
     '@dsh-companion/session-title',
     '@dsh-companion/provider-account',
     '@dsh-companion/provider-catalog',
@@ -51,6 +53,7 @@ test('emits a self-registering lazy-CJS browser artifact with codecs inlined', a
   assert.match(bundle, /companionProviderCatalog\/refresh/u)
   assert.match(bundle, /companionProviderAccounts\/refresh/u)
   assert.match(bundle, /companionSessionTitle\/refreshTitle/u)
+  assert.match(bundle, /companionWebSearch\/manage/u)
   assert.doesNotMatch(bundle, /^import\s/mu)
   assert.doesNotMatch(bundle, /require\("zod"\)/u)
 

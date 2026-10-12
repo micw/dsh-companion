@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { mountCompanionProviderRemotes } from '@dsh-companion/provider-client/runtime';
+import { BRAVE_SEARCH_CREDENTIAL_REF } from './braveCredential';
+import { decodeSearchCommand, decodeSearchSnapshot } from '@dsh-companion/web-search/protocol';
 import { eventWindowTrace, permissionProjectionTrace, restoreTrace } from './restoreDiagnostics';
 import { branchTitleRevision, hasCompletedTurnAt, includesForkPreviewEvent, isForkChildId } from './forkDraft';
 import type { UserImageUpload } from './queueMessages';
@@ -766,7 +768,8 @@ function providerSettingsRows(
   });
 }
 
-function providerFamilyRows(
+/** Project provider-family settings with route overrides and inherited family defaults. */
+export function providerFamilyRows(
   settings: SettingsSnapshot,
   catalogs: ReadonlyMap<string, ProviderCatalogSnapshot>,
   families: readonly ProviderFamilySnapshot[],
@@ -787,11 +790,11 @@ function providerFamilyRows(
       const catalog = catalogs.get(instance.provider);
       const exactCandidate = policyProviders[instance.provider];
       const familyCandidate = policyProviders[family.id];
-      const policy = isRecord(exactCandidate)
-        ? exactCandidate
-        : isRecord(familyCandidate) ? familyCandidate : undefined;
+      const routePolicy = isRecord(exactCandidate) ? exactCandidate : undefined;
+      const familyPolicy = isRecord(familyCandidate) ? familyCandidate : undefined;
+      const policy = routePolicy ?? familyPolicy;
       const models = policy !== undefined && isRecord(policy.models) ? policy.models : {};
-      const providerDefault = policy?.defaultModelState;
+      const providerDefault = routePolicy?.defaultModelState ?? familyPolicy?.defaultModelState;
       const sharedDefault = policyNamespace?.value.defaultModelState;
       rows.push({
         id: instance.provider,
@@ -1488,6 +1491,49 @@ export class DshClient {
     };
   }
 
+  /** Observe canonical transport state without attaching or creating a Session. */
+  watchConnection(listener: (phase: 'connected' | 'connecting' | 'disconnected') => void): () => void {
+    const state = this.requireCanonical().graph.connection.state;
+    const publish = () => {
+      const value = state.getSnapshot();
+      listener(value === 'connected' || value === 'connecting' ? value : 'disconnected');
+    };
+    const unsubscribe = state.subscribe(publish);
+    publish();
+    return unsubscribe;
+  }
+
+  /** Manage canonical search accesses without creating a Session or returning credential values. */
+  async searchSettings(command: unknown): Promise<import('@dsh-companion/web-search/protocol').SearchSnapshot> {
+    const value = await callCanonicalRemote(this.requireCanonical().graph, 'companionWebSearch', 'manage', decodeSearchCommand(command));
+    return decodeSearchSnapshot(unwrapCanonicalResult(value, 'companionWebSearch.manage'));
+  }
+
+  /** Reads write-only Brave Search credential status from DSH, never its value. */
+  async braveSearchCredential(): Promise<{ readonly configured: boolean; readonly writable: boolean; readonly source?: string }> {
+    const ref = BRAVE_SEARCH_CREDENTIAL_REF;
+    const value = unwrapCanonicalResult(
+      await callCanonicalRemote(this.requireCanonical().graph, 'credentials', 'describe', [ref]),
+      'credentials.describe',
+    );
+    return parseCredentialDescriptions(value, [ref]).get(ref)!;
+  }
+
+  /** Replaces the Brave Search API key in DSH credentials without creating a Session. */
+  async setBraveSearchCredential(apiKey: string): Promise<{ readonly configured: boolean; readonly writable: boolean; readonly source?: string }> {
+    const value = apiKey.trim();
+    if (value.length === 0 || value.length > 4096 || /[\r\n\0]/u.test(value)) {
+      throw new Error('Enter a valid Brave Search API key');
+    }
+    const current = await this.braveSearchCredential();
+    if (!current.writable) throw new Error('Brave Search uses a launch-environment key; change it there and restart the Runtime');
+    unwrapCanonicalResult(
+      await callCanonicalRemote(this.requireCanonical().graph, 'credentials', 'set', BRAVE_SEARCH_CREDENTIAL_REF, value),
+      'credentials.set',
+    );
+    return this.braveSearchCredential();
+  }
+
   /** Writes one provider's canonical DSH settings and optional one-way credential value. */
   async updateProviderSettings(update: DshProviderSettingsUpdate): Promise<DshProviderSettingsSnapshot> {
     const graph = this.requireCanonical().graph;
@@ -1982,7 +2028,8 @@ export class DshClient {
     parseModelSelection(value.selected);
   }
 
-  private async refreshModelCatalog(): Promise<void> {
+  /** Refresh this Client's model presentation after canonical settings change in another editor. */
+  async refreshModelCatalog(): Promise<void> {
     const result = await callCanonicalRemote(this.requireCanonical().graph, 'session', 'modelCatalog');
     const catalog = parseModelCatalog(unwrapCanonicalResult(result, 'session.modelCatalog'));
     this.modelCatalogValue = catalog;

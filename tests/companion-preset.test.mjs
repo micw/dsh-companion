@@ -53,6 +53,10 @@ test('the Companion bundle selects its declarative preset and dedicated provider
   assert.match(patch, /- id: llm-deepseek\n\s+disabled: true/u);
   assert.match(patch, /- id: llm-pi-ai\n\s+disabled: true/u);
   assert.match(patch, /- id: session-query-sqlite\n\s+config:\n\s+path: !!js dshHomePath\('session-search\.sqlite'\)\n\s+openAt: first-search/u);
+  assert.match(patch, /- id: web\n\s+config:\n\s+searchProvider: dsh-companion-search\n\s+fetchProvider: http/u);
+  assert.match(patch, /- id: web-search-deepseek\n\s+disabled: true/u);
+  assert.match(patch, /- id: dsh-companion-web-search\n\s+name: '@dsh-companion\/web-search'/u);
+  assert.equal(packageJson.dependencies['@dsh-companion/web-search'], 'workspace:*');
   assert.doesNotMatch(patch, /default: (?:standard|ptc|cordis)/u);
   assert.deepEqual(packageJson.dsh.bundle.patch, [
     './cordis.patch.yml',
