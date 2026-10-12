@@ -41,6 +41,7 @@
     "@dsh-companion/provider-account": "workspace:*",
     "@dsh-companion/provider-catalog": "workspace:*",
     "@dsh-companion/session-title": "workspace:*",
+    "@dsh-companion/web-search": "workspace:*",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.2"
   },
@@ -50,7 +51,8 @@
       "inject": [
         "@dsh-companion/provider-account",
         "@dsh-companion/provider-catalog",
-        "@dsh-companion/session-title"
+        "@dsh-companion/session-title",
+        "@dsh-companion/web-search"
       ]
     }
   },

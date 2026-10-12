@@ -29,7 +29,8 @@
     "@dsh-companion/provider-client": "workspace:*",
     "@dsh-companion/session-title": "workspace:*",
     "@dsh-companion/tool-session-title": "workspace:*",
-    "@dsh-companion/ui-provider-settings": "workspace:*"
+    "@dsh-companion/ui-provider-settings": "workspace:*",
+    "@dsh-companion/web-search": "workspace:*"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2"

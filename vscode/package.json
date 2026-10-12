@@ -41,6 +41,14 @@
     "onWebviewPanel:dshCompanion.chatEditor"
   ],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "dshCompanion.settingsEditor",
+        "displayName": "DSH Companion Settings",
+        "selector": [{ "filenamePattern": "**/dsh-companion-settings" }],
+        "priority": "option"
+      }
+    ],
     "commands": [
       {
         "command": "dshCompanion.newChatEditor",
@@ -63,7 +71,7 @@
       },
       {
         "command": "dshCompanion.openProviderSettings",
-        "title": "DSH: Providers & Models",
+        "title": "DSH: Settings",
         "icon": "$(settings-gear)"
       },
       {
@@ -166,12 +174,14 @@
   },
   "devDependencies": {
     "@dsh-companion/provider-client": "workspace:*",
+    "@dsh-companion/web-search": "workspace:*",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.93.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.10",
     "mermaid": "^11.17.2",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "zod": "4.4.3"
   }
 }

@@ -20,6 +20,9 @@
       "path": "packages/session-title"
     },
     {
+      "path": "packages/web-search"
+    },
+    {
       "path": "packages/ui-provider-settings"
     }
   ]

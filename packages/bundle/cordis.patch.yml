@@ -11,6 +11,16 @@
 - id: llm-pi-ai
   disabled: true
 
+# Keep DSH's anonymous, SSRF-guarded HTTP fetch. Route search through
+# Companion's prioritized Brave/Exa accesses.
+- id: web
+  config:
+    searchProvider: dsh-companion-search
+    fetchProvider: http
+
+- id: web-search-deepseek
+  disabled: true
+
 # Companion exposes message-content search in its Session sidebar. Keep the
 # derived index durable, but defer SQLite initialization until the first query.
 - id: session-query-sqlite
@@ -19,6 +29,9 @@
     openAt: first-search
 
 - insert:
+    - id: dsh-companion-web-search
+      name: '@dsh-companion/web-search'
+
     - id: dsh-companion-provider-catalog
       name: '@dsh-companion/provider-catalog'
 

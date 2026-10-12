@@ -12,6 +12,9 @@
     "paths": {
       "@dsh-companion/provider-client/runtime": [
         "packages/provider-client/lib/types/runtime.d.ts"
+      ],
+      "@dsh-companion/web-search/protocol": [
+        "packages/web-search/lib/protocol.d.ts"
       ]
     },
     "sourceMap": true,

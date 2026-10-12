@@ -44,14 +44,6 @@ const modelSearch = document.getElementById('model-search');
 const modelList = document.getElementById('model-list');
 const effortMenu = document.getElementById('effort-menu');
 const providerSettingsTrigger = document.getElementById('provider-settings-trigger');
-const providerSettingsModal = document.getElementById('provider-settings-modal');
-const providerSettingsBackdrop = document.getElementById('provider-settings-backdrop');
-const providerSettingsClose = document.getElementById('provider-settings-close');
-const providerSettingsSearch = document.getElementById('provider-settings-search');
-const providerSettingsFilter = document.getElementById('provider-settings-filter');
-const providerFamilyActions = document.getElementById('provider-family-actions');
-const providerSettingsStatus = document.getElementById('provider-settings-status');
-const providerSettingsList = document.getElementById('provider-settings-list');
 const permissionControl = document.getElementById('permission-control');
 const permissionSelect = document.getElementById('permission-select');
 const contextMeter = document.getElementById('context-meter');
@@ -186,19 +178,6 @@ let modelSelection;
 let modelSelecting = false;
 let openEffortRoute;
 let providerSettingsSnapshot;
-let providerSettingsLoading = false;
-let providerSettingsReturnFocus;
-let providerSettingsRequestId = 0;
-let providerSettingsLoadTimer;
-const providerSettingsDrafts = new Map();
-const providerInstanceDrafts = new Map();
-const providerInstanceCreating = new Set();
-const providerInstanceDeleting = new Set();
-const providerSettingsSaving = new Set();
-const providerModelSaving = new Set();
-const providerModelsSaving = new Set();
-const providerSettingsErrors = new Map();
-const providerSettingsSuccess = new Map();
 let permissionSelection;
 let permissionSelecting = false;
 let contextPressure;
@@ -453,11 +432,6 @@ modelTrigger.addEventListener('click', () => {
 modelSearch.addEventListener('input', renderModelPicker);
 
 providerSettingsTrigger.addEventListener('click', openProviderSettings);
-providerSettingsClose.addEventListener('click', closeProviderSettings);
-providerSettingsBackdrop.addEventListener('click', closeProviderSettings);
-providerSettingsSearch.addEventListener('input', renderProviderSettings);
-providerSettingsFilter.addEventListener('change', renderProviderSettings);
-
 permissionSelect.addEventListener('change', () => {
   const preset = permissionSelect.value;
   if (permissionSelecting || preset === 'custom' || preset === permissionSelection?.currentValue) return;
@@ -616,10 +590,6 @@ document.addEventListener('keydown', (event) => {
     markUserScrollIntent(event);
   }
   if (event.key !== 'Escape') return;
-  if (!providerSettingsModal.hidden) {
-    closeProviderSettings();
-    return;
-  }
   if (!effortMenu.hidden) {
     closeEffortMenu(true);
     return;
@@ -802,6 +772,7 @@ function applyHostMessage(message) {
     if (!isModelCatalog(message.catalog)) return;
     modelCatalog = message.catalog;
     renderModelTrigger();
+    updateInputAvailability();
     if (!modelPicker.hidden) renderModelPicker();
     return;
   }
@@ -810,6 +781,7 @@ function applyHostMessage(message) {
     modelSelection = message.selection;
     renderModelTrigger();
     renderProviderUsage();
+    updateInputAvailability();
     if (!modelPicker.hidden) renderModelPicker();
     return;
   }
@@ -823,106 +795,11 @@ function applyHostMessage(message) {
     return;
   }
   if (message.type === 'providerSettings') {
-    if (!isCurrentProviderSettingsRequest(message)) return;
-    const validationError = providerSettingsSnapshotError(message.snapshot);
-    if (validationError !== undefined) {
-      finishProviderSettingsLoad();
-      providerSettingsStatus.textContent = `Provider settings response rejected: ${validationError}`;
-      providerSettingsStatus.dataset.kind = 'error';
-      return;
-    }
-    finishProviderSettingsLoad();
+    if (providerSettingsSnapshotError(message.snapshot) !== undefined) return;
     providerSettingsSnapshot = message.snapshot;
-    providerSettingsErrors.clear();
-    for (const provider of message.snapshot.providers) {
-      providerSettingsDrafts.set(provider.id, {
-        displayName: provider.name,
-        enabled: provider.enabled,
-        baseURL: provider.baseURL ?? '',
-        apiKey: '',
-      });
-    }
-    for (const [familyId, draft] of providerInstanceDrafts) {
-      const family = message.snapshot.families.find(candidate => candidate.id === familyId);
-      if (family !== undefined && family.instanceCount > draft.initialCount) providerInstanceDrafts.delete(familyId);
-    }
-    renderProviderSettings();
     renderModelTrigger();
     updateInputAvailability();
     if (!modelPicker.hidden) renderModelPicker();
-    return;
-  }
-  if (message.type === 'providerSettingsLoading') {
-    if (!isCurrentProviderSettingsRequest(message)) return;
-    providerSettingsLoading = message.value === true;
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerSettingsFailed') {
-    if (!isCurrentProviderSettingsRequest(message)) return;
-    finishProviderSettingsLoad();
-    providerSettingsStatus.textContent = typeof message.text === 'string'
-      ? message.text
-      : 'Provider settings are unavailable.';
-    providerSettingsStatus.dataset.kind = 'error';
-    return;
-  }
-  if (message.type === 'providerSettingsSaving') {
-    if (typeof message.provider !== 'string') return;
-    if (message.value === true) providerSettingsSaving.add(message.provider);
-    else providerSettingsSaving.delete(message.provider);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerInstanceCreating') {
-    if (typeof message.family !== 'string') return;
-    if (message.value === true) providerInstanceCreating.add(message.family);
-    else providerInstanceCreating.delete(message.family);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerInstanceCreateFailed') {
-    if (typeof message.family !== 'string' || typeof message.text !== 'string') return;
-    providerSettingsErrors.set(`create:${message.family}`, message.text);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerInstanceDeleting') {
-    if (typeof message.provider !== 'string') return;
-    if (message.value === true) providerInstanceDeleting.add(message.provider);
-    else providerInstanceDeleting.delete(message.provider);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerModelSaving') {
-    if (typeof message.provider !== 'string' || typeof message.model !== 'string') return;
-    const key = `${message.provider}\0${message.model}`;
-    if (message.value === true) providerModelSaving.add(key);
-    else providerModelSaving.delete(key);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerModelsSaving') {
-    if (typeof message.provider !== 'string') return;
-    if (message.value === true) providerModelsSaving.add(message.provider);
-    else providerModelsSaving.delete(message.provider);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerSettingsSaveFailed') {
-    if (typeof message.provider !== 'string' || typeof message.text !== 'string') return;
-    providerSettingsErrors.set(message.provider, message.text);
-    renderProviderSettings();
-    return;
-  }
-  if (message.type === 'providerSettingsTested') {
-    if (typeof message.provider !== 'string' || !Number.isSafeInteger(message.modelCount)
-      || message.modelCount < 0) return;
-    providerSettingsSuccess.set(
-      message.provider,
-      `Connection verified · ${String(message.modelCount)} models loaded.`,
-    );
-    renderProviderSettings();
     return;
   }
   if (message.type === 'permissionSelection') {
@@ -2273,384 +2150,8 @@ function effortLabel(model, effort) {
 }
 
 function openProviderSettings() {
-  providerSettingsReturnFocus = document.activeElement;
   closeModelPicker();
-  closeContextPanel();
-  closeProviderUsagePanel();
-  closeSessionInfoPanel();
-  providerSettingsModal.hidden = false;
-  providerSettingsLoading = true;
-  renderProviderSettings();
-  providerSettingsSearch.focus();
-  const requestId = ++providerSettingsRequestId;
-  clearTimeout(providerSettingsLoadTimer);
-  providerSettingsLoadTimer = setTimeout(() => {
-    if (requestId !== providerSettingsRequestId || !providerSettingsLoading) return;
-    providerSettingsLoading = false;
-    providerSettingsStatus.textContent = 'Provider settings request timed out before the Extension returned a result.';
-    providerSettingsStatus.dataset.kind = 'error';
-  }, 15_000);
-  vscode.postMessage({ type: 'loadProviderSettings', requestId });
-}
-
-function finishProviderSettingsLoad() {
-  providerSettingsLoading = false;
-  clearTimeout(providerSettingsLoadTimer);
-  providerSettingsLoadTimer = undefined;
-}
-
-function isCurrentProviderSettingsRequest(message) {
-  return message.requestId === undefined
-    || (Number.isSafeInteger(message.requestId) && message.requestId === providerSettingsRequestId);
-}
-
-function closeProviderSettings() {
-  if (providerSettingsModal.hidden) return;
-  providerSettingsModal.hidden = true;
-  const target = providerSettingsReturnFocus;
-  providerSettingsReturnFocus = undefined;
-  if (target?.isConnected) target.focus();
-}
-
-function renderProviderSettings() {
-  if (providerSettingsModal.hidden) return;
-  const previousScrollTop = providerSettingsList.scrollTop;
-  providerSettingsList.replaceChildren();
-  providerFamilyActions.replaceChildren();
-  providerSettingsStatus.dataset.kind = '';
-  if (providerSettingsLoading && providerSettingsSnapshot === undefined) {
-    providerSettingsStatus.textContent = 'Loading providers…';
-    return;
-  }
-  if (providerSettingsSnapshot === undefined) {
-    if (!providerSettingsStatus.textContent || providerSettingsStatus.textContent === 'Loading providers…') {
-      providerSettingsStatus.textContent = 'Provider settings are unavailable.';
-    }
-    return;
-  }
-  providerSettingsStatus.textContent = providerSettingsSnapshot.writable
-    ? 'Credentials are stored by DSH and are never read back.'
-    : 'The current DSH settings provider is read-only.';
-  providerSettingsStatus.dataset.kind = providerSettingsSnapshot.writable ? '' : 'warning';
-  for (const family of providerSettingsSnapshot.families) {
-    const atLimit = family.maxInstances !== null && family.instanceCount >= family.maxInstances;
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.textContent = `Add ${family.name} instance`;
-    add.disabled = !providerSettingsSnapshot.writable || atLimit || providerInstanceDrafts.has(family.id);
-    add.title = atLimit ? `Maximum of ${String(family.maxInstances)} instances reached` : `Add ${family.name}`;
-    add.addEventListener('click', () => {
-      providerInstanceDrafts.set(family.id, {
-        displayName: family.name,
-        enabled: true,
-        baseURL: '',
-        apiKey: '',
-        initialCount: family.instanceCount,
-      });
-      providerSettingsErrors.delete(`create:${family.id}`);
-      renderProviderSettings();
-    });
-    providerFamilyActions.append(add);
-    const createDraft = providerInstanceDrafts.get(family.id);
-    if (createDraft !== undefined) providerSettingsList.append(providerInstanceDraftCard(family, createDraft));
-  }
-  const query = providerSettingsSearch.value.trim().toLocaleLowerCase();
-  const filter = providerSettingsFilter.value;
-  for (const provider of providerSettingsSnapshot.providers) {
-    const providerEnabled = providerSettingsDrafts.get(provider.id)?.enabled ?? provider.enabled;
-    const providerMatches = query === '' || `${provider.name}\n${provider.id}`.toLocaleLowerCase().includes(query);
-    const models = providerEnabled ? provider.models.filter((model) => {
-      const stateMatches = filter === 'all' || (filter === 'enabled' ? model.enabled : !model.enabled);
-      const textMatches = query === '' || providerMatches
-        || `${model.name}\n${model.id}\n${model.description ?? ''}`.toLocaleLowerCase().includes(query);
-      return stateMatches && textMatches;
-    }) : [];
-    providerSettingsList.append(providerSettingsCard(provider, models));
-  }
-  providerSettingsList.scrollTop = previousScrollTop;
-}
-
-function providerInstanceDraftCard(family, draft) {
-  const creating = providerInstanceCreating.has(family.id);
-  const card = document.createElement('article');
-  card.className = 'provider-settings-card';
-  const title = document.createElement('h3');
-  title.textContent = `New ${family.name} instance`;
-  const form = document.createElement('form');
-  form.className = 'provider-settings-form';
-  form.append(providerSettingsField('Display name', 'text', draft.displayName, creating, (value) => {
-    draft.displayName = value;
-  }, true));
-  form.append(providerSettingsField('API URL · optional', 'url', draft.baseURL, creating, (value) => {
-    draft.baseURL = value;
-  }, false));
-  form.append(providerSettingsField('API key', 'password', draft.apiKey, creating, (value) => {
-    draft.apiKey = value;
-  }, draft.enabled, 'Enter API key'));
-  const actions = document.createElement('div');
-  actions.className = 'provider-settings-actions';
-  const save = document.createElement('button');
-  save.type = 'submit';
-  save.disabled = creating;
-  save.textContent = creating ? 'Saving & testing…' : 'Save & Test';
-  const cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.disabled = creating;
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => {
-    providerInstanceDrafts.delete(family.id);
-    providerSettingsErrors.delete(`create:${family.id}`);
-    renderProviderSettings();
-  });
-  actions.append(save, cancel);
-  form.append(actions);
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    providerSettingsErrors.delete(`create:${family.id}`);
-    vscode.postMessage({
-      type: 'createProviderInstance',
-      family: family.id,
-      displayName: draft.displayName,
-      enabled: draft.enabled,
-      ...(draft.baseURL.trim() === '' ? {} : { baseURL: draft.baseURL }),
-      ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
-    });
-  });
-  card.append(title, form);
-  const error = providerSettingsErrors.get(`create:${family.id}`);
-  if (error !== undefined) {
-    const failure = document.createElement('p');
-    failure.className = 'provider-settings-error';
-    failure.setAttribute('role', 'alert');
-    failure.textContent = error;
-    card.append(failure);
-  }
-  return card;
-}
-
-function providerSettingsCard(provider, visibleModels) {
-  const draft = providerSettingsDrafts.get(provider.id) ?? {
-    displayName: provider.name, enabled: provider.enabled, baseURL: provider.baseURL ?? '', apiKey: '',
-  };
-  providerSettingsDrafts.set(provider.id, draft);
-  const saving = providerSettingsSaving.has(provider.id);
-  const deleting = providerInstanceDeleting.has(provider.id);
-  const disabled = !providerSettingsSnapshot.writable || saving || deleting;
-  const card = document.createElement('article');
-  card.className = 'provider-settings-card';
-  const head = document.createElement('div');
-  head.className = 'provider-settings-card-head';
-  const identity = document.createElement('div');
-  const title = document.createElement('h3');
-  title.textContent = provider.name;
-  const route = document.createElement('code');
-  route.textContent = provider.id;
-  identity.append(title, route);
-  const stateLabel = document.createElement('span');
-  stateLabel.className = `provider-settings-state ${provider.active ? 'active' : ''}`;
-  stateLabel.textContent = provider.active ? 'Active' : draft.enabled ? 'Configured' : 'Disabled';
-  head.append(identity, stateLabel);
-  const form = document.createElement('form');
-  form.className = 'provider-settings-form';
-  const enabledLabel = document.createElement('label');
-  enabledLabel.className = 'provider-settings-toggle';
-  const enabled = document.createElement('input');
-  enabled.type = 'checkbox';
-  enabled.checked = draft.enabled;
-  enabled.disabled = disabled;
-  let serviceUrlInput;
-  enabled.addEventListener('change', () => {
-    draft.enabled = enabled.checked;
-    providerSettingsSuccess.delete(provider.id);
-    if (serviceUrlInput !== undefined && serviceUrlInput !== null) serviceUrlInput.required = enabled.checked;
-    renderProviderSettings();
-  });
-  enabledLabel.append(enabled, document.createTextNode(' Provider enabled'));
-  form.append(enabledLabel);
-  if (provider.instanceId !== undefined) {
-    form.append(providerSettingsField('Display name', 'text', draft.displayName, disabled, (value) => {
-      draft.displayName = value;
-      providerSettingsSuccess.delete(provider.id);
-    }, true));
-  }
-  if (provider.kind === 'wrapper' || provider.kind === 'dynamic') {
-    const serviceUrlField = providerSettingsField(provider.kind === 'dynamic' ? 'API URL' : 'Service URL', 'url', draft.baseURL, disabled, (value) => {
-      draft.baseURL = value;
-      providerSettingsSuccess.delete(provider.id);
-    }, provider.kind === 'wrapper' && draft.enabled);
-    serviceUrlInput = serviceUrlField.querySelector('input');
-    form.append(serviceUrlField);
-  }
-  const credentialLabel = provider.credential.configured
-    ? `API key · configured${provider.credential.source === undefined ? '' : ` via ${provider.credential.source}`}`
-    : 'API key · not configured';
-  form.append(providerSettingsField(
-    credentialLabel,
-    'password',
-    draft.apiKey,
-    disabled || !provider.credential.writable,
-    (value) => { draft.apiKey = value; providerSettingsSuccess.delete(provider.id); },
-    false,
-    provider.credential.configured ? 'Enter a new key to replace it' : 'Enter API key',
-  ));
-  const actions = document.createElement('div');
-  actions.className = 'provider-settings-actions';
-  const save = document.createElement('button');
-  save.type = 'submit';
-  save.disabled = disabled;
-  const testsConnection = (provider.kind === 'wrapper' || provider.kind === 'dynamic') && draft.enabled;
-  save.textContent = saving
-    ? testsConnection ? 'Saving & testing…' : 'Saving…'
-    : testsConnection ? 'Save & Test' : 'Save';
-  actions.append(save);
-  if (provider.familyId !== undefined && provider.instanceId !== undefined) {
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.disabled = disabled;
-    remove.textContent = deleting ? 'Deleting…' : 'Delete';
-    remove.addEventListener('click', () => vscode.postMessage({
-      type: 'deleteProviderInstance',
-      family: provider.familyId,
-      instance: provider.instanceId,
-      provider: provider.id,
-      displayName: provider.name,
-    }));
-    actions.append(remove);
-  }
-  form.append(actions);
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    providerSettingsErrors.delete(provider.id);
-    providerSettingsSuccess.delete(provider.id);
-    vscode.postMessage({
-      type: 'saveProviderSettings',
-      provider: provider.id,
-      ...(provider.instanceId === undefined ? {} : { displayName: draft.displayName }),
-      enabled: draft.enabled,
-      ...(provider.kind === 'wrapper' || provider.kind === 'dynamic' ? { baseURL: draft.baseURL } : {}),
-      ...(draft.apiKey.trim() === '' ? {} : { apiKey: draft.apiKey }),
-      ...(testsConnection ? { test: true } : {}),
-      revision: provider.revision,
-    });
-  });
-  card.append(head, form);
-  const error = providerSettingsErrors.get(provider.id);
-  if (error !== undefined) {
-    const failure = document.createElement('p');
-    failure.className = 'provider-settings-error';
-    failure.setAttribute('role', 'alert');
-    failure.textContent = error;
-    card.append(failure);
-  }
-  const success = providerSettingsSuccess.get(provider.id);
-  if (success !== undefined) {
-    const confirmation = document.createElement('p');
-    confirmation.className = 'provider-settings-success';
-    confirmation.setAttribute('role', 'status');
-    confirmation.textContent = success;
-    card.append(confirmation);
-  }
-  const models = document.createElement('details');
-  models.className = 'provider-settings-models';
-  const summary = document.createElement('summary');
-  summary.textContent = !draft.enabled
-    ? `Models (${String(provider.models.length)}) · provider disabled`
-    : visibleModels.length === provider.models.length
-      ? `Models (${String(provider.models.length)})`
-      : `Models (${String(visibleModels.length)} of ${String(provider.models.length)})`;
-  models.append(summary);
-  if (!draft.enabled) {
-    models.classList.add('disabled');
-    summary.setAttribute('aria-disabled', 'true');
-    summary.addEventListener('click', event => { event.preventDefault(); });
-  } else if (provider.models.length > 0) {
-    const bulk = document.createElement('div');
-    bulk.className = 'provider-settings-model-actions';
-    const bulkSaving = providerModelsSaving.has(provider.id);
-    for (const [label, value] of [['Enable all', true], ['Disable all', false]]) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = bulkSaving ? 'Saving…' : label;
-      button.disabled = !providerSettingsSnapshot.writable || bulkSaving
-        || provider.models.every(model => model.enabled === value);
-      button.addEventListener('click', () => vscode.postMessage({
-        type: 'setProviderModelsEnabled',
-        provider: provider.id,
-        models: provider.models.map(model => model.id),
-        enabled: value,
-        revision: providerSettingsSnapshot.modelPolicyRevision,
-      }));
-      bulk.append(button);
-    }
-    models.append(bulk);
-  }
-  if (!draft.enabled) {
-    // A disabled provider contributes no searchable or editable model rows.
-  } else if (provider.models.length === 0) {
-    const empty = document.createElement('p');
-    empty.textContent = provider.active
-      ? 'No models are currently available.'
-      : 'Enable and save this provider to load its models.';
-    models.append(empty);
-  } else if (visibleModels.length === 0) {
-    const empty = document.createElement('p');
-    empty.textContent = 'No models in this provider match the current filter.';
-    models.append(empty);
-  } else {
-    const list = document.createElement('ul');
-    for (const model of visibleModels) {
-      const item = document.createElement('li');
-      const label = document.createElement('label');
-      const toggle = document.createElement('input');
-      toggle.type = 'checkbox';
-      toggle.checked = model.enabled;
-      toggle.disabled = !providerSettingsSnapshot.writable
-        || providerModelsSaving.has(provider.id)
-        || providerModelSaving.has(`${provider.id}\0${model.id}`);
-      toggle.addEventListener('change', () => vscode.postMessage({
-        type: 'setProviderModelEnabled',
-        provider: provider.id,
-        model: model.id,
-        enabled: toggle.checked,
-        revision: providerSettingsSnapshot.modelPolicyRevision,
-      }));
-      const copy = document.createElement('span');
-      copy.textContent = model.name;
-      const id = document.createElement('code');
-      id.textContent = model.id;
-      label.append(toggle, copy, id);
-      item.append(label);
-      list.append(item);
-    }
-    models.append(list);
-  }
-  const disclosureId = `provider-settings:${provider.id}:models`;
-  const forcedOpen = draft.enabled
-    && (providerSettingsSearch.value.trim() !== '' || providerSettingsFilter.value !== 'all');
-  models.open = draft.enabled && (forcedOpen || state.disclosures[disclosureId] === true);
-  models.addEventListener('toggle', () => {
-    if (!draft.enabled || forcedOpen) return;
-    state.disclosures[disclosureId] = models.open;
-    saveState();
-  });
-  card.append(models);
-  return card;
-}
-
-function providerSettingsField(labelText, type, value, disabled, onInput, required, placeholder = '') {
-  const label = document.createElement('label');
-  label.className = 'provider-settings-field';
-  const caption = document.createElement('span');
-  caption.textContent = labelText;
-  const input = document.createElement('input');
-  input.type = type;
-  input.value = value;
-  input.disabled = disabled;
-  input.required = required;
-  input.placeholder = placeholder;
-  input.addEventListener('input', () => onInput(input.value));
-  label.append(caption, input);
-  return label;
+  vscode.postMessage({ type: 'openSettings' });
 }
 
 function selectedModelEnabled() {
@@ -3062,6 +2563,7 @@ function renderProviderUsage() {
   providerUsageTrigger.textContent = providerUsageRefreshing.has(snapshot.provider) ? 'Usage…' : summary.label;
   providerUsageTrigger.classList.toggle('warning', summary.tone === 'warning');
   providerUsageTrigger.classList.toggle('danger', summary.tone === 'danger');
+  providerUsageTrigger.setAttribute('aria-label', summary.tone === 'normal' ? summary.label : `Warning: ${summary.label}`);
   providerUsageTrigger.title = summary.label;
   if (!providerUsagePanel.hidden) {
     renderProviderUsagePanel(snapshot);
@@ -3119,12 +2621,11 @@ function renderProviderUsagePanel(snapshot) {
       section.append(providerUsageWindow(
         group.secondary === undefined ? '' : 'Primary',
         group.primary,
-        group.reached === true,
         snapshot.observedAt,
       ));
     }
     if (group.secondary !== undefined) {
-      section.append(providerUsageWindow('Secondary', group.secondary, group.reached === true, snapshot.observedAt));
+      section.append(providerUsageWindow('Secondary', group.secondary, snapshot.observedAt));
     }
     providerUsagePanel.append(section);
   }
@@ -3139,7 +2640,7 @@ function renderProviderUsagePanel(snapshot) {
   providerUsageRendering = false;
 }
 
-function providerUsageWindow(label, window, reached, observedAt) {
+function providerUsageWindow(label, window, observedAt) {
   const block = document.createElement('div');
   block.className = 'provider-usage-window';
   const head = document.createElement('div');
@@ -3176,8 +2677,6 @@ function providerUsageWindow(label, window, reached, observedAt) {
   const fill = document.createElement('span');
   fill.className = 'provider-usage-fill';
   fill.style.width = `${String(width)}%`;
-  if (reached || width >= 95) fill.classList.add('danger');
-  else if (width >= 80) fill.classList.add('warning');
   progress.append(fill);
   const elapsed = allowanceTimeMarkerPercent(window, observedAt);
   if (elapsed !== undefined) {

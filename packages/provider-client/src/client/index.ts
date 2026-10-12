@@ -6,6 +6,7 @@ import { mountCompanionProviderRemotes } from '../runtime.js'
 
 export type {} from '@dsh-companion/provider-account/remote'
 export type {} from '@dsh-companion/provider-catalog/remote'
+export type {} from '@dsh-companion/web-search/remote'
 export type {
   CompanionProviderAccountRemoteSnapshot,
 } from '@dsh-companion/provider-account/types'
@@ -22,7 +23,7 @@ declare module '@deepseek-ai/cordis' {
 /** Required shared Client Remote mount service. */
 export const inject = ['remote']
 
-/** Mount account and catalog methods into the canonical DSH Client Remote. */
+/** Mount Companion provider, search, and title methods into the canonical DSH Client Remote. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
   return mountCompanionProviderRemotes(ctx.remote)
 }

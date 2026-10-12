@@ -1,0 +1,44 @@
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; overflow: hidden; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); display: flex; flex-direction: column; }
+body > header { padding: 18px 24px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--vscode-panel-border); }
+h1 { margin: 0; font-size: 18px; font-weight: 600; }
+#connection { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 12px; }
+#layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: 0; flex: 1; }
+nav { padding: 16px 12px; border-right: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 4px; }
+nav button { text-align: left; background: transparent; color: var(--vscode-foreground); border: 1px solid transparent; padding: 8px 12px; }
+nav button[aria-current="page"] { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+#content { overflow-y: auto; overflow-x: hidden; padding: 20px 28px 40px; min-width: 0; }
+h2 { margin: 0; font-size: 22px; } h3 { margin: 24px 0 14px; font-size: 15px; }
+p { margin: 6px 0; line-height: 1.5; overflow-wrap: anywhere; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.notice { min-height: 20px; color: var(--vscode-descriptionForeground); }
+.notice[role="alert"] { color: var(--vscode-errorForeground); }
+button, summary { cursor: pointer; }
+button { font: inherit; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 5px 10px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-radius: 2px; }
+button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+button:disabled, input:disabled, select:disabled { opacity: 0.6; cursor: default; }
+button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.toolbar, .row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.toolbar { margin: 14px 0; }
+.summary-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+.summary-row > div:first-child { flex: 1; min-width: 0; }
+.summary-row p { color: var(--vscode-descriptionForeground); }
+.summary-row strong { overflow-wrap: anywhere; }
+.edit-form { max-width: 650px; }
+.field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 18px; }
+.field input[type="checkbox"] { align-self: flex-start; }
+input:not([type="checkbox"]), select { font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px 8px; max-width: 100%; }
+.field input:not([type="checkbox"]) { width: 100%; }
+.model-row { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; }
+[hidden] { display: none !important; }
+.action-menu { position: relative; }
+.action-menu > summary { list-style: none; padding: 3px 10px; font-size: 18px; }
+.menu-items { position: absolute; right: 0; top: 100%; z-index: 2; min-width: 150px; padding: 6px; background: var(--vscode-menu-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); box-shadow: 0 3px 12px var(--vscode-widget-shadow); }
+.menu-items > button { display: block; width: 100%; margin: 3px 0; text-align: left; }
+.failure-details { margin-top: 8px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+@media (max-width: 640px) {
+  #layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  nav { flex-direction: row; border-right: none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px 16px; }
+  body > header { padding: 14px 16px; } #connection { margin-left: 0; }
+  #content { padding: 16px; } .summary-row { flex-wrap: wrap; }
+}

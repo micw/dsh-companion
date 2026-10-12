@@ -66,11 +66,14 @@ export class CompanionModelPolicy extends Service {
 
 /** Resolve one exact route without requiring a mounted Cordis service. */
 export function modelEnabled(config: ModelPolicyValue, provider: string, model: string, family?: string): boolean {
-  const policy = config.providers?.[provider] ?? (family === undefined ? undefined : config.providers?.[family])
+  const routePolicy = config.providers?.[provider]
+  const familyPolicy = family === undefined ? undefined : config.providers?.[family]
+  const policy = routePolicy ?? familyPolicy
   if (policy?.enabled === false) return false
   const override = policy?.models?.[model]
   if (override !== undefined) return override === 'enabled'
-  if (policy?.defaultModelState !== undefined) return policy.defaultModelState === 'enabled'
+  const defaultState = routePolicy?.defaultModelState ?? familyPolicy?.defaultModelState
+  if (defaultState !== undefined) return defaultState === 'enabled'
   return (config.defaultModelState ?? 'enabled') === 'enabled'
 }
 

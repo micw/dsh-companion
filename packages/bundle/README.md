@@ -1,10 +1,10 @@
 # @dsh-companion/bundle
 
-Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, enables the durable derived Session full-text index on first search, and mounts provider catalog LKG storage, live provider account state, the DSH-owned session-title refresh Remote, and the shared settings-backed model policy. Provider-specific adapters are separate optional bundles and are not dependencies of this package.
+Profile bundle for the DSH Companion agent preset and generic Host plugins. It makes the single `dsh-companion` system preset authoritative, starts the native DeepSeek route disabled, enables the durable derived Session full-text index on first search, and mounts provider catalog LKG storage, live provider account state, the DSH-owned session-title refresh Remote, and the shared settings-backed model policy. It selects Companion's prioritized Brave/Exa Web Search router while retaining DSH's anonymous HTTP fetch; model-provider adapters remain separate optional bundles.
 
 ## Model Experience
 
-The `dsh-companion` preset provides DSH's standard coding-agent composition except fork-based delegation and includes a Companion-only current-Session title proposal Tool. Fresh subagents, Goals, plans, compaction, workflows, and the standard Tool set remain available.
+The `dsh-companion` preset provides DSH's standard coding-agent composition except fork-based delegation and includes a Companion-only current-Session title proposal Tool. Fresh subagents, Goals, plans, compaction, workflows, and the standard Tool set remain available. `web_fetch` remains keyless, while `web_search` returns cited Brave or Exa results with silent failover and requires at least one enabled access with a working credential.
 
 ### Token effect
 

@@ -38,6 +38,14 @@ Entries under **Companion work** belong to this repository. Entries under **DSH 
 
 **Completion:** OpenAI and DeepSeek appear as installed families, create independently validated instances without a second settings contract, and pass the same credential, route identity, rollback, restore, REAL-composition, and packaged-runtime checks as OpenRouter.
 
+### COMP-008 — Manage web search accesses in DSH Web
+
+**Current behavior:** The native Companion Settings editor manages prioritized Brave and Exa accesses, write-only credentials, explicit retry, and durable failover without a Runtime restart. DSH Web can use the configured search service but does not present access management.
+
+**Deferred work:** Expose the existing search-access management operations in DSH Web, retaining the same Runtime-owned access identities, credential handling, priorities, and cooldowns rather than introducing a second settings state.
+
+**Completion:** DSH Web users can configure and retry the same search accesses as the native editor without editing a profile file or exposing credentials; changes remain consistent across both surfaces and Runtime restarts.
+
 ### COMP-009 — Show Session fork lineage in the browser
 
 **Current behavior:** DSH records each ordinary fork's parent Session and inherited prefix, but Companion's Session browser presents child and source as separate flat entries.

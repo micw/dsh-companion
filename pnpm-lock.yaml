@@ -31,6 +31,9 @@ importers:
       '@dsh-companion/ui-provider-settings':
         specifier: workspace:*
         version: link:../ui-provider-settings
+      '@dsh-companion/web-search':
+        specifier: workspace:*
+        version: link:../web-search
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../deepseek-harness/vendor/cordis
@@ -140,6 +143,9 @@ importers:
       '@dsh-companion/session-title':
         specifier: workspace:*
         version: link:../session-title
+      '@dsh-companion/web-search':
+        specifier: workspace:*
+        version: link:../web-search
       tsdown:
         specifier: ^0.22.2
         version: 0.22.14(typescript@5.9.3)
@@ -259,6 +265,80 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/web-search:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../deepseek-harness/vendor/schemastery
+        version: link:../../../deepseek-harness/vendor/schemastery
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../deepseek-harness/vendor/cordis
+        version: link:../../../deepseek-harness/vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: link:../../../deepseek-harness/vendor/loader
+        version: link:../../../deepseek-harness/vendor/loader
+      '@deepseek-ai/dsh-app-boot':
+        specifier: link:../../../deepseek-harness/packages/boot/app-boot
+        version: link:../../../deepseek-harness/packages/boot/app-boot
+      '@deepseek-ai/dsh-config-editor':
+        specifier: link:../../../deepseek-harness/packages/boot/config-editor
+        version: link:../../../deepseek-harness/packages/boot/config-editor
+      '@deepseek-ai/dsh-credentials':
+        specifier: link:../../../deepseek-harness/packages/credentials/credentials
+        version: link:../../../deepseek-harness/packages/credentials/credentials
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../deepseek-harness/packages/settings/settings
+        version: link:../../../deepseek-harness/packages/settings/settings
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: link:../../../deepseek-harness/packages/storage/storage-domain
+        version: link:../../../deepseek-harness/packages/storage/storage-domain
+      '@deepseek-ai/dsh-typert-generator':
+        specifier: link:../../../deepseek-harness/packages/typert/generator
+        version: link:../../../deepseek-harness/packages/typert/generator
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: link:../../../deepseek-harness/packages/typert/protocol
+        version: link:../../../deepseek-harness/packages/typert/protocol
+      '@deepseek-ai/dsh-web':
+        specifier: link:../../../deepseek-harness/packages/web/web
+        version: link:../../../deepseek-harness/packages/web/web
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.2
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/web-search-brave:
+    dependencies:
+      '@deepseek-ai/dsh-credentials':
+        specifier: link:../../../deepseek-harness/packages/credentials/credentials
+        version: link:../../../deepseek-harness/packages/credentials/credentials
+      '@deepseek-ai/dsh-launch-environment':
+        specifier: link:../../../deepseek-harness/packages/util/launch-environment
+        version: link:../../../deepseek-harness/packages/util/launch-environment
+      '@deepseek-ai/dsh-web':
+        specifier: link:../../../deepseek-harness/packages/web/web
+        version: link:../../../deepseek-harness/packages/web/web
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../deepseek-harness/vendor/schemastery
+        version: link:../../../deepseek-harness/vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../deepseek-harness/vendor/cordis
+        version: link:../../../deepseek-harness/vendor/cordis
+      tsdown:
+        specifier: ^0.22.2
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   vscode:
     dependencies:
       markdown-it:
@@ -268,6 +348,9 @@ importers:
       '@dsh-companion/provider-client':
         specifier: workspace:*
         version: link:../packages/provider-client
+      '@dsh-companion/web-search':
+        specifier: workspace:*
+        version: link:../packages/web-search
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.2.0
@@ -289,6 +372,9 @@ importers:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
 packages:
 

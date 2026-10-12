@@ -9,6 +9,7 @@
     "build": "pnpm --filter './packages/**' run build && pnpm --filter dsh-companion-vscode compile",
     "watch": "pnpm --filter dsh-companion-vscode watch",
     "test": "pnpm run build && node --test tests/*.test.mjs packages/*/tests/*.test.mjs",
+    "test:settings-native": "node scripts/smoke-settings-editor.mjs",
     "runtime:verify": "node runtime/dsh/scripts/verify.mjs",
     "runtime:prepare": "node runtime/dsh/scripts/prepare.mjs",
     "runtime:build:linux": "node runtime/dsh/scripts/build-linux.mjs",

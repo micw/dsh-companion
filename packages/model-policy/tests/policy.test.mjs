@@ -29,6 +29,10 @@ test('inherits a family policy until an instance route has exact policy', () => 
   assert.equal(modelEnabled(config, 'openrouter-personal', 'new-model', 'openrouter'), false)
   assert.equal(modelEnabled(config, 'openrouter-personal', 'selected', 'openrouter'), true)
   assert.equal(modelEnabled(config, 'openrouter-work', 'selected', 'openrouter'), false)
+  assert.equal(modelEnabled(config, 'openrouter-work', 'new-model', 'openrouter'), false)
+  assert.equal(modelEnabled({ providers: { ...config.providers,
+    'openrouter-work': { defaultModelState: 'enabled', models: { selected: 'disabled' } },
+  } }, 'openrouter-work', 'new-model', 'openrouter'), true)
 })
 
 test('applies provider denial before exact model overrides', () => {
